@@ -1,0 +1,38 @@
+name: Nightly
+
+# Slower, network-dependent layers that don't belong gating every commit —
+# see docs/architecture.md §10 CI Pipeline. Runs on a schedule and can also
+# be triggered manually before a release.
+on:
+  schedule:
+    - cron: '0 2 * * *' # 02:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  contract-and-fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Higher iteration count than the per-PR default (100) — see
+      # src/shared/types/__tests__/money.property.spec.ts.
+      - run: pnpm test
+        env:
+          FC_NUM_RUNS: 2000
+
+      # No-ops (via --passWithNoTests) until a PaymentProviderAdapter or
+      # KycProvider exists to contract-test against Kora's sandbox — see
+      # test/contract/README.md. KORA_* secrets get added to this job once
+      # that lands.
+      - run: pnpm test:contract

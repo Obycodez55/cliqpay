@@ -705,7 +705,7 @@ src/
     events/
       domain-events.ts           # typed event catalog — FundingCompletedEvent, etc.
       event-bus.module.ts        # wraps BullMQ so modules never touch BullMQ directly
-    types/                       # Money, TransactionType, KycTier — freely importable by any module
+    primitives/                  # Money, TransactionType, KycTier — freely importable by any module
   common/                        # guards, interceptors, filters — genuinely cross-cutting
 test/
   integration/                   # DB-backed, cross-module seams — not owned by any one module
@@ -719,7 +719,7 @@ Rules that make this real rather than aspirational:
 - **Dependency direction is a rule, not just "modules shouldn't touch each other."** Ledger, Payments, and Auth are core. Fraud, Social, BillSplit, and Scheduling are peripheral and may depend on core (Fraud reads balances via Ledger's service) — core must never import from peripheral. Encode this in the same lint config as an explicit constraint, not a convention someone has to remember.
 - **Cross-module references are plain UUIDs, never a DB-level foreign key.** Same-module references (e.g. `ledger_entries.account_id`) keep real FK constraints. Cross-module references (e.g. `bill_split_participants.transactionId`, which points at something Ledger owns) don't — a real FK can't survive the day that table moves to its own database, and the discipline costs nothing to build in now.
 - **Cross-module side effects are async domain events, not direct synchronous calls.** A P2P transfer's ledger write is synchronous and atomic, inside the Ledger module (must be — it's the money). Everything downstream of it — feed updates, notifications, fraud-rule evaluation — reacts to a domain event published through the shared BullMQ-backed event bus. Critically, **the event publishes after the originating transaction commits, not during it** — publishing inside the transaction means a downstream reaction can fire for a transaction that then rolls back, which is a subtle, easy-to-introduce correctness bug. This async seam is also exactly what becomes a real message broker (SQS/NATS/etc.) if a module is ever actually extracted into its own service — swapping the transport is small; retrofitting a synchronous call into an async boundary after the fact is not.
-- **Shared primitives are the one deliberate exception to isolation.** `Money`, `TransactionType`, `KycTier`, and similar pure data shapes live in `shared/types/` and any module may import them — the isolation rule is about behavior and state, not data shapes every module legitimately needs.
+- **Shared primitives are the one deliberate exception to isolation.** `Money`, `TransactionType`, `KycTier`, and similar shared domain vocabulary — some pure types, some (like `Money`) small value objects with real behavior — live in `shared/primitives/` and any module may import them. `primitives/`, not `types/`, because the folder isn't just type declarations — the isolation rule being carved out here is about behavior and state living in a *module*, not about whether the shared thing itself has logic.
 
 Worth naming directly: the schema as it's evolved through this document already falls along these exact lines — Ledger, Auth, KYC, Fraud, Social, BillSplit, and Scheduling each own a clearly scoped set of tables. That's what happens when each phase's tables get scoped to what that phase actually needed; it wasn't a separate design exercise.
 

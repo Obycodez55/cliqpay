@@ -1,0 +1,39 @@
+name: CI
+
+# Per-PR gate — fast enough to run on every commit. See docs/architecture.md
+# §10 CI Pipeline: contract tests and the higher-iteration property fuzz run
+# belong to the nightly workflow instead, not here.
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  lint-build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Includes the module-boundary checks (eslint-plugin-boundaries) —
+      # a build fails the same way whether it's a formatting issue or a
+      # core module reaching into a peripheral one.
+      - run: pnpm lint
+
+      - run: pnpm build
+
+      - run: pnpm test
+
+      # Testcontainers needs Docker, which ubuntu-latest runners ship with
+      # already — no services: block or manual container setup needed.
+      - run: pnpm test:integration

@@ -8,6 +8,10 @@ A production-grade peer-to-peer wallet platform for Africa (Nigeria first) — N
 - **Never commit without the user reviewing the diff first.** Stage and prepare changes, show what would be committed, and wait for explicit go-ahead before running `git commit`. This applies every time, not just once per session.
 - Never push, force-push, or amend published commits without explicit instruction.
 
+## Workflow
+
+- **Present a plan before implementing anything non-trivial or structural** — new dependencies, restructuring existing files/modules, schema or config shape changes, new architectural patterns (e.g. a naming strategy, a shared factory). Lay out the approach and wait for explicit go-ahead before writing code. Small, obviously-scoped fixes within a single file don't need this.
+
 ## Non-negotiable engineering rules (from docs/architecture.md)
 
 - **Money is always integer minor units** (`bigint`) — kobo, cents, etc. Never `decimal`, never floating point. All money math goes through a single `Money` helper, never scattered arithmetic.
