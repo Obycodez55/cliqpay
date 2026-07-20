@@ -12,6 +12,15 @@ A production-grade peer-to-peer wallet platform for Africa (Nigeria first) — N
 
 - **Present a plan before implementing anything non-trivial or structural** — new dependencies, restructuring existing files/modules, schema or config shape changes, new architectural patterns (e.g. a naming strategy, a shared factory). Lay out the approach and wait for explicit go-ahead before writing code. Small, obviously-scoped fixes within a single file don't need this.
 
+## Build incrementally, not upfront
+
+`docs/architecture.md` documents the *full* target design — the whole schema (§5), every config namespace eventually needed, the complete phased feature list. That's a design reference, not a build order (the doc says this explicitly in §6). Nothing described there gets scaffolded until the specific task in front of you actually needs it. This isn't only about code abstractions (see General conventions below) — it applies just as much to schema and data:
+
+- **Schema**: create an entity/table/migration only when the module being built that session needs it. Building Phase 1 auth doesn't mean also scaffolding `ledger_entries` because §5 documents it — that comes with the ledger module, in the ledger module's own phase. Each migration should map to one real, current need, not a chunk of the eventual full schema.
+- **Config**: already the working pattern in `src/config/config.ts` — a namespace (`jwt`, `kora`, `encryption`, `brevo`, etc.) gets added in the same change that wires it up, never speculatively ahead of that.
+- **Domain events**: already the working pattern in `src/shared/events/domain-events.ts` — payload types accumulate as modules need to publish them, not as a pre-built catalog.
+- **The tell**: if the reason for adding something is "the architecture doc mentions it eventually" rather than "the thing I'm building right now needs it," stop and check whether it actually belongs in this change.
+
 ## Non-negotiable engineering rules (from docs/architecture.md)
 
 - **Money is always integer minor units** (`bigint`) — kobo, cents, etc. Never `decimal`, never floating point. All money math goes through a single `Money` helper, never scattered arithmetic.
