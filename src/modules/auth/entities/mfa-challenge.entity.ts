@@ -25,9 +25,9 @@ export class MfaChallenge {
   method?: MfaMethod;
 
   // Only set for an email challenge — SHA-256 of the sent code (see
-  // internal/mfa.service.ts). Null for a TOTP challenge, which has no
-  // server-issued code to hash: verification recomputes the TOTP live from
-  // the method's own secret.
+  // mfa.service.ts). Null for a TOTP challenge, which has no server-issued
+  // code to hash: verification recomputes the TOTP live from the method's
+  // own secret.
   @Column({ type: 'varchar', nullable: true })
   codeHash: string | null;
 

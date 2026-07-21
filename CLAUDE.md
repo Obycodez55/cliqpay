@@ -35,6 +35,8 @@ A production-grade peer-to-peer wallet platform for Africa (Nigeria first) — N
 
 Modular monolith, one exported service per module (`src/modules/<name>/<name>.service.ts` is the only importable surface — everything else in the module is internal). Core modules (`ledger`, `payments`, `auth`) never import from peripheral ones (`fraud`, `social`, `billsplit`, `scheduling`); peripheral modules depend on core via its exported service only. Cross-module references are plain UUIDs, not DB foreign keys. Cross-module side effects are async domain events published through the shared BullMQ event bus, published *after* the originating transaction commits — never inside it.
 
+**Show relationships in the schema as explicitly as possible.** Every same-module foreign key gets a real FK constraint in its migration *and* an additive TypeORM relation decorator (`@ManyToOne`/`@JoinColumn`) alongside the plain `xId` column — added proactively when the FK itself is created, not deferred until some caller happens to need the join. Cross-module references never get either (see above) — see [ADR-0002](docs/adr/0002-cross-module-references-and-relation-decorators.md) for the full reasoning and the module-boundary line this draws.
+
 ## Testing
 
 - **Unit (TDD)** — ledger math, fee calculations, limit windows. Co-located `__tests__/` per module.

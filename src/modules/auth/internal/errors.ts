@@ -56,6 +56,52 @@ export class SessionRevokedException extends DomainException {
   }
 }
 
+export class MfaChallengeNotFoundException extends DomainException {
+  readonly code = 'MFA_CHALLENGE_NOT_FOUND';
+  constructor() {
+    super('MFA challenge not found', HttpStatus.NOT_FOUND);
+  }
+}
+
+// Expired or already resolved (verified/failed) — same "don't retry this
+// exact resource, get a new one" semantics as 410 elsewhere in REST usage.
+export class MfaChallengeInvalidException extends DomainException {
+  readonly code = 'MFA_CHALLENGE_INVALID';
+  constructor() {
+    super(
+      'MFA challenge is no longer valid — request a new one',
+      HttpStatus.GONE,
+    );
+  }
+}
+
+// Covers both a wrong login-challenge code and a wrong TOTP-confirm code —
+// same meaning either way ("the code you gave is wrong"), no need for two
+// exception types over one call site each.
+export class InvalidMfaCodeException extends DomainException {
+  readonly code = 'INVALID_MFA_CODE';
+  constructor() {
+    super('Invalid MFA code', HttpStatus.UNAUTHORIZED);
+  }
+}
+
+export class TotpAlreadyEnrolledException extends DomainException {
+  readonly code = 'TOTP_ALREADY_ENROLLED';
+  constructor() {
+    super('TOTP is already active on this account', HttpStatus.CONFLICT);
+  }
+}
+
+export class NoPendingTotpEnrollmentException extends DomainException {
+  readonly code = 'NO_PENDING_TOTP_ENROLLMENT';
+  constructor() {
+    super(
+      'No pending TOTP enrollment to confirm — call enroll first',
+      HttpStatus.NOT_FOUND,
+    );
+  }
+}
+
 const CONSTRAINT_EXCEPTIONS: Record<string, () => DomainException> = {
   UQ_users_email: () => new EmailAlreadyRegisteredException(),
   UQ_users_username: () => new UsernameAlreadyTakenException(),
