@@ -1,8 +1,9 @@
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
-import { DataSource, EntityManager } from 'typeorm';
+import { DataSource, EntityManager, FindOneOptions } from 'typeorm';
 import { AuthService } from '../auth.service';
 import { LedgerService } from '../../ledger/ledger.service';
+import { EventBusService } from '../../../shared/events/event-bus.service';
 import { Session } from '../entities/session.entity';
 import { User } from '../entities/user.entity';
 import { LoginDto } from '../dto/login.dto';
@@ -67,6 +68,7 @@ interface FakeSessionRepo {
   create: jest.Mock<Session, [Partial<Session>]>;
   save: jest.Mock<Promise<Session>, [Session]>;
   findOneBy: jest.Mock<Promise<Session | null>, [Partial<Session>]>;
+  findOne: jest.Mock<Promise<Session | null>, [FindOneOptions<Session>]>;
 }
 
 describe('AuthService — login, refresh, logout', () => {
@@ -78,6 +80,7 @@ describe('AuthService — login, refresh, logout', () => {
     transaction: jest.Mock<unknown, [(m: EntityManager) => unknown]>;
   };
   let jwtService: { signAsync: jest.Mock<Promise<string>, unknown[]> };
+  let eventBus: { publish: jest.Mock<Promise<void>, unknown[]> };
   let service: AuthService;
   let existingUser: User;
 
@@ -95,6 +98,9 @@ describe('AuthService — login, refresh, logout', () => {
       ),
       save: jest.fn((entity: Session) => Promise.resolve(entity)),
       findOneBy: jest.fn((_where: Partial<Session>) => Promise.resolve(null)),
+      findOne: jest.fn((_options: FindOneOptions<Session>) =>
+        Promise.resolve(null),
+      ),
     };
     const repoFor = (entity: unknown) =>
       entity === User ? userRepo : sessionRepo;
@@ -108,11 +114,13 @@ describe('AuthService — login, refresh, logout', () => {
     jwtService = {
       signAsync: jest.fn(() => Promise.resolve('signed.jwt.token')),
     };
+    eventBus = { publish: jest.fn(() => Promise.resolve()) };
     bcryptCompare.mockReset();
     service = new AuthService(
       dataSource as unknown as DataSource,
       {} as LedgerService,
       jwtService as unknown as JwtService,
+      eventBus as unknown as EventBusService,
     );
   });
 
@@ -235,19 +243,23 @@ describe('AuthService — login, refresh, logout', () => {
       expect(saved.currentTokenHash).not.toBe(saved.previousTokenHash);
     });
 
-    it('revokes the whole session when a previous (already-rotated) token is replayed', async () => {
+    it('revokes the whole session and alerts the user when a previous (already-rotated) token is replayed', async () => {
       const staleToken = 'stale-refresh-token';
       const session = buildSession({
         currentTokenHash: 'some-newer-hash',
         previousTokenHash: hashRefreshToken(staleToken),
+        user: existingUser,
       });
-      sessionRepo.findOneBy.mockImplementation((where: Partial<Session>) => {
-        if (where.currentTokenHash) return Promise.resolve(null);
-        if (where.previousTokenHash === session.previousTokenHash) {
-          return Promise.resolve(session);
-        }
-        return Promise.resolve(null);
-      });
+      sessionRepo.findOneBy.mockResolvedValueOnce(null); // no current-hash match
+      sessionRepo.findOne.mockImplementation(
+        (options: FindOneOptions<Session>) => {
+          const where = options.where as Partial<Session> | undefined;
+          if (where?.previousTokenHash === session.previousTokenHash) {
+            return Promise.resolve(session);
+          }
+          return Promise.resolve(null);
+        },
+      );
 
       await expect(
         service.refresh(refreshDto(staleToken)),
@@ -255,6 +267,13 @@ describe('AuthService — login, refresh, logout', () => {
       expect(sessionRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'revoked' }),
       );
+      const publishedEvent = eventBus.publish.mock.calls[0]?.[0] as {
+        name: string;
+        payload: { userId: string; email: string; message: string };
+      };
+      expect(publishedEvent.name).toBe('security_alert');
+      expect(publishedEvent.payload.userId).toBe(session.userId);
+      expect(publishedEvent.payload.email).toBe(existingUser.email);
     });
 
     it('rejects an unrecognized token with no side effect', async () => {

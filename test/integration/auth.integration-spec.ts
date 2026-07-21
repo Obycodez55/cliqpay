@@ -2,6 +2,7 @@ import {
   PostgreSqlContainer,
   StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
+import { GenericContainer, StartedTestContainer } from 'testcontainers';
 import { DynamicModule, INestApplication, Module } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -12,6 +13,7 @@ import { APP_CONFIG, AppConfig } from '../../src/config';
 import { buildDataSourceOptions } from '../../src/database/data-source.options';
 import { CreateUsersAndAccounts1784628665852 } from '../../src/database/migrations/1784628665852-CreateUsersAndAccounts';
 import { CreateSessions1784642459395 } from '../../src/database/migrations/1784642459395-CreateSessions';
+import { CreatePushTokens1784616220824 } from '../../src/database/migrations/1784616220824-CreatePushTokens';
 import { seedSystemAccounts } from '../../src/database/seed-system-accounts';
 import { AuthModule } from '../../src/modules/auth/auth.module';
 import { AuthService } from '../../src/modules/auth/auth.service';
@@ -28,6 +30,9 @@ import {
   UsernameAlreadyTakenException,
 } from '../../src/modules/auth/internal/errors';
 import { Account } from '../../src/modules/ledger/entities/account.entity';
+import { NotificationsModule } from '../../src/modules/notifications/notifications.module';
+import { EMAIL_SENDER } from '../../src/modules/notifications/channels/email/email-sender.interface';
+import { FakeEmailAdapter } from '../../src/modules/notifications/channels/email/fake-email.adapter';
 
 jest.setTimeout(120_000);
 
@@ -43,6 +48,19 @@ function buildTestConfigModule(config: AppConfig): DynamicModule {
   };
 }
 
+async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 5000,
+): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error('Timed out waiting for condition');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 function registerPayload(overrides: Record<string, unknown> = {}): RegisterDto {
   return plainToInstance(RegisterDto, {
     email: 'ada@example.com',
@@ -55,20 +73,28 @@ function registerPayload(overrides: Record<string, unknown> = {}): RegisterDto {
   });
 }
 
-// Real Postgres via Testcontainers, per docs/architecture.md §10 — proves
-// register() against the actual migration's schema and constraints, not a
-// mock. AuthModule/LedgerModule don't touch Redis/BullMQ, so no Redis
-// container is needed here (unlike the notifications integration spec).
+// Real Postgres and a real Redis via Testcontainers, per docs/architecture.md
+// §10 — proves register()/login()/refresh()/logout() against the actual
+// migrations' schema and constraints, not mocks. Redis is needed because
+// AuthModule now imports EventBusModule (the reuse-detection path on refresh()
+// publishes a security_alert domain event) — NotificationsModule is wired in
+// alongside it so that event's actual delivery can be asserted too, not just
+// that EventBusService.publish() was called.
 describe('Auth module — registration against a real Postgres', () => {
   let postgres: StartedPostgreSqlContainer;
+  let redis: StartedTestContainer;
   let app: INestApplication;
   let authService: AuthService;
   let dataSource: DataSource;
   let userRepo: Repository<User>;
   let accountRepo: Repository<Account>;
+  let emailAdapter: FakeEmailAdapter;
 
   beforeAll(async () => {
     postgres = await new PostgreSqlContainer('postgres:16-alpine').start();
+    redis = await new GenericContainer('redis:7-alpine')
+      .withExposedPorts(6379)
+      .start();
 
     const setupDataSource = new DataSource({
       type: 'postgres',
@@ -79,13 +105,16 @@ describe('Auth module — registration against a real Postgres', () => {
     const queryRunner = setupDataSource.createQueryRunner();
     await new CreateUsersAndAccounts1784628665852().up(queryRunner);
     await new CreateSessions1784642459395().up(queryRunner);
+    await new CreatePushTokens1784616220824().up(queryRunner);
     await queryRunner.release();
     await setupDataSource.destroy();
 
     const config: AppConfig = {
       app: { env: 'test', port: 0, corsAllowedOrigins: [] },
       database: { url: postgres.getConnectionUri() },
-      redis: { url: 'redis://localhost:6379' },
+      redis: {
+        url: `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`,
+      },
       sentry: { dsn: undefined },
       rateLimit: { ttlMs: 60_000, limit: 100 },
       jwt: { secret: 'test-jwt-secret-at-least-32-characters-long' },
@@ -115,6 +144,7 @@ describe('Auth module — registration against a real Postgres', () => {
           useFactory: (cfg: AppConfig) => buildDataSourceOptions(cfg),
         }),
         AuthModule,
+        NotificationsModule,
       ],
     }).compile();
 
@@ -125,11 +155,13 @@ describe('Auth module — registration against a real Postgres', () => {
     dataSource = moduleRef.get(DataSource);
     userRepo = dataSource.getRepository(User);
     accountRepo = dataSource.getRepository(Account);
+    emailAdapter = moduleRef.get(EMAIL_SENDER);
   });
 
   afterAll(async () => {
     await app?.close();
     await postgres?.stop();
+    await redis?.stop();
   });
 
   it('creates the user and a matching zero-balance NGN wallet atomically', async () => {
@@ -337,6 +369,7 @@ describe('Auth module — registration against a real Postgres', () => {
       // caught by the one-generation window — only the immediately-superseded
       // token is. Replaying the token one generation back (secondToken, which
       // is now previousTokenHash) is the reuse case that must revoke.
+      const emailsBefore = emailAdapter.sent.length;
       await expect(
         authService.refresh({ refreshToken: secondToken }),
       ).rejects.toBeInstanceOf(SessionRevokedException);
@@ -345,6 +378,14 @@ describe('Auth module — registration against a real Postgres', () => {
       await expect(
         authService.refresh({ refreshToken: thirdToken }),
       ).rejects.toBeInstanceOf(InvalidRefreshTokenException);
+
+      // The reuse-detected revoke also fires a security_alert through the
+      // real domain-events queue — not just an EventBusService.publish()
+      // call in isolation (that's covered by the unit test).
+      await waitFor(() => emailAdapter.sent.length > emailsBefore);
+      expect(emailAdapter.sent.at(-1)).toMatchObject({
+        to: 'rotate@example.com',
+      });
     });
 
     it('rejects an unrecognized refresh token with no side effects', async () => {

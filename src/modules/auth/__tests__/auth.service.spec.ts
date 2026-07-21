@@ -1,6 +1,7 @@
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 import { DataSource, EntityManager } from 'typeorm';
+import { EventBusService } from '../../../shared/events/event-bus.service';
 import { AuthService } from '../auth.service';
 import { LedgerService } from '../../ledger/ledger.service';
 import { User } from '../entities/user.entity';
@@ -70,6 +71,7 @@ describe('AuthService.register', () => {
       dataSource as unknown as DataSource,
       ledgerService as unknown as LedgerService,
       { signAsync: jest.fn() } as unknown as JwtService,
+      { publish: jest.fn() } as unknown as EventBusService,
     );
   });
 

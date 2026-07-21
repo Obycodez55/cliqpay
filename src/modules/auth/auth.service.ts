@@ -4,6 +4,11 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { DataSource } from 'typeorm';
 import { runInTransaction } from '../../database/transaction.util';
+import {
+  SECURITY_ALERT_EVENT,
+  SecurityAlertEventPayload,
+} from '../../shared/events/domain-events';
+import { EventBusService } from '../../shared/events/event-bus.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { Session } from './entities/session.entity';
 import { User } from './entities/user.entity';
@@ -50,6 +55,7 @@ export class AuthService {
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly ledgerService: LedgerService,
     private readonly jwtService: JwtService,
+    private readonly eventBus: EventBusService,
   ) {}
 
   async register(dto: RegisterDto): Promise<RegisterResponseDto> {
@@ -157,12 +163,30 @@ export class AuthService {
       // A previous-generation token being replayed after the legitimate
       // client already rotated past it is a theft signal — see
       // docs/architecture.md §3.7.
-      const previousMatch = await sessionRepo.findOneBy({
-        previousTokenHash: hash,
+      const previousMatch = await sessionRepo.findOne({
+        where: { previousTokenHash: hash },
+        relations: { user: true },
       });
       if (previousMatch) {
         previousMatch.status = 'revoked';
         await sessionRepo.save(previousMatch);
+
+        // Published after the revoke above has committed, per
+        // EventBusService's own rule — auth (core) can't call
+        // NotificationService (peripheral) directly, so this goes through
+        // the shared event bus; notifications' existing fire-and-forget
+        // processor picks it up by job name.
+        await this.eventBus.publish<string, SecurityAlertEventPayload>({
+          name: SECURITY_ALERT_EVENT,
+          payload: {
+            userId: previousMatch.userId,
+            email: previousMatch.user!.email,
+            message:
+              'We detected an already-used refresh token being replayed and revoked the affected session for your protection. If this wasn’t you, please change your password.',
+          },
+          occurredAt: new Date(),
+        });
+
         throw new SessionRevokedException();
       }
       throw new InvalidRefreshTokenException();
