@@ -3,9 +3,8 @@ import { z } from 'zod';
 
 // Only env vars something in the app actually reads. Add a new namespace
 // here in the same change that wires it up — not ahead of time. See
-// docs/architecture.md for what each phase needs; jwt/encryption/kora
-// belong here once auth, KYC/BVN storage, and payments respectively are
-// built, not before.
+// docs/architecture.md for what each phase needs; encryption/kora belong
+// here once KYC/BVN storage and payments respectively are built, not before.
 const envSchema = z
   .object({
     NODE_ENV: z
@@ -22,6 +21,8 @@ const envSchema = z
 
     RATE_LIMIT_TTL_MS: z.coerce.number().positive().default(60_000),
     RATE_LIMIT_LIMIT: z.coerce.number().positive().default(100),
+
+    JWT_SECRET: z.string().min(32),
 
     // Named per concrete provider, not a real/fake toggle — `fake` is just
     // another option in the same set, so adding a second real provider for a
@@ -100,6 +101,9 @@ function buildConfig(env: Env) {
     rateLimit: {
       ttlMs: env.RATE_LIMIT_TTL_MS,
       limit: env.RATE_LIMIT_LIMIT,
+    },
+    jwt: {
+      secret: env.JWT_SECRET,
     },
     notifications: {
       emailProvider: env.EMAIL_PROVIDER,
