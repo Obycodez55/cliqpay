@@ -3,25 +3,79 @@ import { z } from 'zod';
 
 // Only env vars something in the app actually reads. Add a new namespace
 // here in the same change that wires it up — not ahead of time. See
-// docs/architecture.md for what each phase needs; jwt/encryption/kora/brevo
-// belong here once auth, KYC/BVN storage, payments, and email respectively
-// are built, not before.
-const envSchema = z.object({
-  NODE_ENV: z
-    .enum(['development', 'test', 'production'])
-    .default('development'),
-  PORT: z.coerce.number().int().positive().default(3000),
-  CORS_ALLOWED_ORIGINS: z.string().default(''),
+// docs/architecture.md for what each phase needs; jwt/encryption/kora
+// belong here once auth, KYC/BVN storage, and payments respectively are
+// built, not before.
+const envSchema = z
+  .object({
+    NODE_ENV: z
+      .enum(['development', 'test', 'production'])
+      .default('development'),
+    PORT: z.coerce.number().int().positive().default(3000),
+    CORS_ALLOWED_ORIGINS: z.string().default(''),
 
-  DATABASE_URL: z.string().url(),
+    DATABASE_URL: z.string().url(),
 
-  REDIS_URL: z.string().url(),
+    REDIS_URL: z.string().url(),
 
-  SENTRY_DSN: z.string().url().optional().or(z.literal('')),
+    SENTRY_DSN: z.string().url().optional().or(z.literal('')),
 
-  RATE_LIMIT_TTL_MS: z.coerce.number().positive().default(60_000),
-  RATE_LIMIT_LIMIT: z.coerce.number().positive().default(100),
-});
+    RATE_LIMIT_TTL_MS: z.coerce.number().positive().default(60_000),
+    RATE_LIMIT_LIMIT: z.coerce.number().positive().default(100),
+
+    // Named per concrete provider, not a real/fake toggle — `fake` is just
+    // another option in the same set, so adding a second real provider for a
+    // channel (e.g. SES alongside Brevo) is adding an enum value, not
+    // reshaping this into something else.
+    EMAIL_PROVIDER: z.enum(['brevo', 'fake']).default('fake'),
+    SMS_PROVIDER: z.enum(['termii', 'fake']).default('fake'),
+    PUSH_PROVIDER: z.enum(['fcm', 'fake']).default('fake'),
+
+    BREVO_API_KEY: z.string().optional(),
+    BREVO_SENDER_EMAIL: z.string().optional(),
+    BREVO_SENDER_NAME: z.string().optional(),
+
+    TERMII_API_KEY: z.string().optional(),
+    TERMII_SENDER_ID: z.string().optional(),
+
+    FIREBASE_PROJECT_ID: z.string().optional(),
+    FIREBASE_CLIENT_EMAIL: z.string().optional(),
+    FIREBASE_PRIVATE_KEY: z.string().optional(),
+  })
+  .superRefine((env, ctx) => {
+    // A provider's own credentials are only required when it's the one
+    // actually selected — this is what lets EMAIL_PROVIDER=fake (etc., the
+    // default) run with zero real credentials configured.
+    const requireWhen = (
+      condition: boolean,
+      fields: { path: string; value: string | undefined }[],
+    ) => {
+      if (!condition) return;
+      for (const { path, value } of fields) {
+        if (!value) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [path],
+            message: `${path} is required when its provider is selected`,
+          });
+        }
+      }
+    };
+
+    requireWhen(env.EMAIL_PROVIDER === 'brevo', [
+      { path: 'BREVO_API_KEY', value: env.BREVO_API_KEY },
+      { path: 'BREVO_SENDER_EMAIL', value: env.BREVO_SENDER_EMAIL },
+    ]);
+    requireWhen(env.SMS_PROVIDER === 'termii', [
+      { path: 'TERMII_API_KEY', value: env.TERMII_API_KEY },
+      { path: 'TERMII_SENDER_ID', value: env.TERMII_SENDER_ID },
+    ]);
+    requireWhen(env.PUSH_PROVIDER === 'fcm', [
+      { path: 'FIREBASE_PROJECT_ID', value: env.FIREBASE_PROJECT_ID },
+      { path: 'FIREBASE_CLIENT_EMAIL', value: env.FIREBASE_CLIENT_EMAIL },
+      { path: 'FIREBASE_PRIVATE_KEY', value: env.FIREBASE_PRIVATE_KEY },
+    ]);
+  });
 
 type Env = z.infer<typeof envSchema>;
 
@@ -46,6 +100,25 @@ function buildConfig(env: Env) {
     rateLimit: {
       ttlMs: env.RATE_LIMIT_TTL_MS,
       limit: env.RATE_LIMIT_LIMIT,
+    },
+    notifications: {
+      emailProvider: env.EMAIL_PROVIDER,
+      smsProvider: env.SMS_PROVIDER,
+      pushProvider: env.PUSH_PROVIDER,
+      brevo: {
+        apiKey: env.BREVO_API_KEY,
+        senderEmail: env.BREVO_SENDER_EMAIL,
+        senderName: env.BREVO_SENDER_NAME,
+      },
+      termii: {
+        apiKey: env.TERMII_API_KEY,
+        senderId: env.TERMII_SENDER_ID,
+      },
+      firebase: {
+        projectId: env.FIREBASE_PROJECT_ID,
+        clientEmail: env.FIREBASE_CLIENT_EMAIL,
+        privateKey: env.FIREBASE_PRIVATE_KEY,
+      },
     },
   };
 }

@@ -9,6 +9,7 @@ import { CommonModule } from './common/common.module';
 import { RateLimitModule } from './rate-limit/rate-limit.module';
 import { RedisModule } from './redis/redis.module';
 import { EventBusModule } from './shared/events/event-bus.module';
+import { NotificationsModule } from './modules/notifications/notifications.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { EventBusModule } from './shared/events/event-bus.module';
     RateLimitModule,
     RedisModule,
     EventBusModule,
+    NotificationsModule,
     TerminusModule,
   ],
   controllers: [AppController],

@@ -57,7 +57,8 @@ export default tseslint.config(
         },
         {
           type: 'peripheral-module',
-          pattern: 'src/modules/{kyc,fraud,social,billsplit,scheduling}',
+          pattern:
+            'src/modules/{kyc,fraud,social,billsplit,scheduling,notifications}',
         },
         {
           type: 'shared',
@@ -75,7 +76,7 @@ export default tseslint.config(
               from: { element: { type: 'core-module' } },
               disallow: { to: { element: { type: 'peripheral-module' } } },
               message:
-                'Core modules (ledger, payments, auth) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling) — see docs/architecture.md §10.',
+                'Core modules (ledger, payments, auth) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
             },
           ],
         },
@@ -91,6 +92,12 @@ export default tseslint.config(
           policies: [
             { target: { type: 'core-module' }, allow: '*.service.ts' },
             { target: { type: 'peripheral-module' }, allow: '*.service.ts' },
+            // shared/primitives and shared/events are explicitly the one
+            // exception to module isolation (docs/architecture.md §10) —
+            // without this, the default 'disallow' blocks every module from
+            // importing the event bus or Money/etc, since 'shared' isn't a
+            // target type either of the two policies above cover.
+            { target: { type: 'shared' }, allow: '**/*' },
           ],
           message:
             "Only a module's exported <name>.service.ts is importable from outside that module — see docs/architecture.md §10.",

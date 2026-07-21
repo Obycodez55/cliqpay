@@ -5,7 +5,11 @@ import {
   BULLMQ_REDIS_CONNECTION,
   BullmqConnectionModule,
 } from './bullmq-connection.module';
-import { DOMAIN_EVENTS_QUEUE, EventBusService } from './event-bus.service';
+import {
+  DOMAIN_EVENTS_QUEUE,
+  EventBusService,
+  PRIORITY_DISPATCH_QUEUE,
+} from './event-bus.service';
 
 @Module({
   imports: [
@@ -15,7 +19,23 @@ import { DOMAIN_EVENTS_QUEUE, EventBusService } from './event-bus.service';
       inject: [BULLMQ_REDIS_CONNECTION],
       useFactory: (connection: Redis) => ({ connection }),
     }),
-    BullModule.registerQueue({ name: DOMAIN_EVENTS_QUEUE }),
+    BullModule.registerQueue({
+      name: DOMAIN_EVENTS_QUEUE,
+      defaultJobOptions: {
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 1000 },
+      },
+    }),
+    // Awaited callers set their own timeout, so total job time needs to fit
+    // inside whatever that is — retries here are few and fast rather than
+    // the queue above's slower backoff. See EventBusService.dispatchAndAwait.
+    BullModule.registerQueue({
+      name: PRIORITY_DISPATCH_QUEUE,
+      defaultJobOptions: {
+        attempts: 2,
+        backoff: { type: 'fixed', delay: 300 },
+      },
+    }),
   ],
   providers: [EventBusService],
   exports: [EventBusService],
