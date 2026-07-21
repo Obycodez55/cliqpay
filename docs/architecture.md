@@ -129,7 +129,7 @@ Since only Kora is active right now, none of this changes day-one behavior — i
 
 Auth was originally scoped as "JWT + refresh, bcrypt, rate limiting" — that's the minimum, not a full design for an app moving real money. Two principles now apply:
 
-- **Sessions must be revocable, and reuse must be detected.** Refresh tokens are DB-backed (`refresh_tokens`, hashed, never stored raw), not purely stateless — a stolen phone can have its session killed on demand. Every token in one login's rotation chain shares a `sessionFamilyId`; if a token that's already been rotated or revoked is presented again, that's a theft signal, not a normal error — the entire family is revoked immediately, not just that one request.
+- **Sessions must be revocable, and reuse must be detected.** **[v7.1]** One `sessions` row per login (not a row per issued refresh token) — a stolen phone can have its session killed on demand. Each session stores `currentTokenHash` and `previousTokenHash` (SHA-256, not bcrypt — a refresh token is a high-entropy random value, not a human secret, so nothing is gained from deliberate slowness, and a fast hash keeps the lookup indexable); rotation updates both in place. Presenting a token that matches `previousTokenHash` — an already-superseded token being replayed — is a theft signal and revokes the session immediately; presenting one that matches neither is just an invalid token, no session-wide action. Logout uses the same `status = revoked` mechanism, row kept, not deleted, rather than a separate delete path. This is a one-generation reuse-detection window, not unbounded lineage, traded deliberately for a table that doesn't grow one row per rotation forever.
 - **Logging in and moving money are different trust levels.** A valid session proves who you are; it should not by itself be sufficient to move money. A separate transaction PIN (distinct from the login password) is required before P2P sends, withdrawals, or bank account changes — so a hijacked session alone can't drain a wallet. MFA (email, SMS, authenticator app, or a security key — a user may enroll more than one) is required for login on new devices and for high-risk actions (large withdrawal, adding a bank account, changing password or email), not necessarily every login on a trusted device.
 
 Password reset and email verification (wallet unusable until the email is verified) round this out — unglamorous, but skipping them is how "JWT + refresh" quietly becomes the whole security model instead of one piece of it.
@@ -138,7 +138,7 @@ Password reset and email verification (wallet unusable until the email is verifi
 
 MFA is a **challenge/verify** cycle (`mfa_challenges`), not a single check: a challenge is created against one enrolled method (email/SMS code, TOTP, or a WebAuthn assertion for a security key), and a separate call verifies it before tokens are issued. It only fires when needed — a **device-trust window** (`trusted_devices`, ~30 days) lets a recognized device skip MFA on ordinary login, while **step-up challenges** fire unconditionally regardless of device trust for changing security-relevant settings (password, email, MFA methods, bank accounts) or withdrawals above a threshold — being logged in on a trusted device doesn't grant permission to change the account's own security surface without re-proving it's the account owner.
 
-**Recovery matters as much as enrollment:** ten one-time `mfa_recovery_codes` are generated at first enrollment, shown once, hashed at rest — without this, losing a phone (TOTP + SMS both gone, no security key) is a permanent lockout. Using a recovery code forces immediate re-enrollment of at least one method before anything else is allowed.
+**[v7.1, deferred]** `mfa_recovery_codes` — not being built for now. The original reasoning (losing a phone with TOTP + SMS both gone is a permanent lockout) doesn't apply once email MFA is made a permanent, non-removable baseline method every account always has: "locked out of every enrolled method" then collapses to "lost the email account," which already breaks login and password reset independently of MFA — there's no reachable state recovery codes would rescue. Revisit only if email MFA's permanence is ever relaxed.
 
 **The four methods are not equivalent security, and the design shouldn't imply they are:** security key (phishing-resistant) > TOTP > email > SMS (weakest — SIM-swap is a real, documented attack vector, not a theoretical one). All four are offered for accessibility, but TOTP/security-key should be nudged as primary in the UI rather than presented as interchangeable. SMS challenge dispatch also needs its own per-user rate limit, separate from login rate limiting, or it becomes a free vector for cost abuse or harassment.
 
@@ -374,10 +374,10 @@ Each phase exits with a working, production-quality slice of the system. No phas
 - **[v3.1]** `CHECK` constraint on `accounts.provider` / `transactions.provider` initially allows only `'kora'`
 - **[v2/v3]** Seed system accounts per active currency, scoped by role + provider where applicable (`float_ngn`, `fee_expense_ngn`, `fee_recovery_ngn` with `provider = 'kora'`; `fee_income_ngn` with `provider = null`) — currency list is configurable, only NGN active initially
 - Auth — register, login, logout
-- **[v4]** JWT access tokens (short-lived) + DB-backed `refresh_tokens` (rotated on use, revocable, grouped by `sessionFamilyId` for replay detection — see §3.7)
-- **[v4]** Email verification required before a wallet becomes usable
-- **[v4]** Password reset flow (`password_reset_tokens`, single-use, expiring)
-- **[v4]** MFA enrollment (`mfa_methods` — email, SMS, authenticator app, security key; more than one may be enrolled) and the supporting challenge/verify flow (`mfa_challenges`, `trusted_devices`, `mfa_recovery_codes` — see §3.8), required for new-device login and high-risk actions
+- **[v4]** JWT access tokens (short-lived) + **[v7.1]** DB-backed `sessions` (one row per login, rotated in place on refresh, revocable, `currentTokenHash`/`previousTokenHash` for replay detection — see §3.7)
+- **[v4]** Email verification, built but not yet gating anything in Phase 1 — no Phase 1 endpoint checks it yet
+- **[v4, v7.1]** Password reset flow, sharing a purpose-tagged `verification_codes` table with email/phone verification (single-use, expiring) rather than its own dedicated table
+- **[v4]** MFA enrollment (`mfa_methods` — email mandatory and non-removable, TOTP optional in Phase 1; SMS/security key deferred per the build-order note below) and the supporting challenge/verify flow (`mfa_challenges`, `trusted_devices` — see §3.8), required for new-device login and high-risk actions
 - **[v4]** Separate transaction PIN (`transactionPinHash` on `User`, distinct from login password) required before any money-moving action — added here structurally even though it's not enforced until Phase 3/4
 - **[v4]** Account lockout after repeated failed login attempts (`failedLoginAttempts`, `lockedUntil`), rate-limited per-IP **and** per-account
 - Password hashing (bcrypt)
@@ -625,7 +625,7 @@ These are non-negotiable standards applied across all phases, not deferred to a 
 - Pagination on all list endpoints
 - Versioned API routes (`/v1/`)
 - Comprehensive input validation with descriptive error messages
-- **[v7]** OpenAPI/Swagger docs generated from NestJS decorators, from Phase 1 — cheap now, and it's the reference the separate mobile and admin repos will build against later
+- **[v7.1, deferred]** OpenAPI/Swagger docs generated from NestJS decorators — originally scoped for Phase 1 as cheap-now groundwork for the separate mobile/admin repos, but not being added for now; revisit once a client repo actually needs the reference
 
 ---
 
