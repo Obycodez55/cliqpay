@@ -39,6 +39,11 @@ const DEFAULT_AWAIT_TIMEOUT_MS = 5_000;
 @Injectable()
 export class EventBusService implements OnModuleInit, OnModuleDestroy {
   private priorityQueueEvents!: QueueEvents;
+  // QueueEvents.close() only tears down its own listeners — BullMQ never
+  // quits a connection it didn't create itself, and a duplicated connection
+  // we handed it is exactly that case. Held separately so it can be quit
+  // explicitly, or it leaks as a dangling open socket after shutdown.
+  private priorityQueueEventsConnection!: Redis;
 
   constructor(
     @InjectQueue(DOMAIN_EVENTS_QUEUE) private readonly queue: Queue,
@@ -48,13 +53,15 @@ export class EventBusService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   onModuleInit(): void {
+    this.priorityQueueEventsConnection = this.connection.duplicate();
     this.priorityQueueEvents = new QueueEvents(PRIORITY_DISPATCH_QUEUE, {
-      connection: this.connection.duplicate(),
+      connection: this.priorityQueueEventsConnection,
     });
   }
 
   async onModuleDestroy(): Promise<void> {
     await this.priorityQueueEvents.close();
+    await this.priorityQueueEventsConnection.quit();
   }
 
   async publish<TName extends string, TPayload>(
