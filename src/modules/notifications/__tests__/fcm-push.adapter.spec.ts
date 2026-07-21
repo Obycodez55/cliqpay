@@ -80,4 +80,23 @@ describe('FcmPushAdapter', () => {
     expect(caught).not.toBeInstanceOf(UnrecoverableError);
     expect(pushTokens.delete).not.toHaveBeenCalled();
   });
+
+  it('throws a plain (retryable) Error for an unrecognized FCM error code', async () => {
+    sendMock.mockRejectedValue({
+      code: 'messaging/some-new-error-we-dont-know-about',
+    });
+    const adapter = new FcmPushAdapter(
+      buildConfig(),
+      pushTokens as unknown as Repository<PushToken>,
+    );
+    let caught: unknown;
+    try {
+      await adapter.send(message);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect(caught).not.toBeInstanceOf(UnrecoverableError);
+    expect(pushTokens.delete).not.toHaveBeenCalled();
+  });
 });

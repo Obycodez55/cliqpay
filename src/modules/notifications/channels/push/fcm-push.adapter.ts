@@ -60,9 +60,13 @@ export class FcmPushAdapter implements PushSender {
       if (code && TRANSIENT_CODES.has(code)) {
         throw new Error(`FcmPushAdapter: ${code}`);
       }
-      throw new UnrecoverableError(
-        `FcmPushAdapter: ${code ?? (error as Error).message}`,
-      );
+      // Unrecognized error shape — assume transient rather than give up
+      // immediately, matching classifyHttpFailure's default for Brevo/Termii
+      // (src/modules/notifications/internal/errors.ts). A genuinely
+      // permanent unknown error still fails the job for good once retries
+      // are exhausted; the risk of the opposite default is silently
+      // dropping a real send over an error code we just haven't seen yet.
+      throw new Error(`FcmPushAdapter: ${code ?? (error as Error).message}`);
     }
   }
 }
