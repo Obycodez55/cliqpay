@@ -7,6 +7,8 @@ import {
   ManyToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+import { DeviceMetadata } from '../internal/device-metadata.util';
+import { TrustedDevice } from './trusted-device.entity';
 import { User } from './user.entity';
 
 export type SessionStatus = 'active' | 'revoked';
@@ -39,10 +41,16 @@ export class Session {
   @Column({ type: 'varchar', default: 'active' })
   status: SessionStatus;
 
-  // Nullable, unwired until the MFA slice (issue #4) — see
-  // docs/architecture.md §3.7. No FK: trusted_devices doesn't exist yet.
+  @Index()
   @Column({ type: 'uuid', nullable: true })
   trustedDeviceId: string | null;
+
+  @ManyToOne(() => TrustedDevice)
+  @JoinColumn({ name: 'trusted_device_id' })
+  trustedDevice?: TrustedDevice;
+
+  @Column({ type: 'jsonb' })
+  device: DeviceMetadata;
 
   @Column({ type: 'timestamp' })
   expiresAt: Date;

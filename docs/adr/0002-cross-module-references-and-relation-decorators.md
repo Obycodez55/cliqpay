@@ -18,6 +18,8 @@ Two rules, applied together:
 
 This is a broader instance of the same reasoning behind the modular-monolith structure in general: keep the option to physically split a module open, and don't let convenience (an eager-loadable relation, a FK-enforced join) quietly reintroduce the coupling the module boundaries exist to prevent.
 
+**[2026-07-21, amended]** Rule 2 above was written from `Session.user`'s example and read as reactive — add a relation once some caller happens to want a join. Clarified during issue #4's review: the default is proactive. Every same-module FK gets its additive relation decorator at the point the FK itself is added in the migration, not deferred until a query needs it — the schema should show its relationships as directly as it can, and a caller that never ends up using `relations: [...]` costs nothing for the decorator having been there. `MfaChallenge.method`, `MfaMethod.user`, and `TrustedDevice.user` (all issue #4) are the first entities built under this reading; `Session.user`/`Session.trustedDevice` remain correct under it too, just no longer read as exceptional.
+
 ## Alternatives considered
 
 - **FK constraints and relation decorators everywhere, module boundaries be damned** — rejected; this is the normal default for a single-database app with no split planned, but it's explicitly not this project's bet (see architecture.md §10's own reasoning about future extraction), and it would silently reintroduce a hard dependency between modules that the lint-enforced import boundary is supposed to prevent at the code level.

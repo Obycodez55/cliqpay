@@ -24,6 +24,15 @@ const envSchema = z
 
     JWT_SECRET: z.string().min(32),
 
+    // AES-256-GCM key for encrypting TOTP secrets at rest — 32 bytes as hex.
+    // Generate with `openssl rand -hex 32`.
+    ENCRYPTION_KEY: z
+      .string()
+      .regex(
+        /^[0-9a-fA-F]{64}$/,
+        'ENCRYPTION_KEY must be a 64-character hex string (32 bytes)',
+      ),
+
     // Named per concrete provider, not a real/fake toggle — `fake` is just
     // another option in the same set, so adding a second real provider for a
     // channel (e.g. SES alongside Brevo) is adding an enum value, not
@@ -104,6 +113,9 @@ function buildConfig(env: Env) {
     },
     jwt: {
       secret: env.JWT_SECRET,
+    },
+    encryption: {
+      key: env.ENCRYPTION_KEY,
     },
     notifications: {
       emailProvider: env.EMAIL_PROVIDER,

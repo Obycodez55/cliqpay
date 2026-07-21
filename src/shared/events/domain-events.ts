@@ -26,3 +26,20 @@ export interface SecurityAlertEventPayload {
   email: string;
   message: string;
 }
+
+// Published by auth when a login on an untrusted device creates an
+// email-method MFA challenge (issue #4) — dispatched via
+// EventBusService.dispatchAndAwait since the caller needs to know the send
+// succeeded before telling the user a code is on its way. Same
+// structurally-compatible-shape-not-imported-type reasoning as
+// SecurityAlertEventPayload above; the name matches notifications'
+// `mfa_challenge_otp` catalog entry so its existing OTP processor picks it
+// up by job name.
+export const MFA_CHALLENGE_OTP_EVENT = 'mfa_challenge_otp';
+
+export interface MfaChallengeOtpEventPayload {
+  userId: string;
+  email: string;
+  code: string;
+  expiresInMinutes: number;
+}
