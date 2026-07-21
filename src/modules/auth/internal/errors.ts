@@ -25,6 +25,37 @@ export class PhoneAlreadyRegisteredException extends DomainException {
   }
 }
 
+export class InvalidCredentialsException extends DomainException {
+  readonly code = 'AUTH_INVALID_CREDENTIALS';
+  constructor() {
+    super('Invalid email or password', HttpStatus.UNAUTHORIZED);
+  }
+}
+
+export class AccountLockedException extends DomainException {
+  readonly code = 'ACCOUNT_LOCKED';
+  constructor(lockedUntil: Date) {
+    super(
+      `Account locked until ${lockedUntil.toISOString()} after too many failed login attempts`,
+      HttpStatus.LOCKED,
+    );
+  }
+}
+
+export class InvalidRefreshTokenException extends DomainException {
+  readonly code = 'INVALID_REFRESH_TOKEN';
+  constructor() {
+    super('Invalid refresh token', HttpStatus.UNAUTHORIZED);
+  }
+}
+
+export class SessionRevokedException extends DomainException {
+  readonly code = 'SESSION_REVOKED';
+  constructor() {
+    super('Session has been revoked', HttpStatus.UNAUTHORIZED);
+  }
+}
+
 const CONSTRAINT_EXCEPTIONS: Record<string, () => DomainException> = {
   UQ_users_email: () => new EmailAlreadyRegisteredException(),
   UQ_users_username: () => new UsernameAlreadyTakenException(),
