@@ -14,7 +14,6 @@ function buildDto(overrides: Partial<RegisterDto> = {}): RegisterDto {
   return Object.assign(new RegisterDto(), {
     email: 'ada@example.com',
     password: 'a-strong-unique-passphrase',
-    pin: '1234',
     firstName: 'Ada',
     lastName: 'Lovelace',
     username: 'ada_l',
@@ -72,23 +71,17 @@ describe('AuthService.register', () => {
     );
   });
 
-  it('hashes the password and pin with bcrypt and never returns them', async () => {
+  it('hashes the password with bcrypt, never returns it, and leaves the PIN unset', async () => {
     const dto = buildDto();
 
     const result = await service.register(dto);
 
     const savedUser = userRepo.save.mock.calls[0][0];
     expect(savedUser.passwordHash).not.toBe(dto.password);
-    expect(savedUser.transactionPinHash).not.toBe(dto.pin);
     await expect(
       bcrypt.compare(dto.password, savedUser.passwordHash),
     ).resolves.toBe(true);
-    await expect(
-      bcrypt.compare(dto.pin, savedUser.transactionPinHash),
-    ).resolves.toBe(true);
-    const serialized = JSON.stringify(result);
-    expect(serialized).not.toContain(savedUser.passwordHash);
-    expect(serialized).not.toContain(savedUser.transactionPinHash);
+    expect(JSON.stringify(result)).not.toContain(savedUser.passwordHash);
   });
 
   it('creates the wallet inside the same transaction as the user insert', async () => {

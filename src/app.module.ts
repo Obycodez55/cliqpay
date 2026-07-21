@@ -10,6 +10,8 @@ import { RateLimitModule } from './rate-limit/rate-limit.module';
 import { RedisModule } from './redis/redis.module';
 import { EventBusModule } from './shared/events/event-bus.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
+import { LedgerModule } from './modules/ledger/ledger.module';
+import { AuthModule } from './modules/auth/auth.module';
 
 @Module({
   imports: [
@@ -21,6 +23,8 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
     RedisModule,
     EventBusModule,
     NotificationsModule,
+    LedgerModule,
+    AuthModule,
     TerminusModule,
   ],
   controllers: [AppController],
