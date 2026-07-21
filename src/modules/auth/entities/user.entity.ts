@@ -29,8 +29,8 @@ export class User {
   @Column({ type: 'varchar', unique: true })
   phone: string;
 
-  @Column('varchar')
-  transactionPinHash: string;
+  @Column({ type: 'varchar', nullable: true })
+  transactionPinHash: string | null;
 
   @Column({ type: 'timestamp', nullable: true })
   emailVerifiedAt: Date | null;

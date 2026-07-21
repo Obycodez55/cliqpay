@@ -14,7 +14,7 @@ export class CreateUsersAndAccounts1784628665852 implements MigrationInterface {
         "last_name" varchar NOT NULL,
         "username" varchar NOT NULL,
         "phone" varchar NOT NULL,
-        "transaction_pin_hash" varchar NOT NULL,
+        "transaction_pin_hash" varchar,
         "email_verified_at" TIMESTAMP,
         "phone_verified_at" TIMESTAMP,
         "failed_login_attempts" integer NOT NULL DEFAULT 0,
