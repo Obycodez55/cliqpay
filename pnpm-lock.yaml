@@ -53,6 +53,9 @@ importers:
       firebase-admin:
         specifier: ^14.2.0
         version: 14.2.0
+      handlebars:
+        specifier: ^4.7.9
+        version: 4.7.9
       helmet:
         specifier: ^8.3.0
         version: 8.3.0
