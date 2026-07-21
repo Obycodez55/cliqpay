@@ -1,4 +1,5 @@
 import * as bcrypt from 'bcrypt';
+import { JwtService } from '@nestjs/jwt';
 import { DataSource, EntityManager } from 'typeorm';
 import { AuthService } from '../auth.service';
 import { LedgerService } from '../../ledger/ledger.service';
@@ -68,6 +69,7 @@ describe('AuthService.register', () => {
     service = new AuthService(
       dataSource as unknown as DataSource,
       ledgerService as unknown as LedgerService,
+      { signAsync: jest.fn() } as unknown as JwtService,
     );
   });
 
