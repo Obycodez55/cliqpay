@@ -95,6 +95,9 @@ describe('Notifications module — end-to-end dispatch', () => {
       sentry: { dsn: undefined },
       rateLimit: { ttlMs: 60_000, limit: 100 },
       jwt: { secret: 'test-jwt-secret-at-least-32-characters-long' },
+      encryption: {
+        key: '0'.repeat(64),
+      },
       notifications: {
         emailProvider: 'fake',
         smsProvider: 'fake',

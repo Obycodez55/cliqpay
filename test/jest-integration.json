@@ -6,5 +6,8 @@
   "transform": {
     "^.+\\.(t|j)s$": "ts-jest"
   },
+  "transformIgnorePatterns": [
+    "node_modules/\\.pnpm/(?!(otplib|@otplib\\+|@scure\\+|@noble\\+))"
+  ],
   "testTimeout": 60000
 }
