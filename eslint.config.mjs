@@ -90,8 +90,20 @@ export default tseslint.config(
         {
           default: 'disallow',
           policies: [
-            { target: { type: 'core-module' }, allow: '*.service.ts' },
-            { target: { type: 'peripheral-module' }, allow: '*.service.ts' },
+            // *.module.ts is also allowed — a module's Module class is pure
+            // Nest DI wiring (no business logic), and another core module
+            // composing it into its own `imports: []` (e.g. auth importing
+            // LedgerModule) is normal modular-monolith structure, not a
+            // breach of "one exported service" — that rule is about
+            // reaching into a module's internals, not about DI composition.
+            {
+              target: { type: 'core-module' },
+              allow: '*.(service|module).ts',
+            },
+            {
+              target: { type: 'peripheral-module' },
+              allow: '*.(service|module).ts',
+            },
             // shared/primitives and shared/events are explicitly the one
             // exception to module isolation (docs/architecture.md §10) —
             // without this, the default 'disallow' blocks every module from
