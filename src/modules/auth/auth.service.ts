@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectDataSource } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
-import { DataSource } from 'typeorm';
+import { DataSource, EntityManager } from 'typeorm';
 import { runInTransaction } from '../../database/transaction.util';
 import {
   SECURITY_ALERT_EVENT,
@@ -14,8 +14,10 @@ import { Session } from './entities/session.entity';
 import { User } from './entities/user.entity';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { LoginResponseDto } from './dto/login-response.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { LogoutDto } from './dto/logout.dto';
+import { VerifyMfaChallengeDto } from './dto/verify-mfa-challenge.dto';
 import {
   RegisterResponseDto,
   toRegisterResponse,
@@ -31,10 +33,12 @@ import {
   SessionRevokedException,
   mapUsersUniqueViolation,
 } from './internal/errors';
+import { MfaService } from './mfa.service';
 import {
   generateRefreshToken,
   hashRefreshToken,
 } from './internal/refresh-token.util';
+import { DeviceMetadata } from './internal/device-metadata.util';
 
 const BCRYPT_SALT_ROUNDS = 10;
 const DEFAULT_WALLET_CURRENCY = 'NGN';
@@ -46,8 +50,8 @@ const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 
 /**
  * The one exported surface of the auth module — see docs/architecture.md
- * §10. MFA (issue #4) is a later slice; this covers registration, login,
- * session rotation/revocation, and lockout only.
+ * §10. Covers registration, login (including the MFA/trusted-device fork —
+ * see §3.8), session rotation/revocation, and lockout.
  */
 @Injectable()
 export class AuthService {
@@ -56,6 +60,7 @@ export class AuthService {
     private readonly ledgerService: LedgerService,
     private readonly jwtService: JwtService,
     private readonly eventBus: EventBusService,
+    private readonly mfaService: MfaService,
   ) {}
 
   async register(dto: RegisterDto): Promise<RegisterResponseDto> {
@@ -80,6 +85,9 @@ export class AuthService {
           mapUsersUniqueViolation(error);
         }
 
+        // Auto-enrolled, not a separate call
+        await this.mfaService.enrollEmailMethod(manager, user.id);
+
         const wallet = await this.ledgerService.createUserWallet(
           manager,
           user.id,
@@ -93,7 +101,16 @@ export class AuthService {
     return toRegisterResponse(user, wallet);
   }
 
-  async login(dto: LoginDto): Promise<TokenPairResponseDto> {
+  // `trustedDeviceToken` is the raw value from the cookie the controller
+  // read, or null if none was presented — see docs/architecture.md §3.8.
+  // `device` is required, not defaulted — Session.device is NOT NULL, so
+  // every caller has to supply a real value rather than the service
+  // silently making one up (see ADR-0003).
+  async login(
+    dto: LoginDto,
+    trustedDeviceToken: string | null,
+    device: DeviceMetadata,
+  ): Promise<LoginResponseDto> {
     const userRepo = this.dataSource.getRepository(User);
     const user = await userRepo.findOneBy({ email: dto.email });
     if (!user) {
@@ -124,32 +141,111 @@ export class AuthService {
       throw new InvalidCredentialsException();
     }
 
+    // The password proved correct regardless of what MFA does next, so this
+    // reset persists unconditionally — same immediate-plain-save shape as
+    // the wrong-password path above, not deferred into a transaction that
+    // might not run (the MFA-required fork below issues no session).
     user.failedLoginAttempts = 0;
     user.lockedUntil = null;
+    await userRepo.save(user);
 
-    const refreshToken = generateRefreshToken();
-    const session = await runInTransaction(this.dataSource, async (manager) => {
-      await manager.getRepository(User).save(user);
+    const trustedDevice = trustedDeviceToken
+      ? await this.mfaService.findValidTrustedDevice(
+          user.id,
+          trustedDeviceToken,
+        )
+      : null;
 
-      const sessionRepo = manager.getRepository(Session);
-      const session = sessionRepo.create({
-        userId: user.id,
-        currentTokenHash: hashRefreshToken(refreshToken),
-        previousTokenHash: null,
-        status: 'active',
-        trustedDeviceId: null,
-        expiresAt: new Date(now.getTime() + REFRESH_TOKEN_TTL_MS),
-        lastUsedAt: now,
-      });
-      return sessionRepo.save(session);
-    });
+    if (!trustedDevice) {
+      const challenge = await this.mfaService.createChallengeForLogin(user);
+      return { mfaRequired: true, ...challenge };
+    }
+
+    const { session, refreshToken } = await runInTransaction(
+      this.dataSource,
+      async (manager) => {
+        await this.mfaService.touchTrustedDevice(manager, trustedDevice, now);
+        return this.createSession(
+          manager,
+          user.id,
+          trustedDevice.id,
+          now,
+          device,
+        );
+      },
+    );
 
     const accessToken = await this.signAccessToken(user.id, session.id);
-    return toTokenPairResponse(
-      accessToken,
-      refreshToken,
-      ACCESS_TOKEN_TTL_SECONDS,
+    return {
+      mfaRequired: false,
+      ...toTokenPairResponse(
+        accessToken,
+        refreshToken,
+        ACCESS_TOKEN_TTL_SECONDS,
+      ),
+    };
+  }
+
+  // Verifies an MfaChallenge from an untrusted-device login and, on success,
+  // completes the login: issues a session plus a brand-new TrustedDevice
+  // linked to it (docs/architecture.md §3.8 — a verified challenge earns
+  // trust for next time, not just this login).
+  async verifyMfaChallenge(
+    dto: VerifyMfaChallengeDto,
+    device: DeviceMetadata,
+  ): Promise<{ tokens: TokenPairResponseDto; trustedDeviceToken: string }> {
+    const { userId } = await this.mfaService.verifyChallenge(
+      dto.challengeId,
+      dto.code,
     );
+
+    const now = new Date();
+    const { session, refreshToken, trustedDeviceToken } =
+      await runInTransaction(this.dataSource, async (manager) => {
+        const { device: trustedDevice, rawToken } =
+          await this.mfaService.issueTrustedDevice(manager, userId, device);
+        const { session, refreshToken } = await this.createSession(
+          manager,
+          userId,
+          trustedDevice.id,
+          now,
+          device,
+        );
+        return { session, refreshToken, trustedDeviceToken: rawToken };
+      });
+
+    const accessToken = await this.signAccessToken(userId, session.id);
+    return {
+      tokens: toTokenPairResponse(
+        accessToken,
+        refreshToken,
+        ACCESS_TOKEN_TTL_SECONDS,
+      ),
+      trustedDeviceToken,
+    };
+  }
+
+  private async createSession(
+    manager: EntityManager,
+    userId: string,
+    trustedDeviceId: string | null,
+    now: Date,
+    device: DeviceMetadata,
+  ): Promise<{ session: Session; refreshToken: string }> {
+    const refreshToken = generateRefreshToken();
+    const sessionRepo = manager.getRepository(Session);
+    const session = sessionRepo.create({
+      userId,
+      currentTokenHash: hashRefreshToken(refreshToken),
+      previousTokenHash: null,
+      status: 'active',
+      trustedDeviceId,
+      device,
+      expiresAt: new Date(now.getTime() + REFRESH_TOKEN_TTL_MS),
+      lastUsedAt: now,
+    });
+    await sessionRepo.save(session);
+    return { session, refreshToken };
   }
 
   async refresh(dto: RefreshDto): Promise<TokenPairResponseDto> {

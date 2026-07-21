@@ -5,6 +5,8 @@ import { EventBusModule } from '../../shared/events/event-bus.module';
 import { LedgerModule } from '../ledger/ledger.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
+import { MfaController } from './mfa.controller';
+import { MfaService } from './mfa.service';
 
 @Module({
   imports: [
@@ -15,8 +17,8 @@ import { AuthService } from './auth.service';
       useFactory: (config: AppConfig) => ({ secret: config.jwt.secret }),
     }),
   ],
-  controllers: [AuthController],
-  providers: [AuthService],
+  controllers: [AuthController, MfaController],
+  providers: [AuthService, MfaService],
   exports: [AuthService],
 })
 export class AuthModule {}

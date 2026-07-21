@@ -1,12 +1,23 @@
-import { Body, Controller, HttpCode, HttpStatus, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  HttpCode,
+  HttpStatus,
+  Post,
+  Req,
+} from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
+import { Request } from 'express';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { RegisterResponseDto } from './dto/register-response.dto';
 import { LoginDto } from './dto/login.dto';
+import { LoginResponseDto } from './dto/login-response.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { TokenPairResponseDto } from './dto/token-pair-response.dto';
+import { readTrustedDeviceCookie } from './internal/cookie.util';
+import { extractDeviceMetadata } from './internal/device-metadata.util';
 
 @Controller('auth')
 export class AuthController {
@@ -19,11 +30,19 @@ export class AuthController {
     return this.authService.register(dto);
   }
 
+  // No cookie is set here even on the mfaRequired:false (trusted-device
+  // skip) path — the client already holds a valid one, nothing to reissue.
+  // A fresh cookie is only ever minted on a successful MFA verify (see
+  // MfaController) — see docs/architecture.md §3.8.
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  login(@Body() dto: LoginDto): Promise<TokenPairResponseDto> {
-    return this.authService.login(dto);
+  login(@Body() dto: LoginDto, @Req() req: Request): Promise<LoginResponseDto> {
+    return this.authService.login(
+      dto,
+      readTrustedDeviceCookie(req),
+      extractDeviceMetadata(req),
+    );
   }
 
   @Post('refresh')

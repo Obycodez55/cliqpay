@@ -5,6 +5,7 @@ import { AuthService } from '../auth.service';
 import { LedgerService } from '../../ledger/ledger.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { Session } from '../entities/session.entity';
+import { TrustedDevice } from '../entities/trusted-device.entity';
 import { User } from '../entities/user.entity';
 import { LoginDto } from '../dto/login.dto';
 import { RefreshDto } from '../dto/refresh.dto';
@@ -15,7 +16,14 @@ import {
   InvalidRefreshTokenException,
   SessionRevokedException,
 } from '../internal/errors';
+import { MfaService } from '../mfa.service';
 import { hashRefreshToken } from '../internal/refresh-token.util';
+import { DeviceMetadata } from '../internal/device-metadata.util';
+
+const TEST_DEVICE: DeviceMetadata = {
+  ipAddress: '203.0.113.10',
+  userAgent: 'jest-test-agent',
+};
 
 jest.mock('bcrypt', () => ({
   compare: jest.fn(),
@@ -41,6 +49,20 @@ function buildUser(overrides: Partial<User> = {}): User {
     phoneVerifiedAt: null,
     failedLoginAttempts: 0,
     lockedUntil: null,
+    ...overrides,
+  });
+}
+
+function buildTrustedDevice(
+  overrides: Partial<TrustedDevice> = {},
+): TrustedDevice {
+  return Object.assign(new TrustedDevice(), {
+    id: 'device-1',
+    userId: 'user-1',
+    tokenHash: 'device-token-hash',
+    expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    createdAt: new Date(),
+    lastUsedAt: new Date(),
     ...overrides,
   });
 }
@@ -81,6 +103,22 @@ describe('AuthService — login, refresh, logout', () => {
   };
   let jwtService: { signAsync: jest.Mock<Promise<string>, unknown[]> };
   let eventBus: { publish: jest.Mock<Promise<void>, unknown[]> };
+  let mfaService: {
+    findValidTrustedDevice: jest.Mock<Promise<TrustedDevice | null>, unknown[]>;
+    touchTrustedDevice: jest.Mock<Promise<void>, unknown[]>;
+    createChallengeForLogin: jest.Mock<
+      Promise<{
+        challengeId: string;
+        method: 'email' | 'totp';
+        expiresAt: Date;
+      }>,
+      unknown[]
+    >;
+    issueTrustedDevice: jest.Mock<
+      Promise<{ device: TrustedDevice; rawToken: string }>,
+      unknown[]
+    >;
+  };
   let service: AuthService;
   let existingUser: User;
 
@@ -115,12 +153,32 @@ describe('AuthService — login, refresh, logout', () => {
       signAsync: jest.fn(() => Promise.resolve('signed.jwt.token')),
     };
     eventBus = { publish: jest.fn(() => Promise.resolve()) };
+    mfaService = {
+      // Default: no trusted device — most login tests below exercise the
+      // password/lockout logic, which runs before the device-trust check.
+      findValidTrustedDevice: jest.fn(() => Promise.resolve(null)),
+      touchTrustedDevice: jest.fn(() => Promise.resolve()),
+      createChallengeForLogin: jest.fn(() =>
+        Promise.resolve({
+          challengeId: 'challenge-1',
+          method: 'email' as const,
+          expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+        }),
+      ),
+      issueTrustedDevice: jest.fn(() =>
+        Promise.resolve({
+          device: buildTrustedDevice(),
+          rawToken: 'raw-trusted-device-token',
+        }),
+      ),
+    };
     bcryptCompare.mockReset();
     service = new AuthService(
       dataSource as unknown as DataSource,
       {} as LedgerService,
       jwtService as unknown as JwtService,
       eventBus as unknown as EventBusService,
+      mfaService as unknown as MfaService,
     );
   });
 
@@ -136,18 +194,18 @@ describe('AuthService — login, refresh, logout', () => {
     it('rejects an unknown email without touching any user row', async () => {
       userRepo.findOneBy.mockResolvedValueOnce(null);
 
-      await expect(service.login(loginDto())).rejects.toBeInstanceOf(
-        InvalidCredentialsException,
-      );
+      await expect(
+        service.login(loginDto(), null, TEST_DEVICE),
+      ).rejects.toBeInstanceOf(InvalidCredentialsException);
       expect(userRepo.save).not.toHaveBeenCalled();
     });
 
     it('rejects a locked account before comparing the password', async () => {
       existingUser.lockedUntil = new Date(Date.now() + 60_000);
 
-      await expect(service.login(loginDto())).rejects.toBeInstanceOf(
-        AccountLockedException,
-      );
+      await expect(
+        service.login(loginDto(), null, TEST_DEVICE),
+      ).rejects.toBeInstanceOf(AccountLockedException);
       expect(bcryptCompare).not.toHaveBeenCalled();
     });
 
@@ -155,9 +213,9 @@ describe('AuthService — login, refresh, logout', () => {
       existingUser.failedLoginAttempts = 2;
       bcryptCompare.mockResolvedValueOnce(false);
 
-      await expect(service.login(loginDto())).rejects.toBeInstanceOf(
-        InvalidCredentialsException,
-      );
+      await expect(
+        service.login(loginDto(), null, TEST_DEVICE),
+      ).rejects.toBeInstanceOf(InvalidCredentialsException);
       expect(userRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ failedLoginAttempts: 3, lockedUntil: null }),
       );
@@ -167,9 +225,9 @@ describe('AuthService — login, refresh, logout', () => {
       existingUser.failedLoginAttempts = 4;
       bcryptCompare.mockResolvedValueOnce(false);
 
-      await expect(service.login(loginDto())).rejects.toBeInstanceOf(
-        InvalidCredentialsException,
-      );
+      await expect(
+        service.login(loginDto(), null, TEST_DEVICE),
+      ).rejects.toBeInstanceOf(InvalidCredentialsException);
       const saved = userRepo.save.mock.calls[0][0];
       expect(saved.failedLoginAttempts).toBe(5);
       expect(saved.lockedUntil).toBeInstanceOf(Date);
@@ -181,20 +239,54 @@ describe('AuthService — login, refresh, logout', () => {
       existingUser.lockedUntil = new Date(Date.now() - 1000);
       bcryptCompare.mockResolvedValueOnce(false);
 
-      await expect(service.login(loginDto())).rejects.toBeInstanceOf(
-        InvalidCredentialsException,
-      );
+      await expect(
+        service.login(loginDto(), null, TEST_DEVICE),
+      ).rejects.toBeInstanceOf(InvalidCredentialsException);
       const saved = userRepo.save.mock.calls[0][0];
       expect(saved.failedLoginAttempts).toBe(1);
       expect(saved.lockedUntil).toBeNull();
     });
 
-    it('resets lockout state and issues a token pair on success', async () => {
+    it('creates an MFA challenge instead of issuing tokens when no device is trusted', async () => {
       existingUser.failedLoginAttempts = 3;
       bcryptCompare.mockResolvedValueOnce(true);
 
-      const result = await service.login(loginDto());
+      const result = await service.login(loginDto(), null, TEST_DEVICE);
 
+      expect(result.mfaRequired).toBe(true);
+      if (!result.mfaRequired) {
+        throw new Error('expected an MFA challenge, got tokens');
+      }
+      expect(result.challengeId).toBe('challenge-1');
+      expect(result.method).toBe('email');
+      expect(mfaService.createChallengeForLogin).toHaveBeenCalledWith(
+        existingUser,
+      );
+      expect(sessionRepo.create).not.toHaveBeenCalled();
+
+      // The password was still correct — lockout state resets regardless
+      // of what MFA does next.
+      expect(userRepo.save).toHaveBeenCalledWith(
+        expect.objectContaining({ failedLoginAttempts: 0, lockedUntil: null }),
+      );
+    });
+
+    it('resets lockout state and issues a token pair when the presented device is already trusted', async () => {
+      existingUser.failedLoginAttempts = 3;
+      bcryptCompare.mockResolvedValueOnce(true);
+      const trustedDevice = buildTrustedDevice();
+      mfaService.findValidTrustedDevice.mockResolvedValueOnce(trustedDevice);
+
+      const result = await service.login(
+        loginDto(),
+        'raw-trusted-device-token',
+        TEST_DEVICE,
+      );
+
+      expect(result.mfaRequired).toBe(false);
+      if (result.mfaRequired) {
+        throw new Error('expected tokens, got an MFA challenge');
+      }
       expect(result.tokenType).toBe('Bearer');
       expect(result.expiresIn).toBe(15 * 60);
       expect(typeof result.refreshToken).toBe('string');
@@ -206,6 +298,11 @@ describe('AuthService — login, refresh, logout', () => {
       expect(userRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ failedLoginAttempts: 0, lockedUntil: null }),
       );
+      expect(mfaService.touchTrustedDevice).toHaveBeenCalledWith(
+        expect.anything(),
+        trustedDevice,
+        expect.any(Date),
+      );
 
       const savedSession = sessionRepo.save.mock.calls[0][0];
       expect(savedSession.currentTokenHash).toBe(
@@ -213,6 +310,8 @@ describe('AuthService — login, refresh, logout', () => {
       );
       expect(savedSession.previousTokenHash).toBeNull();
       expect(savedSession.status).toBe('active');
+      expect(savedSession.trustedDeviceId).toBe('device-1');
+      expect(savedSession.device).toEqual(TEST_DEVICE);
     });
   });
 

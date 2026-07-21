@@ -11,6 +11,7 @@ import {
   PhoneAlreadyRegisteredException,
   UsernameAlreadyTakenException,
 } from '../internal/errors';
+import { MfaService } from '../mfa.service';
 
 function buildDto(overrides: Partial<RegisterDto> = {}): RegisterDto {
   return Object.assign(new RegisterDto(), {
@@ -45,6 +46,7 @@ describe('AuthService.register', () => {
       unknown[]
     >;
   };
+  let mfaService: { enrollEmailMethod: jest.Mock<Promise<void>, unknown[]> };
   let service: AuthService;
 
   beforeEach(() => {
@@ -67,11 +69,13 @@ describe('AuthService.register', () => {
         Promise.resolve({ id: 'wallet-1', currency: 'NGN', balance: 0n }),
       ),
     };
+    mfaService = { enrollEmailMethod: jest.fn(() => Promise.resolve()) };
     service = new AuthService(
       dataSource as unknown as DataSource,
       ledgerService as unknown as LedgerService,
       { signAsync: jest.fn() } as unknown as JwtService,
       { publish: jest.fn() } as unknown as EventBusService,
+      mfaService as unknown as MfaService,
     );
   });
 
@@ -96,6 +100,15 @@ describe('AuthService.register', () => {
       expect.anything(),
       'user-1',
       'NGN',
+    );
+  });
+
+  it('auto-enrolls email MFA in the same transaction as the user insert, no separate call', async () => {
+    await service.register(buildDto());
+
+    expect(mfaService.enrollEmailMethod).toHaveBeenCalledWith(
+      expect.anything(),
+      'user-1',
     );
   });
 
