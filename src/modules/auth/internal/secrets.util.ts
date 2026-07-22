@@ -1,7 +1,13 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+} from 'crypto';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH_BYTES = 12;
+const OPAQUE_TOKEN_BYTES = 32;
 
 // TOTP secret compromise is a silent, undetectable MFA bypass — see
 // docs/architecture.md §3.8 / issue #4 — so it's encrypted at rest with a
@@ -40,4 +46,19 @@ export function decryptSecret(packed: string, key: Buffer): string {
 
 export function encryptionKeyFromHex(hex: string): Buffer {
   return Buffer.from(hex, 'hex');
+}
+
+// A bearer secret (refresh token, trusted-device token, verification code) is
+// a high-entropy random value, not a human password — see
+// docs/architecture.md §3.7 — so it's hashed with plain SHA-256 (fast,
+// indexable) rather than bcrypt (deliberately slow, meant for low-entropy
+// human secrets). One implementation shared across every caller that needs
+// this shape rather than a per-feature copy: the logic never actually
+// varies by feature, only the column it ends up hashed into.
+export function generateOpaqueToken(): string {
+  return randomBytes(OPAQUE_TOKEN_BYTES).toString('base64url');
+}
+
+export function hashOpaqueToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
 }

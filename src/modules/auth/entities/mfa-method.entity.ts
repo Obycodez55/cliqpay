@@ -34,7 +34,7 @@ export class MfaMethod {
   status: MfaMethodStatus;
 
   // Only set for `type: 'totp'` — AES-256-GCM ciphertext, see
-  // internal/secret-encryption.util.ts. Null for the email method, which has
+  // internal/secrets.util.ts. Null for the email method, which has
   // no secret of its own (codes are one-time and delivered, not shared).
   @Column({ type: 'varchar', nullable: true })
   secretCiphertext: string | null;

@@ -102,6 +102,38 @@ export class NoPendingTotpEnrollmentException extends DomainException {
   }
 }
 
+export class EmailAlreadyVerifiedException extends DomainException {
+  readonly code = 'EMAIL_ALREADY_VERIFIED';
+  constructor() {
+    super('Email address is already verified', HttpStatus.CONFLICT);
+  }
+}
+
+// Covers an unrecognized, expired, or already-used token identically — a
+// tampered/unknown token isn't distinguishable from an expired one once
+// lookup is by hash, so there's nothing more specific to tell the caller.
+// Same "don't retry this exact resource, get a new one" semantics as
+// MfaChallengeInvalidException.
+export class VerificationCodeInvalidException extends DomainException {
+  readonly code = 'VERIFICATION_CODE_INVALID';
+  constructor() {
+    super(
+      'This verification link is invalid, expired, or already used',
+      HttpStatus.GONE,
+    );
+  }
+}
+
+export class VerificationCodeRateLimitedException extends DomainException {
+  readonly code = 'VERIFICATION_CODE_RATE_LIMITED';
+  constructor(retryAfterSeconds: number) {
+    super(
+      `Too many verification codes requested — try again in ${retryAfterSeconds} seconds`,
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+  }
+}
+
 const CONSTRAINT_EXCEPTIONS: Record<string, () => DomainException> = {
   UQ_users_email: () => new EmailAlreadyRegisteredException(),
   UQ_users_username: () => new UsernameAlreadyTakenException(),
