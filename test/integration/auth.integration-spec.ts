@@ -18,6 +18,7 @@ import { CreateUsersAndAccounts1784628665852 } from '../../src/database/migratio
 import { CreateSessions1784642459395 } from '../../src/database/migrations/1784642459395-CreateSessions';
 import { CreatePushTokens1784616220824 } from '../../src/database/migrations/1784616220824-CreatePushTokens';
 import { CreateMfaAndTrustedDevices1784652789887 } from '../../src/database/migrations/1784652789887-CreateMfaAndTrustedDevices';
+import { CreateVerificationCodes1784672011426 } from '../../src/database/migrations/1784672011426-CreateVerificationCodes';
 import { seedSystemAccounts } from '../../src/database/seed-system-accounts';
 import { AuthModule } from '../../src/modules/auth/auth.module';
 import { AuthService } from '../../src/modules/auth/auth.service';
@@ -30,6 +31,7 @@ import { MfaMethod } from '../../src/modules/auth/entities/mfa-method.entity';
 import { Session } from '../../src/modules/auth/entities/session.entity';
 import { TrustedDevice } from '../../src/modules/auth/entities/trusted-device.entity';
 import { User } from '../../src/modules/auth/entities/user.entity';
+import { VerificationCode } from '../../src/modules/auth/entities/verification-code.entity';
 import {
   AccountLockedException,
   EmailAlreadyRegisteredException,
@@ -41,6 +43,7 @@ import {
   PhoneAlreadyRegisteredException,
   SessionRevokedException,
   UsernameAlreadyTakenException,
+  VerificationCodeInvalidException,
 } from '../../src/modules/auth/internal/errors';
 import { MfaService } from '../../src/modules/auth/mfa.service';
 import { DeviceMetadata } from '../../src/modules/auth/internal/device-metadata.util';
@@ -105,6 +108,16 @@ function wrongCodeFor(correctCode: string): string {
   return next.toString().padStart(6, '0');
 }
 
+// The verification link is the only `token=` query param in the rendered
+// email — see templates/email/email-verification-otp.hbs.
+function extractVerificationToken(text: string): string {
+  const match = text.match(/token=([^&\s]+)/);
+  if (!match) {
+    throw new Error(`No verification token found in email text: ${text}`);
+  }
+  return decodeURIComponent(match[1]);
+}
+
 const TEST_DEVICE: DeviceMetadata = {
   ipAddress: '203.0.113.10',
   userAgent: 'jest-integration-test-agent',
@@ -130,6 +143,7 @@ describe('Auth module — registration against a real Postgres', () => {
   let mfaMethodRepo: Repository<MfaMethod>;
   let mfaChallengeRepo: Repository<MfaChallenge>;
   let trustedDeviceRepo: Repository<TrustedDevice>;
+  let verificationCodeRepo: Repository<VerificationCode>;
   let emailAdapter: FakeEmailAdapter;
 
   beforeAll(async () => {
@@ -149,11 +163,17 @@ describe('Auth module — registration against a real Postgres', () => {
     await new CreateSessions1784642459395().up(queryRunner);
     await new CreatePushTokens1784616220824().up(queryRunner);
     await new CreateMfaAndTrustedDevices1784652789887().up(queryRunner);
+    await new CreateVerificationCodes1784672011426().up(queryRunner);
     await queryRunner.release();
     await setupDataSource.destroy();
 
     const config: AppConfig = {
-      app: { env: 'test', port: 0, corsAllowedOrigins: [] },
+      app: {
+        env: 'test',
+        port: 0,
+        corsAllowedOrigins: [],
+        emailVerificationUrl: 'http://localhost:3000/verify-email',
+      },
       database: { url: postgres.getConnectionUri() },
       redis: {
         url: `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`,
@@ -206,6 +226,7 @@ describe('Auth module — registration against a real Postgres', () => {
     mfaMethodRepo = dataSource.getRepository(MfaMethod);
     mfaChallengeRepo = dataSource.getRepository(MfaChallenge);
     trustedDeviceRepo = dataSource.getRepository(TrustedDevice);
+    verificationCodeRepo = dataSource.getRepository(VerificationCode);
     emailAdapter = moduleRef.get(EMAIL_SENDER);
   });
 
@@ -833,6 +854,188 @@ describe('Auth module — registration against a real Postgres', () => {
       const body = res.body as EnrollTotpResponseDto;
       expect(body.secret).toBeDefined();
       expect(body.otpauthUrl).toContain('otpauth://totp/');
+    });
+  });
+
+  describe('email verification', () => {
+    it('sends a verification email on register and records an unused, expiring code', async () => {
+      const { user } = await registerUser({
+        email: 'verify-register@example.com',
+        username: 'verify_register',
+        phone: '+2348066666601',
+      });
+
+      const code = await verificationCodeRepo.findOneByOrFail({
+        userId: user.id,
+        purpose: 'email_verification',
+      });
+      expect(code.usedAt).toBeNull();
+      expect(code.expiresAt.getTime()).toBeGreaterThan(Date.now());
+
+      const sent = emailAdapter.sent.find((m) => m.to === user.email);
+      expect(sent).toBeDefined();
+      expect(sent!.text).toContain('token=');
+    });
+
+    it('verifies with a valid token, sets emailVerifiedAt, and rejects reuse of the same token', async () => {
+      const { user } = await registerUser({
+        email: 'verify-ok@example.com',
+        username: 'verify_ok',
+        phone: '+2348066666602',
+      });
+      const token = extractVerificationToken(
+        emailAdapter.sent.find((m) => m.to === user.email)!.text,
+      );
+
+      await authService.verifyEmail(token);
+
+      const verified = await userRepo.findOneByOrFail({ id: user.id });
+      expect(verified.emailVerifiedAt).toBeInstanceOf(Date);
+
+      await expect(authService.verifyEmail(token)).rejects.toBeInstanceOf(
+        VerificationCodeInvalidException,
+      );
+    });
+
+    it('rejects an unrecognized token without setting emailVerifiedAt', async () => {
+      const { user } = await registerUser({
+        email: 'verify-bad@example.com',
+        username: 'verify_bad',
+        phone: '+2348066666603',
+      });
+
+      await expect(
+        authService.verifyEmail('never-issued-token'),
+      ).rejects.toBeInstanceOf(VerificationCodeInvalidException);
+
+      const unverified = await userRepo.findOneByOrFail({ id: user.id });
+      expect(unverified.emailVerifiedAt).toBeNull();
+    });
+
+    it('POST /auth/verify-email works unauthenticated, and login is not gated on it', async () => {
+      await request(app.getHttpServer())
+        .post('/auth/register')
+        .send({
+          email: 'verify-http@example.com',
+          password: 'a-strong-unique-passphrase',
+          firstName: 'Verify',
+          lastName: 'Http',
+          username: 'verify_http_user',
+          phone: '+2348066666604',
+        })
+        .expect(201);
+
+      const token = extractVerificationToken(
+        emailAdapter.sent.find((m) => m.to === 'verify-http@example.com')!.text,
+      );
+
+      await request(app.getHttpServer())
+        .post('/auth/verify-email')
+        .send({ token })
+        .expect(200);
+
+      const verified = await userRepo.findOneByOrFail({
+        email: 'verify-http@example.com',
+      });
+      expect(verified.emailVerifiedAt).toBeInstanceOf(Date);
+
+      // Nothing in Phase 1 gates login on emailVerifiedAt — a full login
+      // still works even before this test's own verify above ran.
+      const { tokens } = await loginAndVerify(
+        'verify-http@example.com',
+        'a-strong-unique-passphrase',
+      );
+      expect(tokens.tokenType).toBe('Bearer');
+    });
+
+    it('rejects an invalid/expired token over HTTP with a clear error, distinct from a malformed request', async () => {
+      await request(app.getHttpServer())
+        .post('/auth/verify-email')
+        .send({ token: 'not-a-real-token' })
+        .expect(410);
+    });
+
+    it('resend is authenticated and rate-limited to 60s since the last code (including the automatic one from registration)', async () => {
+      const { user } = await registerUser({
+        email: 'resend@example.com',
+        username: 'resend_user',
+        phone: '+2348066666605',
+      });
+
+      await request(app.getHttpServer())
+        .post('/auth/verify-email/resend')
+        .send({})
+        .expect(401);
+
+      const { tokens } = await loginAndVerify(
+        'resend@example.com',
+        'a-strong-unique-passphrase',
+      );
+
+      // The registration email was just sent — an immediate resend hits the
+      // 60s cooldown against that same code.
+      const emailsBefore = emailAdapter.sent.length;
+      await request(app.getHttpServer())
+        .post('/auth/verify-email/resend')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({})
+        .expect(429);
+      expect(emailAdapter.sent.length).toBe(emailsBefore);
+
+      // Backdate that code's createdAt past the cooldown window to simulate
+      // time passing, rather than sleeping the test for 60+ real seconds.
+      await verificationCodeRepo.update(
+        { userId: user.id, purpose: 'email_verification' },
+        { createdAt: new Date(Date.now() - 61_000) },
+      );
+
+      await request(app.getHttpServer())
+        .post('/auth/verify-email/resend')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({})
+        .expect(204);
+      expect(emailAdapter.sent.length).toBe(emailsBefore + 1);
+
+      // Immediate second resend hits the 60s cooldown again.
+      await request(app.getHttpServer())
+        .post('/auth/verify-email/resend')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({})
+        .expect(429);
+      expect(emailAdapter.sent.length).toBe(emailsBefore + 1);
+
+      // The most recently issued code (from the successful resend, not the
+      // original registration send) still verifies correctly.
+      const latestToken = extractVerificationToken(
+        emailAdapter.sent.at(-1)!.text,
+      );
+      await request(app.getHttpServer())
+        .post('/auth/verify-email')
+        .send({ token: latestToken })
+        .expect(200);
+    });
+
+    it('rejects resend for an already-verified user', async () => {
+      const { user } = await registerUser({
+        email: 'already-verified@example.com',
+        username: 'already_verified_user',
+        phone: '+2348066666606',
+      });
+      const token = extractVerificationToken(
+        emailAdapter.sent.find((m) => m.to === user.email)!.text,
+      );
+      await authService.verifyEmail(token);
+
+      const { tokens } = await loginAndVerify(
+        'already-verified@example.com',
+        'a-strong-unique-passphrase',
+      );
+
+      await request(app.getHttpServer())
+        .post('/auth/verify-email/resend')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({})
+        .expect(409);
     });
   });
 });

@@ -1,6 +1,7 @@
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 import { DataSource, EntityManager, FindOneOptions } from 'typeorm';
+import { AppConfig } from '../../../config';
 import { AuthService } from '../auth.service';
 import { LedgerService } from '../../ledger/ledger.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
@@ -17,8 +18,9 @@ import {
   SessionRevokedException,
 } from '../internal/errors';
 import { MfaService } from '../mfa.service';
-import { hashRefreshToken } from '../internal/refresh-token.util';
+import { hashOpaqueToken } from '../internal/secrets.util';
 import { DeviceMetadata } from '../internal/device-metadata.util';
+import { VerificationCodeService } from '../verification-code.service';
 
 const TEST_DEVICE: DeviceMetadata = {
   ipAddress: '203.0.113.10',
@@ -175,10 +177,14 @@ describe('AuthService — login, refresh, logout', () => {
     bcryptCompare.mockReset();
     service = new AuthService(
       dataSource as unknown as DataSource,
+      {
+        app: { emailVerificationUrl: 'http://localhost:3000/verify-email' },
+      } as unknown as AppConfig,
       {} as LedgerService,
       jwtService as unknown as JwtService,
       eventBus as unknown as EventBusService,
       mfaService as unknown as MfaService,
+      {} as VerificationCodeService,
     );
   });
 
@@ -306,7 +312,7 @@ describe('AuthService — login, refresh, logout', () => {
 
       const savedSession = sessionRepo.save.mock.calls[0][0];
       expect(savedSession.currentTokenHash).toBe(
-        hashRefreshToken(result.refreshToken),
+        hashOpaqueToken(result.refreshToken),
       );
       expect(savedSession.previousTokenHash).toBeNull();
       expect(savedSession.status).toBe('active');
@@ -323,7 +329,7 @@ describe('AuthService — login, refresh, logout', () => {
     it('rotates the session when the token matches currentTokenHash', async () => {
       const oldToken = 'old-refresh-token';
       const session = buildSession({
-        currentTokenHash: hashRefreshToken(oldToken),
+        currentTokenHash: hashOpaqueToken(oldToken),
       });
       sessionRepo.findOneBy.mockImplementation((where: Partial<Session>) =>
         Promise.resolve(
@@ -335,10 +341,8 @@ describe('AuthService — login, refresh, logout', () => {
 
       expect(sessionRepo.save).toHaveBeenCalledTimes(1);
       const saved = sessionRepo.save.mock.calls[0][0];
-      expect(saved.previousTokenHash).toBe(hashRefreshToken(oldToken));
-      expect(saved.currentTokenHash).toBe(
-        hashRefreshToken(result.refreshToken),
-      );
+      expect(saved.previousTokenHash).toBe(hashOpaqueToken(oldToken));
+      expect(saved.currentTokenHash).toBe(hashOpaqueToken(result.refreshToken));
       expect(saved.currentTokenHash).not.toBe(saved.previousTokenHash);
     });
 
@@ -346,7 +350,7 @@ describe('AuthService — login, refresh, logout', () => {
       const staleToken = 'stale-refresh-token';
       const session = buildSession({
         currentTokenHash: 'some-newer-hash',
-        previousTokenHash: hashRefreshToken(staleToken),
+        previousTokenHash: hashOpaqueToken(staleToken),
         user: existingUser,
       });
       sessionRepo.findOneBy.mockResolvedValueOnce(null); // no current-hash match
@@ -393,7 +397,7 @@ describe('AuthService — login, refresh, logout', () => {
     it('revokes the session matching the presented refresh token', async () => {
       const token = 'a-live-refresh-token';
       const session = buildSession({
-        currentTokenHash: hashRefreshToken(token),
+        currentTokenHash: hashOpaqueToken(token),
       });
       sessionRepo.findOneBy.mockResolvedValueOnce(session);
 

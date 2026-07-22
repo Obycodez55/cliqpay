@@ -1,6 +1,8 @@
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 import { DataSource, EntityManager } from 'typeorm';
+import { AppConfig } from '../../../config';
+import { DomainEventEnvelope } from '../../../shared/events/domain-events';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { AuthService } from '../auth.service';
 import { LedgerService } from '../../ledger/ledger.service';
@@ -12,6 +14,7 @@ import {
   UsernameAlreadyTakenException,
 } from '../internal/errors';
 import { MfaService } from '../mfa.service';
+import { VerificationCodeService } from '../verification-code.service';
 
 function buildDto(overrides: Partial<RegisterDto> = {}): RegisterDto {
   return Object.assign(new RegisterDto(), {
@@ -47,6 +50,15 @@ describe('AuthService.register', () => {
     >;
   };
   let mfaService: { enrollEmailMethod: jest.Mock<Promise<void>, unknown[]> };
+  let eventBus: {
+    dispatchAndAwait: jest.Mock<
+      Promise<void>,
+      [DomainEventEnvelope<string, unknown>, (number | undefined)?]
+    >;
+  };
+  let verificationCodeService: {
+    issue: jest.Mock<Promise<{ token: string; expiresAt: Date }>, unknown[]>;
+  };
   let service: AuthService;
 
   beforeEach(() => {
@@ -70,12 +82,29 @@ describe('AuthService.register', () => {
       ),
     };
     mfaService = { enrollEmailMethod: jest.fn(() => Promise.resolve()) };
+    eventBus = {
+      dispatchAndAwait: jest.fn(
+        (_event: DomainEventEnvelope<string, unknown>) => Promise.resolve(),
+      ),
+    };
+    verificationCodeService = {
+      issue: jest.fn(() =>
+        Promise.resolve({
+          token: 'raw-verification-token',
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        }),
+      ),
+    };
     service = new AuthService(
       dataSource as unknown as DataSource,
+      {
+        app: { emailVerificationUrl: 'http://localhost:3000/verify-email' },
+      } as unknown as AppConfig,
       ledgerService as unknown as LedgerService,
       { signAsync: jest.fn() } as unknown as JwtService,
-      { publish: jest.fn() } as unknown as EventBusService,
+      eventBus as unknown as EventBusService,
       mfaService as unknown as MfaService,
+      verificationCodeService as unknown as VerificationCodeService,
     );
   });
 
@@ -138,5 +167,38 @@ describe('AuthService.register', () => {
     userRepo.save.mockRejectedValueOnce(boom);
 
     await expect(service.register(buildDto())).rejects.toBe(boom);
+  });
+
+  describe('email verification dispatch on register', () => {
+    it('issues a code and dispatches the verification email after the transaction commits', async () => {
+      await service.register(buildDto());
+
+      expect(verificationCodeService.issue).toHaveBeenCalledWith(
+        'user-1',
+        'email_verification',
+        expect.any(Number),
+      );
+
+      const dispatched = eventBus.dispatchAndAwait.mock.calls[0]?.[0] as {
+        name: string;
+        payload: { userId: string; email: string; verificationUrl: string };
+      };
+      expect(dispatched.name).toBe('email_verification_otp');
+      expect(dispatched.payload.userId).toBe('user-1');
+      expect(dispatched.payload.email).toBe('ada@example.com');
+      expect(dispatched.payload.verificationUrl).toContain(
+        'token=raw-verification-token',
+      );
+    });
+
+    it('propagates a send failure so register() fails rather than swallowing it', async () => {
+      eventBus.dispatchAndAwait.mockRejectedValueOnce(
+        new Error('provider down'),
+      );
+
+      await expect(service.register(buildDto())).rejects.toThrow(
+        'provider down',
+      );
+    });
   });
 });

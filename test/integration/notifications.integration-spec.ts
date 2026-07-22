@@ -87,7 +87,12 @@ describe('Notifications module — end-to-end dispatch', () => {
     await setupDataSource.destroy();
 
     const config: AppConfig = {
-      app: { env: 'test', port: 0, corsAllowedOrigins: [] },
+      app: {
+        env: 'test',
+        port: 0,
+        corsAllowedOrigins: [],
+        emailVerificationUrl: 'http://localhost:3000/verify-email',
+      },
       database: { url: postgres.getConnectionUri() },
       redis: {
         url: `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`,
@@ -169,7 +174,7 @@ describe('Notifications module — end-to-end dispatch', () => {
         payload: {
           userId: USER_2,
           email: 'user-2@example.com',
-          code: '654321',
+          verificationUrl: 'https://app.cliqpay.example/verify-email?token=abc',
           expiresInMinutes: 10,
         },
         occurredAt: new Date(),
