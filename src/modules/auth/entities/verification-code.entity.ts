@@ -38,12 +38,7 @@ export class VerificationCode {
   @Column('varchar')
   codeHash: string;
 
-  // timestamptz, not timestamp — the 60s cooldown in
-  // VerificationCodeService does sub-minute arithmetic on these columns,
-  // which a bare `timestamp` gets wrong once the server isn't running in
-  // UTC (confirmed: a full hour off under Africa/Lagos). Other tables in
-  // this schema still use plain `timestamp` — same latent exposure, out of
-  // scope here.
+  // timestamptz, not timestamp — see ADR-0004.
   @Column({ type: 'timestamptz' })
   expiresAt: Date;
 
