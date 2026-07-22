@@ -24,11 +24,9 @@ import {
   decryptSecret,
   encryptSecret,
   encryptionKeyFromHex,
-} from './internal/secret-encryption.util';
-import {
-  generateTrustedDeviceToken,
-  hashTrustedDeviceToken,
-} from './internal/trusted-device-token.util';
+  generateOpaqueToken,
+  hashOpaqueToken,
+} from './internal/secrets.util';
 import { DeviceMetadata } from './internal/device-metadata.util';
 
 const TOTP_ISSUER = 'Cliqpay';
@@ -227,7 +225,7 @@ export class MfaService {
   ): Promise<TrustedDevice | null> {
     const device = await this.dataSource
       .getRepository(TrustedDevice)
-      .findOneBy({ tokenHash: hashTrustedDeviceToken(rawToken) });
+      .findOneBy({ tokenHash: hashOpaqueToken(rawToken) });
     if (!device || device.userId !== userId || device.expiresAt <= new Date()) {
       return null;
     }
@@ -249,11 +247,11 @@ export class MfaService {
     device: DeviceMetadata,
   ): Promise<{ device: TrustedDevice; rawToken: string }> {
     const now = new Date();
-    const rawToken = generateTrustedDeviceToken();
+    const rawToken = generateOpaqueToken();
     const repo = manager.getRepository(TrustedDevice);
     const trustedDevice = repo.create({
       userId,
-      tokenHash: hashTrustedDeviceToken(rawToken),
+      tokenHash: hashOpaqueToken(rawToken),
       device,
       expiresAt: new Date(now.getTime() + TRUSTED_DEVICE_TTL_MS),
       lastUsedAt: now,

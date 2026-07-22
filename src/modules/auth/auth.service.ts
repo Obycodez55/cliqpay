@@ -1,10 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectDataSource } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { DataSource, EntityManager } from 'typeorm';
+import { APP_CONFIG, AppConfig } from '../../config';
 import { runInTransaction } from '../../database/transaction.util';
 import {
+  EMAIL_VERIFICATION_OTP_EVENT,
+  EmailVerificationOtpEventPayload,
   SECURITY_ALERT_EVENT,
   SecurityAlertEventPayload,
 } from '../../shared/events/domain-events';
@@ -28,17 +31,16 @@ import {
 } from './dto/token-pair-response.dto';
 import {
   AccountLockedException,
+  EmailAlreadyVerifiedException,
   InvalidCredentialsException,
   InvalidRefreshTokenException,
   SessionRevokedException,
   mapUsersUniqueViolation,
 } from './internal/errors';
 import { MfaService } from './mfa.service';
-import {
-  generateRefreshToken,
-  hashRefreshToken,
-} from './internal/refresh-token.util';
+import { generateOpaqueToken, hashOpaqueToken } from './internal/secrets.util';
 import { DeviceMetadata } from './internal/device-metadata.util';
+import { VerificationCodeService } from './verification-code.service';
 
 const BCRYPT_SALT_ROUNDS = 10;
 const DEFAULT_WALLET_CURRENCY = 'NGN';
@@ -47,6 +49,10 @@ const ACCESS_TOKEN_TTL_SECONDS = 15 * 60; // 15 minutes
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const MAX_FAILED_LOGIN_ATTEMPTS = 5; // 5 failed login attempts
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+// Long-lived relative to an OTP — this is a link, never manually typed, so
+// there's no reason to force a re-send after a short window the way the
+// 10-minute MFA challenge/6-digit-OTP codes do.
+const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
  * The one exported surface of the auth module — see docs/architecture.md
@@ -57,10 +63,12 @@ const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 export class AuthService {
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly ledgerService: LedgerService,
     private readonly jwtService: JwtService,
     private readonly eventBus: EventBusService,
     private readonly mfaService: MfaService,
+    private readonly verificationCodeService: VerificationCodeService,
   ) {}
 
   async register(dto: RegisterDto): Promise<RegisterResponseDto> {
@@ -98,7 +106,68 @@ export class AuthService {
       },
     );
 
+    // Dispatched after the transaction above has committed, per
+    // EventBusService's own rule — never publish from inside the write it
+    // depends on. A send failure here surfaces as a register() failure
+    // rather than silently leaving the user without a verification email;
+    // the resend endpoint is the recovery path if that happens.
+    await this.sendEmailVerification(user);
+
     return toRegisterResponse(user, wallet);
+  }
+
+  private async sendEmailVerification(user: User): Promise<void> {
+    const { token, expiresAt } = await this.verificationCodeService.issue(
+      user.id,
+      'email_verification',
+      EMAIL_VERIFICATION_TTL_MS,
+    );
+
+    const url = new URL(this.config.app.emailVerificationUrl);
+    url.searchParams.set('token', token);
+
+    await this.eventBus.dispatchAndAwait<
+      string,
+      EmailVerificationOtpEventPayload
+    >({
+      name: EMAIL_VERIFICATION_OTP_EVENT,
+      payload: {
+        userId: user.id,
+        email: user.email,
+        verificationUrl: url.toString(),
+        expiresInMinutes: Math.round(
+          (expiresAt.getTime() - Date.now()) / 60_000,
+        ),
+      },
+      occurredAt: new Date(),
+    });
+  }
+
+  // Consumes the token and marks the email verified — an invalid, expired,
+  // or already-used token is rejected by VerificationCodeService itself
+  // (VerificationCodeInvalidException), before anything here runs.
+  async verifyEmail(token: string): Promise<void> {
+    const { userId } = await this.verificationCodeService.consume(
+      'email_verification',
+      token,
+    );
+    await this.dataSource
+      .getRepository(User)
+      .update(userId, { emailVerifiedAt: new Date() });
+  }
+
+  async resendEmailVerification(userId: string): Promise<void> {
+    const user = await this.dataSource
+      .getRepository(User)
+      .findOneByOrFail({ id: userId });
+    if (user.emailVerifiedAt) {
+      throw new EmailAlreadyVerifiedException();
+    }
+    await this.verificationCodeService.assertResendAllowed(
+      userId,
+      'email_verification',
+    );
+    await this.sendEmailVerification(user);
   }
 
   // `trustedDeviceToken` is the raw value from the cookie the controller
@@ -232,11 +301,11 @@ export class AuthService {
     now: Date,
     device: DeviceMetadata,
   ): Promise<{ session: Session; refreshToken: string }> {
-    const refreshToken = generateRefreshToken();
+    const refreshToken = generateOpaqueToken();
     const sessionRepo = manager.getRepository(Session);
     const session = sessionRepo.create({
       userId,
-      currentTokenHash: hashRefreshToken(refreshToken),
+      currentTokenHash: hashOpaqueToken(refreshToken),
       previousTokenHash: null,
       status: 'active',
       trustedDeviceId,
@@ -249,7 +318,7 @@ export class AuthService {
   }
 
   async refresh(dto: RefreshDto): Promise<TokenPairResponseDto> {
-    const hash = hashRefreshToken(dto.refreshToken);
+    const hash = hashOpaqueToken(dto.refreshToken);
     const sessionRepo = this.dataSource.getRepository(Session);
 
     const currentMatch = await sessionRepo.findOneBy({
@@ -293,9 +362,9 @@ export class AuthService {
       throw new InvalidRefreshTokenException();
     }
 
-    const newRefreshToken = generateRefreshToken();
+    const newRefreshToken = generateOpaqueToken();
     currentMatch.previousTokenHash = currentMatch.currentTokenHash;
-    currentMatch.currentTokenHash = hashRefreshToken(newRefreshToken);
+    currentMatch.currentTokenHash = hashOpaqueToken(newRefreshToken);
     currentMatch.lastUsedAt = now;
     currentMatch.expiresAt = new Date(now.getTime() + REFRESH_TOKEN_TTL_MS);
     await sessionRepo.save(currentMatch);
@@ -312,7 +381,7 @@ export class AuthService {
   }
 
   async logout(dto: LogoutDto): Promise<void> {
-    const hash = hashRefreshToken(dto.refreshToken);
+    const hash = hashOpaqueToken(dto.refreshToken);
     const sessionRepo = this.dataSource.getRepository(Session);
 
     const session = await sessionRepo.findOneBy({

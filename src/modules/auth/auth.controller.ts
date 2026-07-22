@@ -5,6 +5,7 @@ import {
   HttpStatus,
   Post,
   Req,
+  UseGuards,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
@@ -16,8 +17,10 @@ import { LoginResponseDto } from './dto/login-response.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { TokenPairResponseDto } from './dto/token-pair-response.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
 import { readTrustedDeviceCookie } from './internal/cookie.util';
 import { extractDeviceMetadata } from './internal/device-metadata.util';
+import { AuthenticatedRequest, JwtAuthGuard } from './guards/jwt-auth.guard';
 
 @Controller('auth')
 export class AuthController {
@@ -55,5 +58,25 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   logout(@Body() dto: LogoutDto): Promise<void> {
     return this.authService.logout(dto);
+  }
+
+  // Public — the token itself (long, opaque, single-use) is the proof of
+  // identity, same as a password-reset link. No guard needed.
+  @Post('verify-email')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  verifyEmail(@Body() dto: VerifyEmailDto): Promise<void> {
+    return this.authService.verifyEmail(dto.token);
+  }
+
+  // Authenticated — nothing in this issue gates login on emailVerifiedAt, so
+  // a user can already be logged in without having verified, and resend
+  // needs to know *which* user without taking an email/identifier in the
+  // body (that would be an enumeration vector).
+  @Post('verify-email/resend')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  resendVerificationEmail(@Req() req: AuthenticatedRequest): Promise<void> {
+    return this.authService.resendEmailVerification(req.user.userId);
   }
 }
