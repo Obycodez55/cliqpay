@@ -35,7 +35,7 @@ export const emailTemplates: {
   ) => EmailContent;
 } = {
   email_verification_otp: (payload: EmailVerificationOtpPayload) => ({
-    subject: 'Verify your email address',
+    subject: 'Verify your Cliqpay email address',
     ...renderEmail('email_verification_otp', payload),
   }),
   password_reset_otp: (payload: PasswordResetOtpPayload) => ({

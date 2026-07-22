@@ -32,7 +32,7 @@ describe('NotificationService', () => {
     await service.send('email_verification_otp', {
       userId: 'u1',
       email: 'a@example.com',
-      code: '123456',
+      verificationUrl: 'https://app.cliqpay.example/verify-email?token=abc',
       expiresInMinutes: 10,
     });
     expect(emailAdapter.sent).toHaveLength(1);

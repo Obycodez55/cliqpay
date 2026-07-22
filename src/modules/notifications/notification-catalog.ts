@@ -1,9 +1,12 @@
 export type NotificationChannel = 'email' | 'sms' | 'push';
 
+// Delivered as a clickable link, not a typed code — the token is a long,
+// opaque value (see VerificationCode entity), so the payload carries the
+// full URL rather than a bare code the user would type in.
 export interface EmailVerificationOtpPayload {
   userId: string;
   email: string;
-  code: string;
+  verificationUrl: string;
   expiresInMinutes: number;
 }
 

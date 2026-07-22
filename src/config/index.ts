@@ -13,6 +13,14 @@ const envSchema = z
     PORT: z.coerce.number().int().positive().default(3000),
     CORS_ALLOWED_ORIGINS: z.string().default(''),
 
+    // Base URL the email-verification link points at — the client app reads
+    // the `token` query param and calls POST /auth/verify-email with it.
+    // No frontend exists yet (docs/architecture.md §9), so this defaults to
+    // a placeholder for local dev; production must set a real one.
+    EMAIL_VERIFICATION_URL: z
+      .url()
+      .default('http://localhost:3000/verify-email'),
+
     DATABASE_URL: z.string().url(),
 
     REDIS_URL: z.string().url(),
@@ -97,6 +105,7 @@ function buildConfig(env: Env) {
       corsAllowedOrigins: env.CORS_ALLOWED_ORIGINS.split(',')
         .map((origin) => origin.trim())
         .filter(Boolean),
+      emailVerificationUrl: env.EMAIL_VERIFICATION_URL,
     },
     database: {
       url: env.DATABASE_URL,

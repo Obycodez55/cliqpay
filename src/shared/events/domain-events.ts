@@ -43,3 +43,21 @@ export interface MfaChallengeOtpEventPayload {
   code: string;
   expiresInMinutes: number;
 }
+
+// Published by auth right after registration, and again on
+// `POST /auth/verify-email/resend` — dispatched via
+// EventBusService.dispatchAndAwait for the same reason as
+// MfaChallengeOtpEventPayload above: a real send failure must surface rather
+// than leave a VerificationCode row with no email actually sent. Name
+// matches notifications' own `email_verification_otp` catalog entry. Unlike
+// the MFA challenge (a short-lived, typed OTP), this carries a link — the
+// token itself is a long opaque value never meant to be typed, so the
+// payload carries the whole `verificationUrl`, not a bare code.
+export const EMAIL_VERIFICATION_OTP_EVENT = 'email_verification_otp';
+
+export interface EmailVerificationOtpEventPayload {
+  userId: string;
+  email: string;
+  verificationUrl: string;
+  expiresInMinutes: number;
+}
