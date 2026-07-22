@@ -19,6 +19,10 @@ import { CreateSessions1784642459395 } from '../../src/database/migrations/17846
 import { CreatePushTokens1784616220824 } from '../../src/database/migrations/1784616220824-CreatePushTokens';
 import { CreateMfaAndTrustedDevices1784652789887 } from '../../src/database/migrations/1784652789887-CreateMfaAndTrustedDevices';
 import { CreateVerificationCodes1784672011426 } from '../../src/database/migrations/1784672011426-CreateVerificationCodes';
+import { ConvertUsersAndAccountsTimestamps1784707276057 } from '../../src/database/migrations/1784707276057-ConvertUsersAndAccountsTimestamps';
+import { ConvertSessionsTimestamps1784707276058 } from '../../src/database/migrations/1784707276058-ConvertSessionsTimestamps';
+import { ConvertPushTokensTimestamps1784707276059 } from '../../src/database/migrations/1784707276059-ConvertPushTokensTimestamps';
+import { ConvertMfaAndTrustedDevicesTimestamps1784707276060 } from '../../src/database/migrations/1784707276060-ConvertMfaAndTrustedDevicesTimestamps';
 import { seedSystemAccounts } from '../../src/database/seed-system-accounts';
 import { AuthModule } from '../../src/modules/auth/auth.module';
 import { AuthService } from '../../src/modules/auth/auth.service';
@@ -164,6 +168,12 @@ describe('Auth module — registration against a real Postgres', () => {
     await new CreatePushTokens1784616220824().up(queryRunner);
     await new CreateMfaAndTrustedDevices1784652789887().up(queryRunner);
     await new CreateVerificationCodes1784672011426().up(queryRunner);
+    await new ConvertUsersAndAccountsTimestamps1784707276057().up(queryRunner);
+    await new ConvertSessionsTimestamps1784707276058().up(queryRunner);
+    await new ConvertPushTokensTimestamps1784707276059().up(queryRunner);
+    await new ConvertMfaAndTrustedDevicesTimestamps1784707276060().up(
+      queryRunner,
+    );
     await queryRunner.release();
     await setupDataSource.destroy();
 

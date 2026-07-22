@@ -58,6 +58,6 @@ export class Account {
   })
   balance: bigint;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 }

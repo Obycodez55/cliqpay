@@ -19,6 +19,7 @@ import { FakeEmailAdapter } from '../../src/modules/notifications/channels/email
 import { FakePushAdapter } from '../../src/modules/notifications/channels/push/fake-push.adapter';
 import { PushToken } from '../../src/modules/notifications/entities/push-token.entity';
 import { CreatePushTokens1784616220824 } from '../../src/database/migrations/1784616220824-CreatePushTokens';
+import { ConvertPushTokensTimestamps1784707276059 } from '../../src/database/migrations/1784707276059-ConvertPushTokensTimestamps';
 
 jest.setTimeout(120_000);
 
@@ -83,6 +84,7 @@ describe('Notifications module — end-to-end dispatch', () => {
     await setupDataSource.initialize();
     const queryRunner = setupDataSource.createQueryRunner();
     await new CreatePushTokens1784616220824().up(queryRunner);
+    await new ConvertPushTokensTimestamps1784707276059().up(queryRunner);
     await queryRunner.release();
     await setupDataSource.destroy();
 

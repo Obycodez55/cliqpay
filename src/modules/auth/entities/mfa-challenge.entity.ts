@@ -37,9 +37,9 @@ export class MfaChallenge {
   @Column({ type: 'int', default: 0 })
   attempts: number;
 
-  @Column({ type: 'timestamp' })
+  @Column({ type: 'timestamptz' })
   expiresAt: Date;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 }

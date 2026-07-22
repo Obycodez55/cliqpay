@@ -21,9 +21,9 @@ export class PushToken {
   @Column({ type: 'varchar', unique: true })
   token: string;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @Column({ type: 'timestamp', default: () => 'CURRENT_TIMESTAMP' })
+  @Column({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
   lastUsedAt: Date;
 }

@@ -35,12 +35,12 @@ export class TrustedDevice {
   @Column({ type: 'jsonb' })
   device: DeviceMetadata;
 
-  @Column({ type: 'timestamp' })
+  @Column({ type: 'timestamptz' })
   expiresAt: Date;
 
-  @CreateDateColumn()
+  @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
-  @Column({ type: 'timestamp' })
+  @Column({ type: 'timestamptz' })
   lastUsedAt: Date;
 }
