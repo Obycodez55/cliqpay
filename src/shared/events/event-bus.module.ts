@@ -19,11 +19,14 @@ import {
       inject: [BULLMQ_REDIS_CONNECTION],
       useFactory: (connection: Redis) => ({ connection }),
     }),
+
     BullModule.registerQueue({
       name: DOMAIN_EVENTS_QUEUE,
       defaultJobOptions: {
         attempts: 5,
         backoff: { type: 'exponential', delay: 1000 },
+        removeOnComplete: { age: 3_600, count: 1_000 },
+        removeOnFail: { age: 86_400, count: 5_000 },
       },
     }),
     // Awaited callers set their own timeout, so total job time needs to fit
@@ -34,6 +37,8 @@ import {
       defaultJobOptions: {
         attempts: 2,
         backoff: { type: 'fixed', delay: 300 },
+        removeOnComplete: { age: 3_600, count: 1_000 },
+        removeOnFail: { age: 86_400, count: 5_000 },
       },
     }),
   ],
