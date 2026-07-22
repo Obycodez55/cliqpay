@@ -14,13 +14,9 @@ export type VerificationPurpose =
   | 'phone_verification'
   | 'password_reset';
 
-// One table, one create/verify/rate-limit implementation shared across all
-// three purposes (see VerificationCodeService) — email verification is the
-// only purpose this issue actually dispatches; phone verification (#6) and
-// password reset (#7) reuse the same shape rather than getting their own
-// tables. No uniqueness constraint on codeHash: a future OTP-shaped purpose
-// (phone verification's short numeric code) has low enough entropy that a
-// cross-user collision is plausible, same reasoning as MfaChallenge.codeHash.
+// No uniqueness constraint on codeHash — a future OTP-shaped purpose (a
+// short numeric code) has low enough entropy that a cross-user collision is
+// plausible, same reasoning as MfaChallenge.codeHash.
 @Entity('verification_codes')
 @Index(['userId', 'purpose'])
 export class VerificationCode {
@@ -42,15 +38,12 @@ export class VerificationCode {
   @Column('varchar')
   codeHash: string;
 
-  // timestamptz, not timestamp — this table's own rate-limit logic
-  // (VerificationCodeService.assertResendAllowed) does sub-minute arithmetic
-  // directly on these columns (a 60s cooldown), which a bare `timestamp`
-  // column gets systematically wrong by the server process's UTC offset once
-  // TZ isn't UTC (confirmed against a real Postgres instance under
-  // Africa/Lagos, UTC+1: values round-tripped exactly one hour off). Plain
-  // `timestamp` elsewhere in this schema (Session.expiresAt,
-  // MfaChallenge.expiresAt, User.lockedUntil, etc.) has the same latent
-  // exposure but is out of scope for this table's migration to correct.
+  // timestamptz, not timestamp — the 60s cooldown in
+  // VerificationCodeService does sub-minute arithmetic on these columns,
+  // which a bare `timestamp` gets wrong once the server isn't running in
+  // UTC (confirmed: a full hour off under Africa/Lagos). Other tables in
+  // this schema still use plain `timestamp` — same latent exposure, out of
+  // scope here.
   @Column({ type: 'timestamptz' })
   expiresAt: Date;
 

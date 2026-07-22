@@ -60,8 +60,7 @@ export class AuthController {
     return this.authService.logout(dto);
   }
 
-  // Public — the token itself (long, opaque, single-use) is the proof of
-  // identity, same as a password-reset link. No guard needed.
+  // Public — the token itself is the proof of identity, no guard needed.
   @Post('verify-email')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
@@ -69,10 +68,8 @@ export class AuthController {
     return this.authService.verifyEmail(dto.token);
   }
 
-  // Authenticated — nothing in this issue gates login on emailVerifiedAt, so
-  // a user can already be logged in without having verified, and resend
-  // needs to know *which* user without taking an email/identifier in the
-  // body (that would be an enumeration vector).
+  // Authenticated — avoids taking an email/identifier in the body, which
+  // would be an enumeration vector.
   @Post('verify-email/resend')
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)

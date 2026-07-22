@@ -15,13 +15,8 @@ const RESEND_COOLDOWN_MS = 60 * 1000; // 60 seconds
 export const MAX_SENDS_PER_HOUR = 5;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
-/**
- * Internal to the auth module — not exported from AuthModule (see
- * docs/architecture.md §10). One create/verify/rate-limit implementation
- * shared across every VerificationCode purpose — email verification is the
- * only one dispatched by this issue; phone verification (#6) and password
- * reset (#7) reuse this same service rather than each growing their own.
- */
+// Internal to the auth module — not exported from AuthModule. Shared
+// create/verify/rate-limit logic across every VerificationCode purpose.
 @Injectable()
 export class VerificationCodeService {
   constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
@@ -66,17 +61,8 @@ export class VerificationCodeService {
     return { userId: record.userId };
   }
 
-  // Called by the resend path only, before issuing a fresh code — not by
-  // `issue()` itself, so the automatic send at registration is never
-  // rate-limited against (there's nothing to rate-limit yet: it's the first
-  // one). 60s cooldown since the last code issued (by any path, including
-  // that first automatic send), and a 5-per-hour cap — see
-  // docs/architecture.md §3.8's own note that unbounded resends are a
-  // cost/abuse vector on the notifications module. Fetching only the last
-  // MAX_SENDS_PER_HOUR rows is sufficient to answer both questions: if that
-  // many rows fall inside the window, the cap is already met; if the
-  // newest is older than the cooldown, none of them matter for the cooldown
-  // check either.
+  // Called by the resend path only, not by `issue()` itself — the automatic
+  // send at registration has nothing to rate-limit against yet.
   async assertResendAllowed(
     userId: string,
     purpose: VerificationPurpose,

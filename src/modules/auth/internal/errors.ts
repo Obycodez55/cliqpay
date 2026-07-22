@@ -109,11 +109,8 @@ export class EmailAlreadyVerifiedException extends DomainException {
   }
 }
 
-// Covers an unrecognized, expired, or already-used token identically — a
-// tampered/unknown token isn't distinguishable from an expired one once
-// lookup is by hash, so there's nothing more specific to tell the caller.
-// Same "don't retry this exact resource, get a new one" semantics as
-// MfaChallengeInvalidException.
+// Covers unrecognized, expired, and already-used tokens identically — a
+// lookup by hash can't tell them apart.
 export class VerificationCodeInvalidException extends DomainException {
   readonly code = 'VERIFICATION_CODE_INVALID';
   constructor() {

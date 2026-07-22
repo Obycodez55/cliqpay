@@ -48,13 +48,9 @@ export function encryptionKeyFromHex(hex: string): Buffer {
   return Buffer.from(hex, 'hex');
 }
 
-// A bearer secret (refresh token, trusted-device token, verification code) is
-// a high-entropy random value, not a human password — see
-// docs/architecture.md §3.7 — so it's hashed with plain SHA-256 (fast,
-// indexable) rather than bcrypt (deliberately slow, meant for low-entropy
-// human secrets). One implementation shared across every caller that needs
-// this shape rather than a per-feature copy: the logic never actually
-// varies by feature, only the column it ends up hashed into.
+// A bearer secret (refresh token, trusted-device token, verification code)
+// is a high-entropy random value, not a human password — hashed with plain
+// SHA-256 (fast, indexable), not bcrypt.
 export function generateOpaqueToken(): string {
   return randomBytes(OPAQUE_TOKEN_BYTES).toString('base64url');
 }

@@ -49,9 +49,6 @@ const ACCESS_TOKEN_TTL_SECONDS = 15 * 60; // 15 minutes
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const MAX_FAILED_LOGIN_ATTEMPTS = 5; // 5 failed login attempts
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
-// Long-lived relative to an OTP — this is a link, never manually typed, so
-// there's no reason to force a re-send after a short window the way the
-// 10-minute MFA challenge/6-digit-OTP codes do.
 const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
@@ -106,11 +103,7 @@ export class AuthService {
       },
     );
 
-    // Dispatched after the transaction above has committed, per
-    // EventBusService's own rule — never publish from inside the write it
-    // depends on. A send failure here surfaces as a register() failure
-    // rather than silently leaving the user without a verification email;
-    // the resend endpoint is the recovery path if that happens.
+    // After the transaction commits — never publish from inside it.
     await this.sendEmailVerification(user);
 
     return toRegisterResponse(user, wallet);
@@ -143,9 +136,6 @@ export class AuthService {
     });
   }
 
-  // Consumes the token and marks the email verified — an invalid, expired,
-  // or already-used token is rejected by VerificationCodeService itself
-  // (VerificationCodeInvalidException), before anything here runs.
   async verifyEmail(token: string): Promise<void> {
     const { userId } = await this.verificationCodeService.consume(
       'email_verification',
