@@ -68,6 +68,20 @@ describe('VerificationCodeService', () => {
       expect(expiresAt.getTime()).toBeGreaterThan(Date.now());
       expect(repo.find).not.toHaveBeenCalled();
     });
+
+    it('generates a 6-digit numeric code when format is "numeric"', async () => {
+      const { token } = await service.issue(
+        'user-1',
+        'phone_verification',
+        60_000,
+        'numeric',
+      );
+
+      expect(token).toMatch(/^\d{6}$/);
+      const saved = repo.save.mock.calls[0][0];
+      expect(saved.purpose).toBe('phone_verification');
+      expect(saved.codeHash).not.toBe(token);
+    });
   });
 
   describe('assertResendAllowed', () => {

@@ -58,6 +58,11 @@ import {
   EmailMessage,
 } from '../../src/modules/notifications/channels/email/email-sender.interface';
 import { FakeEmailAdapter } from '../../src/modules/notifications/channels/email/fake-email.adapter';
+import {
+  SMS_SENDER,
+  SmsMessage,
+} from '../../src/modules/notifications/channels/sms/sms-sender.interface';
+import { FakeSmsAdapter } from '../../src/modules/notifications/channels/sms/fake-sms.adapter';
 
 jest.setTimeout(120_000);
 
@@ -152,6 +157,7 @@ describe('Auth module — registration against a real Postgres', () => {
   let trustedDeviceRepo: Repository<TrustedDevice>;
   let verificationCodeRepo: Repository<VerificationCode>;
   let emailAdapter: FakeEmailAdapter;
+  let smsAdapter: FakeSmsAdapter;
 
   beforeAll(async () => {
     postgres = await new PostgreSqlContainer('postgres:16-alpine').start();
@@ -241,6 +247,7 @@ describe('Auth module — registration against a real Postgres', () => {
     trustedDeviceRepo = dataSource.getRepository(TrustedDevice);
     verificationCodeRepo = dataSource.getRepository(VerificationCode);
     emailAdapter = moduleRef.get(EMAIL_SENDER);
+    smsAdapter = moduleRef.get(SMS_SENDER);
   });
 
   afterAll(async () => {
@@ -270,6 +277,13 @@ describe('Auth module — registration against a real Postgres', () => {
       throw new Error(`No sent email found with subject "${subject}"`);
     }
     return matches[matches.length - 1];
+  }
+
+  // register()'s verification-send is fire-and-forget — can't assume it's
+  // landed in smsAdapter.sent right after register() resolves.
+  async function waitForVerificationSms(phone: string): Promise<SmsMessage> {
+    await waitFor(() => smsAdapter.sent.some((m) => m.to === phone));
+    return smsAdapter.sent.find((m) => m.to === phone)!;
   }
 
   // login() forks on device trust (docs/architecture.md §3.8) — this drives
@@ -1073,6 +1087,186 @@ describe('Auth module — registration against a real Postgres', () => {
 
       await request(app.getHttpServer())
         .post('/auth/verify-email/resend')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({})
+        .expect(409);
+    });
+  });
+
+  describe('phone verification', () => {
+    it('sends a verification SMS on register and records an unused, expiring code', async () => {
+      const { user } = await registerUser({
+        email: 'verify-phone-register@example.com',
+        username: 'verify_phone_register',
+        phone: '+2348077777701',
+      });
+
+      const code = await verificationCodeRepo.findOneByOrFail({
+        userId: user.id,
+        purpose: 'phone_verification',
+      });
+      expect(code.usedAt).toBeNull();
+      expect(code.expiresAt.getTime()).toBeGreaterThan(Date.now());
+
+      const sent = await waitForVerificationSms(user.phone);
+      expect(sent.body).toMatch(/\b\d{6}\b/);
+    });
+
+    it('verifies with a valid code, sets phoneVerifiedAt, and rejects reuse of the same code', async () => {
+      const { user } = await registerUser({
+        email: 'verify-phone-ok@example.com',
+        username: 'verify_phone_ok',
+        phone: '+2348077777702',
+      });
+      const sent = await waitForVerificationSms(user.phone);
+      const code = extractSixDigitCode(sent.body);
+
+      await authService.verifyPhone(code);
+
+      const verified = await userRepo.findOneByOrFail({ id: user.id });
+      expect(verified.phoneVerifiedAt).toBeInstanceOf(Date);
+
+      await expect(authService.verifyPhone(code)).rejects.toBeInstanceOf(
+        VerificationCodeInvalidException,
+      );
+    });
+
+    it('rejects an unrecognized code without setting phoneVerifiedAt', async () => {
+      const { user } = await registerUser({
+        email: 'verify-phone-bad@example.com',
+        username: 'verify_phone_bad',
+        phone: '+2348077777703',
+      });
+
+      await expect(authService.verifyPhone('000000')).rejects.toBeInstanceOf(
+        VerificationCodeInvalidException,
+      );
+
+      const unverified = await userRepo.findOneByOrFail({ id: user.id });
+      expect(unverified.phoneVerifiedAt).toBeNull();
+    });
+
+    it('POST /auth/verify-phone works unauthenticated, and login is not gated on it', async () => {
+      await request(app.getHttpServer())
+        .post('/auth/register')
+        .send({
+          email: 'verify-phone-http@example.com',
+          password: 'a-strong-unique-passphrase',
+          firstName: 'Verify',
+          lastName: 'Phone',
+          username: 'verify_phone_http_user',
+          phone: '+2348077777704',
+        })
+        .expect(201);
+
+      const sent = await waitForVerificationSms('+2348077777704');
+      const code = extractSixDigitCode(sent.body);
+
+      await request(app.getHttpServer())
+        .post('/auth/verify-phone')
+        .send({ code })
+        .expect(200);
+
+      const verified = await userRepo.findOneByOrFail({
+        email: 'verify-phone-http@example.com',
+      });
+      expect(verified.phoneVerifiedAt).toBeInstanceOf(Date);
+
+      // Nothing in Phase 1 gates login on phoneVerifiedAt — a full login
+      // still works even before this test's own verify above ran.
+      const { tokens } = await loginAndVerify(
+        'verify-phone-http@example.com',
+        'a-strong-unique-passphrase',
+      );
+      expect(tokens.tokenType).toBe('Bearer');
+    });
+
+    it('rejects an invalid/expired code over HTTP with a clear error, distinct from a malformed request', async () => {
+      await request(app.getHttpServer())
+        .post('/auth/verify-phone')
+        .send({ code: '000000' })
+        .expect(410);
+    });
+
+    it('resend is authenticated and rate-limited to 60s since the last code (including the automatic one from registration)', async () => {
+      const { user } = await registerUser({
+        email: 'resend-phone@example.com',
+        username: 'resend_phone_user',
+        phone: '+2348077777705',
+      });
+
+      await request(app.getHttpServer())
+        .post('/auth/verify-phone/resend')
+        .send({})
+        .expect(401);
+
+      const { tokens } = await loginAndVerify(
+        'resend-phone@example.com',
+        'a-strong-unique-passphrase',
+      );
+
+      // Wait for the fire-and-forget registration SMS to actually land
+      // before taking the "before" count — otherwise it's a race.
+      await waitForVerificationSms(user.phone);
+
+      // The registration code was just issued — an immediate resend hits
+      // the 60s cooldown against that same code.
+      const smsBefore = smsAdapter.sent.length;
+      await request(app.getHttpServer())
+        .post('/auth/verify-phone/resend')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({})
+        .expect(429);
+      expect(smsAdapter.sent.length).toBe(smsBefore);
+
+      // Backdate that code's createdAt past the cooldown window to simulate
+      // time passing, rather than sleeping the test for 60+ real seconds.
+      await verificationCodeRepo.update(
+        { userId: user.id, purpose: 'phone_verification' },
+        { createdAt: new Date(Date.now() - 61_000) },
+      );
+
+      await request(app.getHttpServer())
+        .post('/auth/verify-phone/resend')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({})
+        .expect(204);
+      expect(smsAdapter.sent.length).toBe(smsBefore + 1);
+
+      // Immediate second resend hits the 60s cooldown again.
+      await request(app.getHttpServer())
+        .post('/auth/verify-phone/resend')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({})
+        .expect(429);
+      expect(smsAdapter.sent.length).toBe(smsBefore + 1);
+
+      // The most recently issued code (from the successful resend, not the
+      // original registration send) still verifies correctly.
+      const latestCode = extractSixDigitCode(smsAdapter.sent.at(-1)!.body);
+      await request(app.getHttpServer())
+        .post('/auth/verify-phone')
+        .send({ code: latestCode })
+        .expect(200);
+    });
+
+    it('rejects resend for an already-verified user', async () => {
+      const { user } = await registerUser({
+        email: 'already-phone-verified@example.com',
+        username: 'already_phone_verified',
+        phone: '+2348077777706',
+      });
+      const sent = await waitForVerificationSms(user.phone);
+      const code = extractSixDigitCode(sent.body);
+      await authService.verifyPhone(code);
+
+      const { tokens } = await loginAndVerify(
+        'already-phone-verified@example.com',
+        'a-strong-unique-passphrase',
+      );
+
+      await request(app.getHttpServer())
+        .post('/auth/verify-phone/resend')
         .set('Authorization', `Bearer ${tokens.accessToken}`)
         .send({})
         .expect(409);
