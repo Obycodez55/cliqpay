@@ -3,7 +3,12 @@ import {
   StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import { GenericContainer, StartedTestContainer } from 'testcontainers';
-import { DynamicModule, INestApplication, Module } from '@nestjs/common';
+import {
+  DynamicModule,
+  INestApplication,
+  Module,
+  ValidationPipe,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { plainToInstance } from 'class-transformer';
@@ -192,6 +197,7 @@ describe('Auth module — registration against a real Postgres', () => {
         port: 0,
         corsAllowedOrigins: [],
         emailVerificationUrl: 'http://localhost:3000/verify-email',
+        passwordResetUrl: 'http://localhost:3000/reset-password',
       },
       database: { url: postgres.getConnectionUri() },
       redis: {
@@ -234,6 +240,15 @@ describe('Auth module — registration against a real Postgres', () => {
     }).compile();
 
     app = moduleRef.createNestApplication();
+    // Matches main.ts's global pipe — without it, DTO validation (e.g.
+    // CompletePasswordResetDto's required revokeOtherSessions) never runs.
+    app.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
+    );
     await app.init();
 
     authService = moduleRef.get(AuthService);
@@ -277,6 +292,21 @@ describe('Auth module — registration against a real Postgres', () => {
       throw new Error(`No sent email found with subject "${subject}"`);
     }
     return matches[matches.length - 1];
+  }
+
+  const PASSWORD_RESET_SUBJECT = 'Reset your Cliqpay password';
+
+  async function waitForPasswordResetEmail(
+    email: string,
+  ): Promise<EmailMessage> {
+    await waitFor(() =>
+      emailAdapter.sent.some(
+        (m) => m.to === email && m.subject === PASSWORD_RESET_SUBJECT,
+      ),
+    );
+    return emailAdapter.sent
+      .filter((m) => m.to === email && m.subject === PASSWORD_RESET_SUBJECT)
+      .at(-1)!;
   }
 
   // register()'s verification-send is fire-and-forget — can't assume it's
@@ -1154,7 +1184,7 @@ describe('Auth module — registration against a real Postgres', () => {
           password: 'a-strong-unique-passphrase',
           firstName: 'Verify',
           lastName: 'Phone',
-          username: 'verify_phone_http_user',
+          username: 'verify_phone_http',
           phone: '+2348077777704',
         })
         .expect(201);
@@ -1270,6 +1300,189 @@ describe('Auth module — registration against a real Postgres', () => {
         .set('Authorization', `Bearer ${tokens.accessToken}`)
         .send({})
         .expect(409);
+    });
+  });
+
+  describe('password reset', () => {
+    it('POST /auth/password-reset/request returns 200 whether or not the email exists, only emailing a real account', async () => {
+      const { user } = await registerUser({
+        email: 'reset-request@example.com',
+        username: 'reset_request_user',
+        phone: '+2348088888801',
+      });
+
+      await request(app.getHttpServer())
+        .post('/auth/password-reset/request')
+        .send({ email: user.email })
+        .expect(200);
+      const sent = await waitForPasswordResetEmail(user.email);
+      expect(sent.text).toContain('token=');
+
+      await request(app.getHttpServer())
+        .post('/auth/password-reset/request')
+        .send({ email: 'no-such-reset-user@example.com' })
+        .expect(200);
+      expect(
+        emailAdapter.sent.some(
+          (m) => m.to === 'no-such-reset-user@example.com',
+        ),
+      ).toBe(false);
+    });
+
+    it('rate-limits repeated requests for the same account without changing the response (no enumeration signal)', async () => {
+      const { user } = await registerUser({
+        email: 'reset-rate-limit@example.com',
+        username: 'reset_rate_limit_user',
+        phone: '+2348088888804',
+      });
+
+      await request(app.getHttpServer())
+        .post('/auth/password-reset/request')
+        .send({ email: user.email })
+        .expect(200);
+      await waitForPasswordResetEmail(user.email);
+
+      // Immediately repeating the request hits the 60s cooldown — but the
+      // response stays 200 either way (see AuthService.requestPasswordReset),
+      // it just doesn't send a second email.
+      const emailsBefore = emailAdapter.sent.length;
+      await request(app.getHttpServer())
+        .post('/auth/password-reset/request')
+        .send({ email: user.email })
+        .expect(200);
+      expect(emailAdapter.sent.length).toBe(emailsBefore);
+    });
+
+    it('completes a reset with a valid token: new password works, old one does not, and the token is single-use', async () => {
+      const { user } = await registerUser({
+        email: 'reset-complete@example.com',
+        username: 'reset_complete_user',
+        phone: '+2348088888802',
+      });
+
+      await request(app.getHttpServer())
+        .post('/auth/password-reset/request')
+        .send({ email: user.email })
+        .expect(200);
+      const sent = await waitForPasswordResetEmail(user.email);
+      const token = extractVerificationToken(sent.text);
+
+      await request(app.getHttpServer())
+        .post('/auth/password-reset/complete')
+        .send({
+          token,
+          newPassword: 'a-brand-new-passphrase',
+          revokeOtherSessions: false,
+        })
+        .expect(200);
+
+      const updated = await userRepo.findOneByOrFail({ id: user.id });
+      expect(
+        await bcrypt.compare('a-brand-new-passphrase', updated.passwordHash),
+      ).toBe(true);
+      expect(
+        await bcrypt.compare(
+          'a-strong-unique-passphrase',
+          updated.passwordHash,
+        ),
+      ).toBe(false);
+
+      await request(app.getHttpServer())
+        .post('/auth/password-reset/complete')
+        .send({
+          token,
+          newPassword: 'yet-another-passphrase',
+          revokeOtherSessions: false,
+        })
+        .expect(410);
+    });
+
+    it('rejects an unrecognized token over HTTP with a clear error, distinct from a malformed request', async () => {
+      await request(app.getHttpServer())
+        .post('/auth/password-reset/complete')
+        .send({
+          token: 'never-issued-token',
+          newPassword: 'a-brand-new-passphrase',
+          revokeOtherSessions: false,
+        })
+        .expect(410);
+    });
+
+    it('rejects a missing revokeOtherSessions as a validation error, rather than defaulting to false', async () => {
+      await request(app.getHttpServer())
+        .post('/auth/password-reset/complete')
+        .send({
+          token: 'irrelevant-token',
+          newPassword: 'a-brand-new-passphrase',
+        })
+        .expect(400);
+    });
+
+    it('revokeOtherSessions: true revokes every session for the user', async () => {
+      const { user } = await registerUser({
+        email: 'reset-revoke-true@example.com',
+        username: 'reset_revoke_true_user',
+        phone: '+2348088888805',
+      });
+      await loginAndVerify(user.email, 'a-strong-unique-passphrase');
+      const sessionsBefore = await sessionRepo.find({
+        where: { userId: user.id },
+      });
+      expect(sessionsBefore.length).toBeGreaterThan(0);
+      expect(sessionsBefore.every((s) => s.status === 'active')).toBe(true);
+
+      await request(app.getHttpServer())
+        .post('/auth/password-reset/request')
+        .send({ email: user.email })
+        .expect(200);
+      const sent = await waitForPasswordResetEmail(user.email);
+      const token = extractVerificationToken(sent.text);
+
+      await request(app.getHttpServer())
+        .post('/auth/password-reset/complete')
+        .send({
+          token,
+          newPassword: 'a-brand-new-passphrase',
+          revokeOtherSessions: true,
+        })
+        .expect(200);
+
+      const sessionsAfter = await sessionRepo.find({
+        where: { userId: user.id },
+      });
+      expect(sessionsAfter.length).toBeGreaterThan(0);
+      expect(sessionsAfter.every((s) => s.status === 'revoked')).toBe(true);
+    });
+
+    it('revokeOtherSessions: false leaves existing sessions active', async () => {
+      const { user } = await registerUser({
+        email: 'reset-revoke-false@example.com',
+        username: 'reset_revoke_false_user',
+        phone: '+2348088888806',
+      });
+      await loginAndVerify(user.email, 'a-strong-unique-passphrase');
+
+      await request(app.getHttpServer())
+        .post('/auth/password-reset/request')
+        .send({ email: user.email })
+        .expect(200);
+      const sent = await waitForPasswordResetEmail(user.email);
+      const token = extractVerificationToken(sent.text);
+
+      await request(app.getHttpServer())
+        .post('/auth/password-reset/complete')
+        .send({
+          token,
+          newPassword: 'a-brand-new-passphrase',
+          revokeOtherSessions: false,
+        })
+        .expect(200);
+
+      const sessionsAfter = await sessionRepo.find({
+        where: { userId: user.id },
+      });
+      expect(sessionsAfter.length).toBeGreaterThan(0);
+      expect(sessionsAfter.every((s) => s.status === 'active')).toBe(true);
     });
   });
 });
