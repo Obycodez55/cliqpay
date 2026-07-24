@@ -17,10 +17,12 @@ export interface PhoneVerificationOtpPayload {
   expiresInMinutes: number;
 }
 
+// Delivered as a clickable link, not a typed code — same reasoning as
+// EmailVerificationOtpPayload above.
 export interface PasswordResetOtpPayload {
   userId: string;
   email: string;
-  code: string;
+  resetUrl: string;
   expiresInMinutes: number;
 }
 

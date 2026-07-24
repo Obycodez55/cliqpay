@@ -50,3 +50,13 @@ export interface PhoneVerificationOtpEventPayload {
   code: string;
   expiresInMinutes: number;
 }
+
+// Carries a link, not a bare code — same reasoning as email verification.
+export const PASSWORD_RESET_OTP_EVENT = 'password_reset_otp';
+
+export interface PasswordResetOtpEventPayload {
+  userId: string;
+  email: string;
+  resetUrl: string;
+  expiresInMinutes: number;
+}

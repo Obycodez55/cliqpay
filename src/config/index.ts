@@ -21,6 +21,11 @@ const envSchema = z
       .url()
       .default('http://localhost:3000/verify-email'),
 
+    // Same reasoning as EMAIL_VERIFICATION_URL above, for the
+    // password-reset link — no frontend exists yet, placeholder default for
+    // local dev.
+    PASSWORD_RESET_URL: z.url().default('http://localhost:3000/reset-password'),
+
     DATABASE_URL: z.string().url(),
 
     REDIS_URL: z.string().url(),
@@ -106,6 +111,7 @@ function buildConfig(env: Env) {
         .map((origin) => origin.trim())
         .filter(Boolean),
       emailVerificationUrl: env.EMAIL_VERIFICATION_URL,
+      passwordResetUrl: env.PASSWORD_RESET_URL,
     },
     database: {
       url: env.DATABASE_URL,
