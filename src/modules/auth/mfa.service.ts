@@ -1,6 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { createHash, randomInt } from 'crypto';
 import { generateSecret, generateURI, verify } from 'otplib';
 import { DataSource, EntityManager } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
@@ -24,6 +23,7 @@ import {
   decryptSecret,
   encryptSecret,
   encryptionKeyFromHex,
+  generateNumericCode,
   generateOpaqueToken,
   hashOpaqueToken,
 } from './internal/secrets.util';
@@ -36,14 +36,6 @@ export const TRUSTED_DEVICE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // ~30 days
 // Constant-time-ish TOTP window — ±1 step (±30s) tolerates ordinary clock
 // drift between the server and the user's authenticator app.
 const TOTP_EPOCH_TOLERANCE = 1;
-
-function generateNumericCode(): string {
-  return randomInt(0, 1_000_000).toString().padStart(6, '0');
-}
-
-function hashCode(code: string): string {
-  return createHash('sha256').update(code).digest('hex');
-}
 
 /**
  * Internal to the auth module — not exported from AuthModule (see
@@ -132,7 +124,7 @@ export class MfaService {
     let plainCode: string | null = null;
     if (method.type === 'email') {
       plainCode = generateNumericCode();
-      codeHash = hashCode(plainCode);
+      codeHash = hashOpaqueToken(plainCode);
     }
 
     const challenge = challengeRepo.create({
@@ -208,7 +200,7 @@ export class MfaService {
     code: string,
   ): Promise<boolean> {
     if (method.type === 'email') {
-      return challenge.codeHash === hashCode(code);
+      return challenge.codeHash === hashOpaqueToken(code);
     }
     const secret = decryptSecret(method.secretCiphertext!, this.encryptionKey);
     const result = await verify({
