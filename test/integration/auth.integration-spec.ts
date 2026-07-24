@@ -53,7 +53,10 @@ import { MfaService } from '../../src/modules/auth/mfa.service';
 import { DeviceMetadata } from '../../src/modules/auth/internal/device-metadata.util';
 import { Account } from '../../src/modules/ledger/entities/account.entity';
 import { NotificationsModule } from '../../src/modules/notifications/notifications.module';
-import { EMAIL_SENDER } from '../../src/modules/notifications/channels/email/email-sender.interface';
+import {
+  EMAIL_SENDER,
+  EmailMessage,
+} from '../../src/modules/notifications/channels/email/email-sender.interface';
 import { FakeEmailAdapter } from '../../src/modules/notifications/channels/email/fake-email.adapter';
 
 jest.setTimeout(120_000);
@@ -250,6 +253,25 @@ describe('Auth module — registration against a real Postgres', () => {
     return authService.register(registerPayload(overrides));
   }
 
+  // register()'s verification-send is fire-and-forget — can't assume it's
+  // landed in emailAdapter.sent right after register() resolves.
+  async function waitForVerificationEmail(
+    email: string,
+  ): Promise<EmailMessage> {
+    await waitFor(() => emailAdapter.sent.some((m) => m.to === email));
+    return emailAdapter.sent.find((m) => m.to === email)!;
+  }
+
+  // Fire-and-forget means this can interleave with other sends to the same
+  // recipient, so `.sent.at(-1)` isn't reliable — filter by subject instead.
+  function latestEmailWithSubject(subject: string): EmailMessage {
+    const matches = emailAdapter.sent.filter((m) => m.subject === subject);
+    if (matches.length === 0) {
+      throw new Error(`No sent email found with subject "${subject}"`);
+    }
+    return matches[matches.length - 1];
+  }
+
   // login() forks on device trust (docs/architecture.md §3.8) — this drives
   // it through the untrusted-device path via the real email dispatch and
   // returns finished tokens, for tests that just need a working session.
@@ -267,7 +289,9 @@ describe('Auth module — registration against a real Postgres', () => {
         'loginAndVerify expected an MFA challenge — device was unexpectedly already trusted',
       );
     }
-    const code = extractSixDigitCode(emailAdapter.sent.at(-1)!.text);
+    const code = extractSixDigitCode(
+      latestEmailWithSubject('Your Cliqpay sign-in code').text,
+    );
     return authService.verifyMfaChallenge(
       { challengeId: result.challengeId, code },
       TEST_DEVICE,
@@ -653,7 +677,9 @@ describe('Auth module — registration against a real Postgres', () => {
       }
       expect(result.method).toBe('email');
 
-      const correctCode = extractSixDigitCode(emailAdapter.sent.at(-1)!.text);
+      const correctCode = extractSixDigitCode(
+        latestEmailWithSubject('Your Cliqpay sign-in code').text,
+      );
 
       await expect(
         authService.verifyMfaChallenge(
@@ -723,7 +749,9 @@ describe('Auth module — registration against a real Postgres', () => {
       if (!result.mfaRequired) {
         throw new Error('expected a challenge');
       }
-      const correctCode = extractSixDigitCode(emailAdapter.sent.at(-1)!.text);
+      const correctCode = extractSixDigitCode(
+        latestEmailWithSubject('Your Cliqpay sign-in code').text,
+      );
       const wrong = wrongCodeFor(correctCode);
 
       for (let i = 0; i < 5; i++) {
@@ -792,7 +820,9 @@ describe('Auth module — registration against a real Postgres', () => {
       }
       const { challengeId } = loginBody;
 
-      const code = extractSixDigitCode(emailAdapter.sent.at(-1)!.text);
+      const code = extractSixDigitCode(
+        latestEmailWithSubject('Your Cliqpay sign-in code').text,
+      );
 
       const verifyRes = await request(app.getHttpServer())
         .post('/mfa/verify')
@@ -882,9 +912,8 @@ describe('Auth module — registration against a real Postgres', () => {
       expect(code.usedAt).toBeNull();
       expect(code.expiresAt.getTime()).toBeGreaterThan(Date.now());
 
-      const sent = emailAdapter.sent.find((m) => m.to === user.email);
-      expect(sent).toBeDefined();
-      expect(sent!.text).toContain('token=');
+      const sent = await waitForVerificationEmail(user.email);
+      expect(sent.text).toContain('token=');
     });
 
     it('verifies with a valid token, sets emailVerifiedAt, and rejects reuse of the same token', async () => {
@@ -893,9 +922,8 @@ describe('Auth module — registration against a real Postgres', () => {
         username: 'verify_ok',
         phone: '+2348066666602',
       });
-      const token = extractVerificationToken(
-        emailAdapter.sent.find((m) => m.to === user.email)!.text,
-      );
+      const sent = await waitForVerificationEmail(user.email);
+      const token = extractVerificationToken(sent.text);
 
       await authService.verifyEmail(token);
 
@@ -935,9 +963,8 @@ describe('Auth module — registration against a real Postgres', () => {
         })
         .expect(201);
 
-      const token = extractVerificationToken(
-        emailAdapter.sent.find((m) => m.to === 'verify-http@example.com')!.text,
-      );
+      const sent = await waitForVerificationEmail('verify-http@example.com');
+      const token = extractVerificationToken(sent.text);
 
       await request(app.getHttpServer())
         .post('/auth/verify-email')
@@ -982,8 +1009,12 @@ describe('Auth module — registration against a real Postgres', () => {
         'a-strong-unique-passphrase',
       );
 
-      // The registration email was just sent — an immediate resend hits the
-      // 60s cooldown against that same code.
+      // Wait for the fire-and-forget registration email to actually land
+      // before taking the "before" count — otherwise it's a race.
+      await waitForVerificationEmail('resend@example.com');
+
+      // The registration code was just issued — an immediate resend hits
+      // the 60s cooldown against that same code.
       const emailsBefore = emailAdapter.sent.length;
       await request(app.getHttpServer())
         .post('/auth/verify-email/resend')
@@ -1031,9 +1062,8 @@ describe('Auth module — registration against a real Postgres', () => {
         username: 'already_verified_user',
         phone: '+2348066666606',
       });
-      const token = extractVerificationToken(
-        emailAdapter.sent.find((m) => m.to === user.email)!.text,
-      );
+      const sent = await waitForVerificationEmail(user.email);
+      const token = extractVerificationToken(sent.text);
       await authService.verifyEmail(token);
 
       const { tokens } = await loginAndVerify(

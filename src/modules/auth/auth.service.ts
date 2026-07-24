@@ -6,6 +6,7 @@ import { DataSource, EntityManager } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { runInTransaction } from '../../database/transaction.util';
 import {
+  DomainEventEnvelope,
   EMAIL_VERIFICATION_OTP_EVENT,
   EmailVerificationOtpEventPayload,
   SECURITY_ALERT_EVENT,
@@ -103,13 +104,17 @@ export class AuthService {
       },
     );
 
-    // After the transaction commits — never publish from inside it.
-    await this.sendEmailVerification(user);
+    // Fire-and-forget, after the transaction commits — nothing gates on
+    // emailVerifiedAt, so a delivery hiccup shouldn't fail the registration.
+    const event = await this.buildEmailVerificationEvent(user);
+    await this.eventBus.publish(event);
 
     return toRegisterResponse(user, wallet);
   }
 
-  private async sendEmailVerification(user: User): Promise<void> {
+  private async buildEmailVerificationEvent(
+    user: User,
+  ): Promise<DomainEventEnvelope<string, EmailVerificationOtpEventPayload>> {
     const { token, expiresAt } = await this.verificationCodeService.issue(
       user.id,
       'email_verification',
@@ -119,10 +124,7 @@ export class AuthService {
     const url = new URL(this.config.app.emailVerificationUrl);
     url.searchParams.set('token', token);
 
-    await this.eventBus.dispatchAndAwait<
-      string,
-      EmailVerificationOtpEventPayload
-    >({
+    return {
       name: EMAIL_VERIFICATION_OTP_EVENT,
       payload: {
         userId: user.id,
@@ -133,7 +135,7 @@ export class AuthService {
         ),
       },
       occurredAt: new Date(),
-    });
+    };
   }
 
   async verifyEmail(token: string): Promise<void> {
@@ -157,7 +159,11 @@ export class AuthService {
       userId,
       'email_verification',
     );
-    await this.sendEmailVerification(user);
+
+    // Synchronous/awaited — unlike register()'s automatic send, this is a
+    // deliberate action the user is actively waiting on right now.
+    const event = await this.buildEmailVerificationEvent(user);
+    await this.eventBus.dispatchAndAwait(event);
   }
 
   // `trustedDeviceToken` is the raw value from the cookie the controller

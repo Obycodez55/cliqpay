@@ -45,24 +45,18 @@ export interface NotificationPayloadMap {
   security_alert: SecurityAlertPayload;
 }
 
-/**
- * One-to-many mapping of notification type to the channel(s) it dispatches
- * on — e.g. security_alert fans out to both email and push. `isOtp` marks
- * the types that go through the synchronous, awaited dispatch path rather
- * than fire-and-forget; see docs/architecture.md §10 and issue #1. Grows one
- * entry per notification a module actually needs to send, not ahead of it —
- * only email MFA exists as a concrete method today (architecture.md §3.8),
- * so mfa_challenge_otp only targets email until SMS/security-key MFA ships.
- */
+// Notification type -> channel(s). Dispatch mechanism (fire-and-forget vs
+// synchronous) is the caller's choice, not encoded here — email_verification_otp
+// is sent both ways depending on which endpoint triggers it.
 export const NOTIFICATION_CATALOG = {
-  email_verification_otp: { channels: ['email'], isOtp: true },
-  phone_verification_otp: { channels: ['sms'], isOtp: true },
-  password_reset_otp: { channels: ['email'], isOtp: true },
-  mfa_challenge_otp: { channels: ['email'], isOtp: true },
-  security_alert: { channels: ['email', 'push'], isOtp: false },
+  email_verification_otp: { channels: ['email'] },
+  phone_verification_otp: { channels: ['sms'] },
+  password_reset_otp: { channels: ['email'] },
+  mfa_challenge_otp: { channels: ['email'] },
+  security_alert: { channels: ['email', 'push'] },
 } as const satisfies Record<
   keyof NotificationPayloadMap,
-  { channels: readonly NotificationChannel[]; isOtp: boolean }
+  { channels: readonly NotificationChannel[] }
 >;
 
 export type NotificationType = keyof typeof NOTIFICATION_CATALOG;

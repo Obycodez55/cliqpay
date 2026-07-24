@@ -10,24 +10,20 @@ import {
   NotificationType,
 } from '../notification-catalog';
 
-function isOtpNotificationType(name: string): name is NotificationType {
-  return (
-    name in NOTIFICATION_CATALOG &&
-    NOTIFICATION_CATALOG[name as NotificationType].isOtp
-  );
+function isKnownNotificationType(name: string): name is NotificationType {
+  return name in NOTIFICATION_CATALOG;
 }
 
 /**
- * Consumer for the synchronous, priority-queued OTP path — see
+ * Consumer for the synchronous, priority-queued dispatch path — see
  * EventBusService.dispatchAndAwait (src/shared/events/event-bus.service.ts).
- * `PRIORITY_DISPATCH_QUEUE` is a general awaited-dispatch queue, not an
- * OTP-only one, so — mirroring the fire-and-forget processor on
- * DOMAIN_EVENTS_QUEUE — job names this module doesn't own are skipped
- * rather than assumed to be a NotificationType, in case a future caller
- * reuses the same queue for something else. Throwing UnrecoverableError for
- * a job this processor does own fails it immediately, which is what makes
- * the caller's `waitUntilFinished` reject promptly instead of burning its
- * timeout budget on retries that could never succeed.
+ * `PRIORITY_DISPATCH_QUEUE` is a general awaited-dispatch queue, so job names
+ * this module doesn't own are skipped rather than assumed to be a
+ * NotificationType, in case a future caller reuses the same queue for
+ * something else. Throwing UnrecoverableError for a job this processor does
+ * own fails it immediately, which is what makes the caller's
+ * `waitUntilFinished` reject promptly instead of burning its timeout budget
+ * on retries that could never succeed.
  */
 @Processor(PRIORITY_DISPATCH_QUEUE)
 export class OtpNotificationProcessor extends WorkerHost {
@@ -38,9 +34,9 @@ export class OtpNotificationProcessor extends WorkerHost {
   }
 
   async process(job: Job<DomainEventEnvelope>): Promise<void> {
-    if (!isOtpNotificationType(job.name)) {
+    if (!isKnownNotificationType(job.name)) {
       this.logger.debug(
-        `Ignoring priority-dispatch job "${job.name}" — not an OTP notification type this module handles`,
+        `Ignoring priority-dispatch job "${job.name}" — not a notification type this module handles`,
       );
       return;
     }

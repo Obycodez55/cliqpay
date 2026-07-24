@@ -10,13 +10,8 @@ import {
   NotificationType,
 } from '../notification-catalog';
 
-function isFireAndForgetNotificationType(
-  name: string,
-): name is NotificationType {
-  return (
-    name in NOTIFICATION_CATALOG &&
-    !NOTIFICATION_CATALOG[name as NotificationType].isOtp
-  );
+function isKnownNotificationType(name: string): name is NotificationType {
+  return name in NOTIFICATION_CATALOG;
 }
 
 /**
@@ -36,7 +31,7 @@ export class NotificationEventsProcessor extends WorkerHost {
   }
 
   async process(job: Job<DomainEventEnvelope>): Promise<void> {
-    if (!isFireAndForgetNotificationType(job.name)) {
+    if (!isKnownNotificationType(job.name)) {
       this.logger.debug(
         `Ignoring domain event "${job.name}" — not a notification type this module handles`,
       );

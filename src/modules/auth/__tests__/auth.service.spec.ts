@@ -51,10 +51,7 @@ describe('AuthService.register', () => {
   };
   let mfaService: { enrollEmailMethod: jest.Mock<Promise<void>, unknown[]> };
   let eventBus: {
-    dispatchAndAwait: jest.Mock<
-      Promise<void>,
-      [DomainEventEnvelope<string, unknown>, (number | undefined)?]
-    >;
+    publish: jest.Mock<Promise<void>, [DomainEventEnvelope<string, unknown>]>;
   };
   let verificationCodeService: {
     issue: jest.Mock<Promise<{ token: string; expiresAt: Date }>, unknown[]>;
@@ -83,8 +80,8 @@ describe('AuthService.register', () => {
     };
     mfaService = { enrollEmailMethod: jest.fn(() => Promise.resolve()) };
     eventBus = {
-      dispatchAndAwait: jest.fn(
-        (_event: DomainEventEnvelope<string, unknown>) => Promise.resolve(),
+      publish: jest.fn((_event: DomainEventEnvelope<string, unknown>) =>
+        Promise.resolve(),
       ),
     };
     verificationCodeService = {
@@ -170,7 +167,7 @@ describe('AuthService.register', () => {
   });
 
   describe('email verification dispatch on register', () => {
-    it('issues a code and dispatches the verification email after the transaction commits', async () => {
+    it('issues a code and publishes the verification email fire-and-forget after the transaction commits', async () => {
       await service.register(buildDto());
 
       expect(verificationCodeService.issue).toHaveBeenCalledWith(
@@ -179,25 +176,25 @@ describe('AuthService.register', () => {
         expect.any(Number),
       );
 
-      const dispatched = eventBus.dispatchAndAwait.mock.calls[0]?.[0] as {
+      const published = eventBus.publish.mock.calls[0]?.[0] as {
         name: string;
         payload: { userId: string; email: string; verificationUrl: string };
       };
-      expect(dispatched.name).toBe('email_verification_otp');
-      expect(dispatched.payload.userId).toBe('user-1');
-      expect(dispatched.payload.email).toBe('ada@example.com');
-      expect(dispatched.payload.verificationUrl).toContain(
+      expect(published.name).toBe('email_verification_otp');
+      expect(published.payload.userId).toBe('user-1');
+      expect(published.payload.email).toBe('ada@example.com');
+      expect(published.payload.verificationUrl).toContain(
         'token=raw-verification-token',
       );
     });
 
-    it('propagates a send failure so register() fails rather than swallowing it', async () => {
-      eventBus.dispatchAndAwait.mockRejectedValueOnce(
-        new Error('provider down'),
-      );
+    // publish() only enqueues — a downstream send failure happens later,
+    // inside the queue worker, and never reaches register() at all.
+    it('still surfaces a failure to enqueue the event', async () => {
+      eventBus.publish.mockRejectedValueOnce(new Error('redis unreachable'));
 
       await expect(service.register(buildDto())).rejects.toThrow(
-        'provider down',
+        'redis unreachable',
       );
     });
   });
