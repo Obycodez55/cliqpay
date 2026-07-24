@@ -109,6 +109,13 @@ export class EmailAlreadyVerifiedException extends DomainException {
   }
 }
 
+export class PhoneAlreadyVerifiedException extends DomainException {
+  readonly code = 'PHONE_ALREADY_VERIFIED';
+  constructor() {
+    super('Phone number is already verified', HttpStatus.CONFLICT);
+  }
+}
+
 // Covers unrecognized, expired, and already-used tokens identically — a
 // lookup by hash can't tell them apart.
 export class VerificationCodeInvalidException extends DomainException {

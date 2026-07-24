@@ -3,11 +3,13 @@ import {
   createDecipheriv,
   createHash,
   randomBytes,
+  randomInt,
 } from 'crypto';
 
 const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH_BYTES = 12;
 const OPAQUE_TOKEN_BYTES = 32;
+const NUMERIC_CODE_MODULUS = 1_000_000;
 
 // TOTP secret compromise is a silent, undetectable MFA bypass — see
 // docs/architecture.md §3.8 / issue #4 — so it's encrypted at rest with a
@@ -57,4 +59,11 @@ export function generateOpaqueToken(): string {
 
 export function hashOpaqueToken(token: string): string {
   return createHash('sha256').update(token).digest('hex');
+}
+
+// Short enough to read off an SMS and type into a form — unlike the opaque
+// token above, hashed the same way via hashOpaqueToken since both are just
+// bearer secrets to a lookup-by-hash, regardless of how they're generated.
+export function generateNumericCode(): string {
+  return randomInt(0, NUMERIC_CODE_MODULUS).toString().padStart(6, '0');
 }
