@@ -39,3 +39,14 @@ export interface EmailVerificationOtpEventPayload {
   verificationUrl: string;
   expiresInMinutes: number;
 }
+
+// Carries a bare 6-digit code, not a link — delivered over SMS, meant to be
+// typed (same shape as the MFA challenge above, unlike email verification).
+export const PHONE_VERIFICATION_OTP_EVENT = 'phone_verification_otp';
+
+export interface PhoneVerificationOtpEventPayload {
+  userId: string;
+  phone: string;
+  code: string;
+  expiresInMinutes: number;
+}

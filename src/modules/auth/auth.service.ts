@@ -9,6 +9,8 @@ import {
   DomainEventEnvelope,
   EMAIL_VERIFICATION_OTP_EVENT,
   EmailVerificationOtpEventPayload,
+  PHONE_VERIFICATION_OTP_EVENT,
+  PhoneVerificationOtpEventPayload,
   SECURITY_ALERT_EVENT,
   SecurityAlertEventPayload,
 } from '../../shared/events/domain-events';
@@ -35,6 +37,7 @@ import {
   EmailAlreadyVerifiedException,
   InvalidCredentialsException,
   InvalidRefreshTokenException,
+  PhoneAlreadyVerifiedException,
   SessionRevokedException,
   mapUsersUniqueViolation,
 } from './internal/errors';
@@ -51,6 +54,7 @@ const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 const MAX_FAILED_LOGIN_ATTEMPTS = 5; // 5 failed login attempts
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const PHONE_VERIFICATION_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 /**
  * The one exported surface of the auth module — see docs/architecture.md
@@ -105,9 +109,12 @@ export class AuthService {
     );
 
     // Fire-and-forget, after the transaction commits — nothing gates on
-    // emailVerifiedAt, so a delivery hiccup shouldn't fail the registration.
-    const event = await this.buildEmailVerificationEvent(user);
-    await this.eventBus.publish(event);
+    // emailVerifiedAt/phoneVerifiedAt, so a delivery hiccup shouldn't fail
+    // the registration.
+    const emailEvent = await this.buildEmailVerificationEvent(user);
+    await this.eventBus.publish(emailEvent);
+    const phoneEvent = await this.buildPhoneVerificationEvent(user);
+    await this.eventBus.publish(phoneEvent);
 
     return toRegisterResponse(user, wallet);
   }
@@ -163,6 +170,58 @@ export class AuthService {
     // Synchronous/awaited — unlike register()'s automatic send, this is a
     // deliberate action the user is actively waiting on right now.
     const event = await this.buildEmailVerificationEvent(user);
+    await this.eventBus.dispatchAndAwait(event);
+  }
+
+  private async buildPhoneVerificationEvent(
+    user: User,
+  ): Promise<DomainEventEnvelope<string, PhoneVerificationOtpEventPayload>> {
+    const { token, expiresAt } = await this.verificationCodeService.issue(
+      user.id,
+      'phone_verification',
+      PHONE_VERIFICATION_TTL_MS,
+      'numeric',
+    );
+
+    return {
+      name: PHONE_VERIFICATION_OTP_EVENT,
+      payload: {
+        userId: user.id,
+        phone: user.phone,
+        code: token,
+        expiresInMinutes: Math.round(
+          (expiresAt.getTime() - Date.now()) / 60_000,
+        ),
+      },
+      occurredAt: new Date(),
+    };
+  }
+
+  async verifyPhone(code: string): Promise<void> {
+    const { userId } = await this.verificationCodeService.consume(
+      'phone_verification',
+      code,
+    );
+    await this.dataSource
+      .getRepository(User)
+      .update(userId, { phoneVerifiedAt: new Date() });
+  }
+
+  async resendPhoneVerification(userId: string): Promise<void> {
+    const user = await this.dataSource
+      .getRepository(User)
+      .findOneByOrFail({ id: userId });
+    if (user.phoneVerifiedAt) {
+      throw new PhoneAlreadyVerifiedException();
+    }
+    await this.verificationCodeService.assertResendAllowed(
+      userId,
+      'phone_verification',
+    );
+
+    // Synchronous/awaited — unlike register()'s automatic send, this is a
+    // deliberate action the user is actively waiting on right now.
+    const event = await this.buildPhoneVerificationEvent(user);
     await this.eventBus.dispatchAndAwait(event);
   }
 

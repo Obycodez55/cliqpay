@@ -18,6 +18,7 @@ import { RefreshDto } from './dto/refresh.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { TokenPairResponseDto } from './dto/token-pair-response.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
+import { VerifyPhoneDto } from './dto/verify-phone.dto';
 import { readTrustedDeviceCookie } from './internal/cookie.util';
 import { extractDeviceMetadata } from './internal/device-metadata.util';
 import { AuthenticatedRequest, JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -75,5 +76,22 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   resendVerificationEmail(@Req() req: AuthenticatedRequest): Promise<void> {
     return this.authService.resendEmailVerification(req.user.userId);
+  }
+
+  // Public — the code itself is the proof, same as verify-email.
+  @Post('verify-phone')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  verifyPhone(@Body() dto: VerifyPhoneDto): Promise<void> {
+    return this.authService.verifyPhone(dto.code);
+  }
+
+  // Authenticated — avoids taking a phone number in the body, which would
+  // be an enumeration vector, same as verify-email/resend.
+  @Post('verify-phone/resend')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  resendVerificationPhone(@Req() req: AuthenticatedRequest): Promise<void> {
+    return this.authService.resendPhoneVerification(req.user.userId);
   }
 }

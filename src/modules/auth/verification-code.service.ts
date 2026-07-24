@@ -9,11 +9,20 @@ import {
   VerificationCodeInvalidException,
   VerificationCodeRateLimitedException,
 } from './internal/errors';
-import { generateOpaqueToken, hashOpaqueToken } from './internal/secrets.util';
+import {
+  generateNumericCode,
+  generateOpaqueToken,
+  hashOpaqueToken,
+} from './internal/secrets.util';
 
 const RESEND_COOLDOWN_MS = 60 * 1000; // 60 seconds
 export const MAX_SENDS_PER_HOUR = 5;
 const RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+// 'opaque' (long, unguessable, sent as a clickable link) vs 'numeric' (a
+// human has to read and type it, e.g. off an SMS) — see VerificationCode
+// entity's comment on why codeHash carries no uniqueness constraint.
+export type VerificationCodeFormat = 'opaque' | 'numeric';
 
 // Internal to the auth module — not exported from AuthModule. Shared
 // create/verify/rate-limit logic across every VerificationCode purpose.
@@ -25,8 +34,10 @@ export class VerificationCodeService {
     userId: string,
     purpose: VerificationPurpose,
     ttlMs: number,
+    format: VerificationCodeFormat = 'opaque',
   ): Promise<{ token: string; expiresAt: Date }> {
-    const token = generateOpaqueToken();
+    const token =
+      format === 'numeric' ? generateNumericCode() : generateOpaqueToken();
     const now = new Date();
     const expiresAt = new Date(now.getTime() + ttlMs);
     const repo = this.dataSource.getRepository(VerificationCode);
