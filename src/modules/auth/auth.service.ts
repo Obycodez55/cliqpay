@@ -9,6 +9,8 @@ import {
   DomainEventEnvelope,
   EMAIL_VERIFICATION_OTP_EVENT,
   EmailVerificationOtpEventPayload,
+  PASSWORD_RESET_OTP_EVENT,
+  PasswordResetOtpEventPayload,
   PHONE_VERIFICATION_OTP_EVENT,
   PhoneVerificationOtpEventPayload,
   SECURITY_ALERT_EVENT,
@@ -39,6 +41,7 @@ import {
   InvalidRefreshTokenException,
   PhoneAlreadyVerifiedException,
   SessionRevokedException,
+  VerificationCodeRateLimitedException,
   mapUsersUniqueViolation,
 } from './internal/errors';
 import { MfaService } from './mfa.service';
@@ -55,6 +58,7 @@ const MAX_FAILED_LOGIN_ATTEMPTS = 5; // 5 failed login attempts
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const PHONE_VERIFICATION_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 /**
  * The one exported surface of the auth module — see docs/architecture.md
@@ -223,6 +227,86 @@ export class AuthService {
     // deliberate action the user is actively waiting on right now.
     const event = await this.buildPhoneVerificationEvent(user);
     await this.eventBus.dispatchAndAwait(event);
+  }
+
+  private async buildPasswordResetEvent(
+    user: User,
+  ): Promise<DomainEventEnvelope<string, PasswordResetOtpEventPayload>> {
+    const { token, expiresAt } = await this.verificationCodeService.issue(
+      user.id,
+      'password_reset',
+      PASSWORD_RESET_TTL_MS,
+    );
+
+    const url = new URL(this.config.app.passwordResetUrl);
+    url.searchParams.set('token', token);
+
+    return {
+      name: PASSWORD_RESET_OTP_EVENT,
+      payload: {
+        userId: user.id,
+        email: user.email,
+        resetUrl: url.toString(),
+        expiresInMinutes: Math.round(
+          (expiresAt.getTime() - Date.now()) / 60_000,
+        ),
+      },
+      occurredAt: new Date(),
+    };
+  }
+
+  // Always resolves the same way regardless of whether `email` belongs to
+  // an account — including on the rate-limit path (see
+  // VerificationCodeRateLimitedException below) — so the response itself
+  // can never be used to enumerate accounts. Only a real delivery failure
+  // from dispatchAndAwait (unreachable unless the user exists) propagates,
+  // per the same "user is actively waiting on this" reasoning as
+  // resend{Email,Phone}Verification.
+  async requestPasswordReset(email: string): Promise<void> {
+    const user = await this.dataSource.getRepository(User).findOneBy({ email });
+    if (!user) {
+      return;
+    }
+
+    try {
+      await this.verificationCodeService.assertResendAllowed(
+        user.id,
+        'password_reset',
+      );
+    } catch (error) {
+      if (error instanceof VerificationCodeRateLimitedException) {
+        return;
+      }
+      throw error;
+    }
+
+    const event = await this.buildPasswordResetEvent(user);
+    await this.eventBus.dispatchAndAwait(event);
+  }
+
+  // Single-use falls out of VerificationCodeService.consume's usedAt check
+  // — reusing a spent token throws the same VerificationCodeInvalidException
+  // as any other purpose.
+  async completePasswordReset(
+    token: string,
+    newPassword: string,
+    revokeOtherSessions: boolean,
+  ): Promise<void> {
+    const { userId } = await this.verificationCodeService.consume(
+      'password_reset',
+      token,
+    );
+
+    const passwordHash = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
+    await this.dataSource.getRepository(User).update(userId, { passwordHash });
+
+    if (revokeOtherSessions) {
+      // Unauthenticated flow — no session is "completing the request" to
+      // exclude, so every session for the user is revoked.
+      await this.dataSource
+        .getRepository(Session)
+        .update({ userId }, { status: 'revoked' });
+    }
   }
 
   // `trustedDeviceToken` is the raw value from the cookie the controller

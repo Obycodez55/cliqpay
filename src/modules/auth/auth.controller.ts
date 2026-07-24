@@ -19,6 +19,8 @@ import { LogoutDto } from './dto/logout.dto';
 import { TokenPairResponseDto } from './dto/token-pair-response.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { VerifyPhoneDto } from './dto/verify-phone.dto';
+import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
+import { CompletePasswordResetDto } from './dto/complete-password-reset.dto';
 import { readTrustedDeviceCookie } from './internal/cookie.util';
 import { extractDeviceMetadata } from './internal/device-metadata.util';
 import { AuthenticatedRequest, JwtAuthGuard } from './guards/jwt-auth.guard';
@@ -93,5 +95,27 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   resendVerificationPhone(@Req() req: AuthenticatedRequest): Promise<void> {
     return this.authService.resendPhoneVerification(req.user.userId);
+  }
+
+  // Public and unauthenticated by definition — the caller has no session
+  // yet. Always 200, whether or not the email belongs to an account (see
+  // AuthService.requestPasswordReset) — no signal to distinguish either way.
+  @Post('password-reset/request')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  requestPasswordReset(@Body() dto: RequestPasswordResetDto): Promise<void> {
+    return this.authService.requestPasswordReset(dto.email);
+  }
+
+  // Public — the token itself is the proof, same as verify-email.
+  @Post('password-reset/complete')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  completePasswordReset(@Body() dto: CompletePasswordResetDto): Promise<void> {
+    return this.authService.completePasswordReset(
+      dto.token,
+      dto.newPassword,
+      dto.revokeOtherSessions,
+    );
   }
 }
