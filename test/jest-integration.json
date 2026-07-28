@@ -9,5 +9,6 @@
   "transformIgnorePatterns": [
     "node_modules/\\.pnpm/(?!(otplib|@otplib\\+|@scure\\+|@noble\\+))"
   ],
-  "testTimeout": 60000
+  "testTimeout": 60000,
+  "maxWorkers": 2
 }
