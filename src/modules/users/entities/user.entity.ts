@@ -44,6 +44,12 @@ export class User {
   @Column({ type: 'timestamptz', nullable: true })
   phoneVerifiedAt: Date | null;
 
+  // Set by change-phone (issue #10) between its verification-code send and
+  // confirm — `phone` itself never changes until confirm succeeds, mirroring
+  // pendingEmail (issue #9).
+  @Column({ type: 'varchar', nullable: true })
+  pendingPhone: string | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 

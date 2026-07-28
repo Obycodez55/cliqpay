@@ -53,6 +53,21 @@ export class NoPendingEmailChangeException extends DomainException {
   }
 }
 
+// Reachable if a code for some other `phone_verification`-purpose flow
+// (e.g. a stale signup-verification code, same purpose) gets submitted to
+// change-phone/confirm instead — the code consumes fine (it's a real,
+// unused, unexpired code for this user) but there's no pending change to
+// apply. Mirrors NoPendingEmailChangeException.
+export class NoPendingPhoneChangeException extends DomainException {
+  readonly code = 'NO_PENDING_PHONE_CHANGE';
+  constructor() {
+    super(
+      'No pending phone change to confirm — start with change-phone first',
+      HttpStatus.NOT_FOUND,
+    );
+  }
+}
+
 const CONSTRAINT_EXCEPTIONS: Record<string, () => DomainException> = {
   UQ_users_email: () => new EmailAlreadyRegisteredException(),
   UQ_users_username: () => new UsernameAlreadyTakenException(),
