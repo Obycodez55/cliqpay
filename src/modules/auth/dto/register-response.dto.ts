@@ -1,3 +1,5 @@
+import { ApiProperty } from '@nestjs/swagger';
+import { MoneyDto } from '../../../common/dto/money-response.dto';
 import { Money } from '../../../shared/primitives/money';
 
 // Structural, not `Account`/`User` — auth's DTO layer has no business
@@ -20,21 +22,46 @@ export interface UserSummary {
   createdAt: Date;
 }
 
-export interface RegisterResponseDto {
-  user: {
-    id: string;
-    email: string;
-    username: string;
-    phone: string;
-    firstName: string;
-    lastName: string;
-    createdAt: Date;
-  };
-  wallet: {
-    id: string;
-    currency: string;
-    balance: { amount: string; currency: string };
-  };
+class RegisteredUserDto {
+  @ApiProperty({ example: '9f8b6e2a-1c3d-4e5f-a6b7-c8d9e0f1a2b3' })
+  id: string;
+
+  @ApiProperty({ example: 'jane@example.com' })
+  email: string;
+
+  @ApiProperty({ example: 'jane_doe' })
+  username: string;
+
+  @ApiProperty({ example: '+2348012345678' })
+  phone: string;
+
+  @ApiProperty({ example: 'Jane' })
+  firstName: string;
+
+  @ApiProperty({ example: 'Doe' })
+  lastName: string;
+
+  @ApiProperty({ example: '2026-07-28T19:15:00.000Z' })
+  createdAt: Date;
+}
+
+class RegisteredWalletDto {
+  @ApiProperty({ example: '9f8b6e2a-1c3d-4e5f-a6b7-c8d9e0f1a2b3' })
+  id: string;
+
+  @ApiProperty({ example: 'NGN' })
+  currency: string;
+
+  @ApiProperty({ type: MoneyDto })
+  balance: MoneyDto;
+}
+
+export class RegisterResponseDto {
+  @ApiProperty({ type: RegisteredUserDto })
+  user: RegisteredUserDto;
+
+  @ApiProperty({ type: RegisteredWalletDto })
+  wallet: RegisteredWalletDto;
 }
 
 // Explicit shape, never the raw entity — passwordHash/transactionPinHash

@@ -1,9 +1,14 @@
+import { ApiProperty } from '@nestjs/swagger';
+import { MoneyDto } from '../../../common/dto/money-response.dto';
 import { Money } from '../../../shared/primitives/money';
 import { Account } from '../entities/account.entity';
 
-export interface WalletBalanceResponseDto {
+export class WalletBalanceResponseDto {
+  @ApiProperty({ example: 'NGN' })
   currency: string;
-  balance: { amount: string; currency: string };
+
+  @ApiProperty({ type: MoneyDto })
+  balance: MoneyDto;
 }
 
 export function toWalletBalanceResponse(

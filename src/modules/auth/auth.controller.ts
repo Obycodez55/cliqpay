@@ -7,14 +7,25 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiExtraModels,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+  getSchemaPath,
+} from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { RegisterResponseDto } from './dto/register-response.dto';
 import { LoginDto } from './dto/login.dto';
-import { LoginResponseDto } from './dto/login-response.dto';
+import {
+  LoginMfaRequiredResponseDto,
+  LoginResponseDto,
+  LoginSuccessResponseDto,
+} from './dto/login-response.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { TokenPairResponseDto } from './dto/token-pair-response.dto';
@@ -57,6 +68,16 @@ export class AuthController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({
     summary: 'Log in with email and password, may return an MFA challenge',
+  })
+  @ApiExtraModels(LoginSuccessResponseDto, LoginMfaRequiredResponseDto)
+  @ApiResponse({
+    status: HttpStatus.OK,
+    schema: {
+      oneOf: [
+        { $ref: getSchemaPath(LoginSuccessResponseDto) },
+        { $ref: getSchemaPath(LoginMfaRequiredResponseDto) },
+      ],
+    },
   })
   login(@Body() dto: LoginDto, @Req() req: Request): Promise<LoginResponseDto> {
     return this.authService.login(
