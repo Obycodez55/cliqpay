@@ -1,4 +1,4 @@
-import { EntityManager } from 'typeorm';
+import { DataSource, EntityManager } from 'typeorm';
 import { LedgerService } from '../ledger.service';
 import { Account } from '../entities/account.entity';
 
@@ -9,6 +9,7 @@ import { Account } from '../entities/account.entity';
 interface FakeAccountRepo {
   create: jest.Mock<Account, [Partial<Account>]>;
   save: jest.Mock<Promise<Account>, [Account]>;
+  findOneByOrFail: jest.Mock<Promise<Account>, [Partial<Account>]>;
 }
 
 describe('LedgerService', () => {
@@ -17,16 +18,20 @@ describe('LedgerService', () => {
   let manager: { getRepository: jest.Mock<FakeAccountRepo, unknown[]> };
 
   beforeEach(() => {
-    service = new LedgerService();
     repo = {
       create: jest.fn((data: Partial<Account>) => data as Account),
       save: jest.fn((entity: Account) =>
         Promise.resolve({ ...entity, id: 'wallet-1' }),
       ),
+      findOneByOrFail: jest.fn<Promise<Account>, [Partial<Account>]>(),
     };
     manager = {
       getRepository: jest.fn(() => repo),
     };
+    const dataSource = {
+      getRepository: jest.fn(() => repo),
+    } as unknown as DataSource;
+    service = new LedgerService(dataSource);
   });
 
   it('creates a zero-balance user_wallet liability account in the caller-supplied currency', async () => {
@@ -62,5 +67,24 @@ describe('LedgerService', () => {
     );
 
     expect(manager.getRepository).toHaveBeenCalledWith(Account);
+  });
+
+  it("looks up a user's wallet by user_wallet role", async () => {
+    const account = {
+      id: 'wallet-1',
+      userId: 'user-1',
+      role: 'user_wallet',
+      currency: 'NGN',
+      balance: 500n,
+    } as Account;
+    repo.findOneByOrFail.mockResolvedValue(account);
+
+    const wallet = await service.getUserWallet('user-1');
+
+    expect(repo.findOneByOrFail).toHaveBeenCalledWith({
+      userId: 'user-1',
+      role: 'user_wallet',
+    });
+    expect(wallet).toBe(account);
   });
 });

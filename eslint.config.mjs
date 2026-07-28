@@ -36,12 +36,13 @@ export default tseslint.config(
       ]
     },
   },
-  // Enforces docs/architecture.md §10: core modules (ledger, payments, auth)
-  // may never import from peripheral modules (kyc, fraud, social, billsplit,
-  // scheduling), and a module's public surface is only its <name>.service.ts
-  // — everything else inside it is private to that module. Element patterns
-  // are defined now, ahead of any module existing, so the very first module
-  // added under src/modules/ is governed by this from day one.
+  // Enforces docs/architecture.md §10: core modules (ledger, payments, auth,
+  // users) may never import from peripheral modules (kyc, fraud, social,
+  // billsplit, scheduling), and a module's public surface is only its
+  // <name>.service.ts — everything else inside it is private to that
+  // module. Element patterns are defined now, ahead of any module existing,
+  // so the very first module added under src/modules/ is governed by this
+  // from day one.
   {
     plugins: { boundaries },
     settings: {
@@ -53,7 +54,7 @@ export default tseslint.config(
       'boundaries/elements': [
         {
           type: 'core-module',
-          pattern: 'src/modules/{ledger,payments,auth}',
+          pattern: 'src/modules/{ledger,payments,auth,users}',
         },
         {
           type: 'peripheral-module',

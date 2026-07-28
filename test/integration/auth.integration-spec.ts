@@ -28,6 +28,9 @@ import { ConvertUsersAndAccountsTimestamps1784707276057 } from '../../src/databa
 import { ConvertSessionsTimestamps1784707276058 } from '../../src/database/migrations/1784707276058-ConvertSessionsTimestamps';
 import { ConvertPushTokensTimestamps1784707276059 } from '../../src/database/migrations/1784707276059-ConvertPushTokensTimestamps';
 import { ConvertMfaAndTrustedDevicesTimestamps1784707276060 } from '../../src/database/migrations/1784707276060-ConvertMfaAndTrustedDevicesTimestamps';
+import { AddUsernameChangedAtToUsers1784707276061 } from '../../src/database/migrations/1784707276061-AddUsernameChangedAtToUsers';
+import { CreateCredentials1784707276062 } from '../../src/database/migrations/1784707276062-CreateCredentials';
+import { DropUserForeignKeys1784707276063 } from '../../src/database/migrations/1784707276063-DropUserForeignKeys';
 import { seedSystemAccounts } from '../../src/database/seed-system-accounts';
 import { AuthModule } from '../../src/modules/auth/auth.module';
 import { AuthService } from '../../src/modules/auth/auth.service';
@@ -35,28 +38,35 @@ import { EnrollTotpResponseDto } from '../../src/modules/auth/dto/enroll-totp-re
 import { LoginResponseDto } from '../../src/modules/auth/dto/login-response.dto';
 import { RegisterDto } from '../../src/modules/auth/dto/register.dto';
 import { TokenPairResponseDto } from '../../src/modules/auth/dto/token-pair-response.dto';
+import { Credential } from '../../src/modules/auth/entities/credential.entity';
 import { MfaChallenge } from '../../src/modules/auth/entities/mfa-challenge.entity';
 import { MfaMethod } from '../../src/modules/auth/entities/mfa-method.entity';
 import { Session } from '../../src/modules/auth/entities/session.entity';
 import { TrustedDevice } from '../../src/modules/auth/entities/trusted-device.entity';
-import { User } from '../../src/modules/auth/entities/user.entity';
 import { VerificationCode } from '../../src/modules/auth/entities/verification-code.entity';
 import {
   AccountLockedException,
-  EmailAlreadyRegisteredException,
   InvalidCredentialsException,
   InvalidMfaCodeException,
   InvalidRefreshTokenException,
   MfaChallengeInvalidException,
   MfaChallengeNotFoundException,
-  PhoneAlreadyRegisteredException,
   SessionRevokedException,
-  UsernameAlreadyTakenException,
   VerificationCodeInvalidException,
 } from '../../src/modules/auth/internal/errors';
 import { MfaService } from '../../src/modules/auth/mfa.service';
 import { DeviceMetadata } from '../../src/modules/auth/internal/device-metadata.util';
 import { Account } from '../../src/modules/ledger/entities/account.entity';
+import { LedgerModule } from '../../src/modules/ledger/ledger.module';
+import { WalletBalanceResponseDto } from '../../src/modules/ledger/dto/wallet-balance-response.dto';
+import { User } from '../../src/modules/users/entities/user.entity';
+import { UsersModule } from '../../src/modules/users/users.module';
+import { ProfileResponseDto } from '../../src/modules/users/dto/profile-response.dto';
+import {
+  EmailAlreadyRegisteredException,
+  PhoneAlreadyRegisteredException,
+  UsernameAlreadyTakenException,
+} from '../../src/modules/users/internal/errors';
 import { NotificationsModule } from '../../src/modules/notifications/notifications.module';
 import {
   EMAIL_SENDER,
@@ -155,6 +165,7 @@ describe('Auth module — registration against a real Postgres', () => {
   let mfaService: MfaService;
   let dataSource: DataSource;
   let userRepo: Repository<User>;
+  let credentialRepo: Repository<Credential>;
   let accountRepo: Repository<Account>;
   let sessionRepo: Repository<Session>;
   let mfaMethodRepo: Repository<MfaMethod>;
@@ -188,6 +199,9 @@ describe('Auth module — registration against a real Postgres', () => {
     await new ConvertMfaAndTrustedDevicesTimestamps1784707276060().up(
       queryRunner,
     );
+    await new AddUsernameChangedAtToUsers1784707276061().up(queryRunner);
+    await new CreateCredentials1784707276062().up(queryRunner);
+    await new DropUserForeignKeys1784707276063().up(queryRunner);
     await queryRunner.release();
     await setupDataSource.destroy();
 
@@ -234,6 +248,8 @@ describe('Auth module — registration against a real Postgres', () => {
           inject: [APP_CONFIG],
           useFactory: (cfg: AppConfig) => buildDataSourceOptions(cfg),
         }),
+        UsersModule,
+        LedgerModule,
         AuthModule,
         NotificationsModule,
       ],
@@ -255,6 +271,7 @@ describe('Auth module — registration against a real Postgres', () => {
     mfaService = moduleRef.get(MfaService);
     dataSource = moduleRef.get(DataSource);
     userRepo = dataSource.getRepository(User);
+    credentialRepo = dataSource.getRepository(Credential);
     accountRepo = dataSource.getRepository(Account);
     sessionRepo = dataSource.getRepository(Session);
     mfaMethodRepo = dataSource.getRepository(MfaMethod);
@@ -351,10 +368,14 @@ describe('Auth module — registration against a real Postgres', () => {
     expect(user.email).toBe('ada@example.com');
     expect(user.username).toBe('adalovelace');
     expect(user.phone).toBe('+2348012345678');
+
+    const credential = await credentialRepo.findOneByOrFail({
+      userId: user.id,
+    });
     await expect(
-      bcrypt.compare('a-strong-unique-passphrase', user.passwordHash),
+      bcrypt.compare('a-strong-unique-passphrase', credential.passwordHash),
     ).resolves.toBe(true);
-    expect(user.transactionPinHash).toBeNull();
+    expect(credential.transactionPinHash).toBeNull();
 
     const wallet = await accountRepo.findOneByOrFail({
       userId: user.id,
@@ -366,7 +387,7 @@ describe('Auth module — registration against a real Postgres', () => {
     expect(wallet.balance).toBe(0n);
 
     expect(response.wallet.balance).toEqual({ amount: '0', currency: 'NGN' });
-    expect(JSON.stringify(response)).not.toContain(user.passwordHash);
+    expect(JSON.stringify(response)).not.toContain(credential.passwordHash);
 
     // Auto-enrolled, no separate call — see issue #4.
     const emailMethod = await mfaMethodRepo.findOneByOrFail({
@@ -643,8 +664,11 @@ describe('Auth module — registration against a real Postgres', () => {
         ),
       ).rejects.toBeInstanceOf(InvalidCredentialsException);
 
-      const locked = await userRepo.findOneByOrFail({
+      const lockedUser = await userRepo.findOneByOrFail({
         email: 'lockout@example.com',
+      });
+      const locked = await credentialRepo.findOneByOrFail({
+        userId: lockedUser.id,
       });
       expect(locked.failedLoginAttempts).toBe(5);
       expect(locked.lockedUntil).toBeInstanceOf(Date);
@@ -1376,7 +1400,9 @@ describe('Auth module — registration against a real Postgres', () => {
         })
         .expect(200);
 
-      const updated = await userRepo.findOneByOrFail({ id: user.id });
+      const updated = await credentialRepo.findOneByOrFail({
+        userId: user.id,
+      });
       expect(
         await bcrypt.compare('a-brand-new-passphrase', updated.passwordHash),
       ).toBe(true);
@@ -1483,6 +1509,165 @@ describe('Auth module — registration against a real Postgres', () => {
       });
       expect(sessionsAfter.length).toBeGreaterThan(0);
       expect(sessionsAfter.every((s) => s.status === 'active')).toBe(true);
+    });
+  });
+
+  describe('Profile and wallet endpoints', () => {
+    it('GET /profile returns name, email/phone verification, and username', async () => {
+      const { user } = await registerUser({
+        email: 'profile-read@example.com',
+        username: 'profile_read_user',
+        phone: '+2348099999901',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+
+      const res = await request(app.getHttpServer())
+        .get('/profile')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .expect(200);
+
+      const body = res.body as ProfileResponseDto;
+      expect(body.firstName).toBe('Ada');
+      expect(body.lastName).toBe('Lovelace');
+      expect(body.email).toBe('profile-read@example.com');
+      expect(body.emailVerifiedAt).toBeNull();
+      expect(body.phone).toBe('+2348099999901');
+      expect(body.phoneVerifiedAt).toBeNull();
+      expect(body.username).toBe('profile_read_user');
+      // No mfaMethods field — users can't depend on auth's MfaService, so
+      // it's dropped rather than forcing the dependency (see ADR-0005).
+      expect(body).not.toHaveProperty('mfaMethods');
+    });
+
+    it('rejects an unauthenticated profile request', async () => {
+      await request(app.getHttpServer()).get('/profile').expect(401);
+    });
+
+    it('PATCH /profile updates firstName/lastName with no cooldown or verification', async () => {
+      const { user } = await registerUser({
+        email: 'profile-name@example.com',
+        username: 'profile_name_user',
+        phone: '+2348099999902',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+
+      const res = await request(app.getHttpServer())
+        .patch('/profile')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ firstName: 'Grace', lastName: 'Hopper' })
+        .expect(200);
+
+      const body = res.body as ProfileResponseDto;
+      expect(body.firstName).toBe('Grace');
+      expect(body.lastName).toBe('Hopper');
+
+      const updated = await userRepo.findOneByOrFail({ id: user.id });
+      expect(updated.usernameChangedAt).toBeNull();
+    });
+
+    it('PATCH /profile changes the username on the first change', async () => {
+      const { user } = await registerUser({
+        email: 'profile-username@example.com',
+        username: 'profile_uname_user',
+        phone: '+2348099999903',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+
+      const res = await request(app.getHttpServer())
+        .patch('/profile')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ username: 'new_username_1' })
+        .expect(200);
+
+      const body = res.body as ProfileResponseDto;
+      expect(body.username).toBe('new_username_1');
+
+      const updated = await userRepo.findOneByOrFail({ id: user.id });
+      expect(updated.usernameChangedAt).not.toBeNull();
+    });
+
+    it('PATCH /profile rejects a second username change within the 30-day cooldown', async () => {
+      const { user } = await registerUser({
+        email: 'profile-cooldown@example.com',
+        username: 'profile_cd_user',
+        phone: '+2348099999904',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+
+      await request(app.getHttpServer())
+        .patch('/profile')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ username: 'cooldown_username_1' })
+        .expect(200);
+
+      await request(app.getHttpServer())
+        .patch('/profile')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ username: 'cooldown_username_2' })
+        .expect(429);
+
+      const updated = await userRepo.findOneByOrFail({ id: user.id });
+      expect(updated.username).toBe('cooldown_username_1');
+    });
+
+    it('PATCH /profile rejects a username already taken by another user', async () => {
+      await registerUser({
+        email: 'profile-taken-owner@example.com',
+        username: 'profile_taken_name',
+        phone: '+2348099999905',
+      });
+      const { user } = await registerUser({
+        email: 'profile-taken-claimant@example.com',
+        username: 'profile_taken_claim',
+        phone: '+2348099999906',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+
+      await request(app.getHttpServer())
+        .patch('/profile')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ username: 'profile_taken_name' })
+        .expect(409);
+    });
+
+    it('GET /wallet/balance returns the caller wallet balance and currency', async () => {
+      const { user } = await registerUser({
+        email: 'wallet-balance@example.com',
+        username: 'wallet_balance_user',
+        phone: '+2348099999907',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+
+      const res = await request(app.getHttpServer())
+        .get('/wallet/balance')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .expect(200);
+
+      const body = res.body as WalletBalanceResponseDto;
+      expect(body.currency).toBe('NGN');
+      expect(body.balance).toEqual({ amount: '0', currency: 'NGN' });
+    });
+
+    it('rejects an unauthenticated wallet balance request', async () => {
+      await request(app.getHttpServer()).get('/wallet/balance').expect(401);
     });
   });
 });
