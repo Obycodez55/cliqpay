@@ -21,6 +21,7 @@ import { VerifyEmailDto } from './dto/verify-email.dto';
 import { VerifyPhoneDto } from './dto/verify-phone.dto';
 import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 import { CompletePasswordResetDto } from './dto/complete-password-reset.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { ChangeEmailDto } from './dto/change-email.dto';
 import { ConfirmChangeEmailDto } from './dto/confirm-change-email.dto';
 import { ChangePhoneDto } from './dto/change-phone.dto';
@@ -124,6 +125,36 @@ export class AuthController {
       dto.token,
       dto.newPassword,
       dto.revokeOtherSessions,
+    );
+  }
+
+  // Step 1 of 2 (see docs/adr/0006, issue #11) — fires unconditionally,
+  // regardless of trusted-device status (docs/architecture.md §3.8).
+  @Post('change-password/step-up')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  initiateChangePasswordStepUp(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<StepUpChallengeResponseDto> {
+    return this.authService.initiatePasswordChangeStepUp(req.user.userId);
+  }
+
+  // Step 2 of 2 — verifies the step-up challenge and the current password,
+  // then changes the password immediately — no pending/confirm step, unlike
+  // change-email/change-phone, since there's no new value to deliver first.
+  @Post('change-password')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  changePassword(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: ChangePasswordDto,
+  ): Promise<void> {
+    return this.authService.changePassword(
+      req.user.userId,
+      req.user.sessionId,
+      dto,
     );
   }
 

@@ -27,6 +27,7 @@ import { LoginResponseDto } from './dto/login-response.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { VerifyMfaChallengeDto } from './dto/verify-mfa-challenge.dto';
+import { ChangePasswordDto } from './dto/change-password.dto';
 import { ChangeEmailDto } from './dto/change-email.dto';
 import { ConfirmChangeEmailDto } from './dto/confirm-change-email.dto';
 import { ChangePhoneDto } from './dto/change-phone.dto';
@@ -329,6 +330,59 @@ export class AuthService {
       await this.dataSource
         .getRepository(Session)
         .update({ userId }, { status: 'revoked' });
+    }
+  }
+
+  // Step 1 of 2 for change-password (see docs/adr/0006 — 2 calls, not 3, per
+  // issue #11: unlike change-email/phone there's no new value to deliver and
+  // confirm, just the current password plus a live step-up proof).
+  async initiatePasswordChangeStepUp(
+    userId: string,
+  ): Promise<StepUpChallengeResponseDto> {
+    const user = await this.usersService.findById(userId);
+    return this.mfaService.createStepUpChallenge(user);
+  }
+
+  // Step 2 of 2 — verifies the step-up challenge and the current password,
+  // then changes the password immediately (no pending/confirm step — see
+  // initiatePasswordChangeStepUp above).
+  async changePassword(
+    userId: string,
+    sessionId: string,
+    dto: ChangePasswordDto,
+  ): Promise<void> {
+    const { userId: challengeUserId } = await this.mfaService.verifyChallenge(
+      dto.challengeId,
+      dto.code,
+    );
+    if (challengeUserId !== userId) {
+      throw new MfaChallengeInvalidException();
+    }
+
+    const credentialRepo = this.dataSource.getRepository(Credential);
+    const credential = await credentialRepo.findOneByOrFail({ userId });
+
+    const passwordMatches = await bcrypt.compare(
+      dto.currentPassword,
+      credential.passwordHash,
+    );
+    if (!passwordMatches) {
+      throw new InvalidCredentialsException();
+    }
+
+    credential.passwordHash = await bcrypt.hash(
+      dto.newPassword,
+      BCRYPT_SALT_ROUNDS,
+    );
+    await credentialRepo.save(credential);
+
+    if (dto.revokeOtherSessions) {
+      await this.dataSource
+        .getRepository(Session)
+        .update(
+          { userId, status: 'active', id: Not(sessionId) },
+          { status: 'revoked' },
+        );
     }
   }
 
