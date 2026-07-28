@@ -23,6 +23,8 @@ import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 import { CompletePasswordResetDto } from './dto/complete-password-reset.dto';
 import { ChangeEmailDto } from './dto/change-email.dto';
 import { ConfirmChangeEmailDto } from './dto/confirm-change-email.dto';
+import { ChangePhoneDto } from './dto/change-phone.dto';
+import { ConfirmChangePhoneDto } from './dto/confirm-change-phone.dto';
 import { StepUpChallengeResponseDto } from './dto/step-up-challenge-response.dto';
 import { readTrustedDeviceCookie } from './internal/cookie.util';
 import { extractDeviceMetadata } from './internal/device-metadata.util';
@@ -161,6 +163,48 @@ export class AuthController {
     @Body() dto: ConfirmChangeEmailDto,
   ): Promise<void> {
     return this.authService.confirmEmailChange(
+      req.user.userId,
+      req.user.sessionId,
+      dto,
+    );
+  }
+
+  // Step 1 of 3 (see docs/adr/0006, issue #10) — fires unconditionally,
+  // regardless of trusted-device status (docs/architecture.md §3.8).
+  @Post('change-phone/step-up')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  initiateChangePhoneStepUp(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<StepUpChallengeResponseDto> {
+    return this.authService.initiatePhoneChangeStepUp(req.user.userId);
+  }
+
+  // Step 2 of 3 — verifies the step-up challenge and sends an OTP to the
+  // new number; the live phone doesn't change until confirm.
+  @Post('change-phone')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  changePhone(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: ChangePhoneDto,
+  ): Promise<void> {
+    return this.authService.changePhone(req.user.userId, dto);
+  }
+
+  // Step 3 of 3 — only on a valid, unexpired, unused code does the phone
+  // number actually change.
+  @Post('change-phone/confirm')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  confirmChangePhone(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: ConfirmChangePhoneDto,
+  ): Promise<void> {
+    return this.authService.confirmPhoneChange(
       req.user.userId,
       req.user.sessionId,
       dto,

@@ -32,6 +32,7 @@ import { AddUsernameChangedAtToUsers1784707276061 } from '../../src/database/mig
 import { CreateCredentials1784707276062 } from '../../src/database/migrations/1784707276062-CreateCredentials';
 import { DropUserForeignKeys1784707276063 } from '../../src/database/migrations/1784707276063-DropUserForeignKeys';
 import { AddPendingEmailToUsers1784707276064 } from '../../src/database/migrations/1784707276064-AddPendingEmailToUsers';
+import { AddPendingPhoneToUsers1784707276065 } from '../../src/database/migrations/1784707276065-AddPendingPhoneToUsers';
 import { seedSystemAccounts } from '../../src/database/seed-system-accounts';
 import { AuthModule } from '../../src/modules/auth/auth.module';
 import { AuthService } from '../../src/modules/auth/auth.service';
@@ -204,6 +205,7 @@ describe('Auth module — registration against a real Postgres', () => {
     await new CreateCredentials1784707276062().up(queryRunner);
     await new DropUserForeignKeys1784707276063().up(queryRunner);
     await new AddPendingEmailToUsers1784707276064().up(queryRunner);
+    await new AddPendingPhoneToUsers1784707276065().up(queryRunner);
     await queryRunner.release();
     await setupDataSource.destroy();
 
@@ -1989,6 +1991,320 @@ describe('Auth module — registration against a real Postgres', () => {
     it('rejects an unauthenticated step-up request', async () => {
       await request(app.getHttpServer())
         .post('/auth/change-email/step-up')
+        .send({})
+        .expect(401);
+    });
+  });
+
+  // Mirrors the "change email" block above (issue #10 vs #9, same shape —
+  // see docs/adr/0006). Reuses extractSixDigitCode for both the step-up
+  // challenge (from the sign-in-code email) and the new-number confirmation
+  // code (from the SMS body — phone verification is numeric-format, unlike
+  // email's opaque link token), and latestEmailWithSubject to find the
+  // security alert, which — per changePhone()'s own reasoning — still goes
+  // to the account's email, since there's no SMS-based alert channel.
+  describe('change phone', () => {
+    const SIGN_IN_CODE_SUBJECT = 'Your Cliqpay sign-in code';
+    const SECURITY_ALERT_SUBJECT = 'Security alert on your Cliqpay account';
+
+    async function initiateStepUp(
+      accessToken: string,
+    ): Promise<{ challengeId: string; code: string }> {
+      const res = await request(app.getHttpServer())
+        .post('/auth/change-phone/step-up')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({})
+        .expect(200);
+      const challengeId = (res.body as { challengeId: string }).challengeId;
+      const code = extractSixDigitCode(
+        latestEmailWithSubject(SIGN_IN_CODE_SUBJECT).text,
+      );
+      return { challengeId, code };
+    }
+
+    it('completes the full happy path: step-up, change, then confirm swaps the live phone', async () => {
+      const { user } = await registerUser({
+        email: 'change-phone-happy@example.com',
+        username: 'change_phone_happy',
+        phone: '+2348022200001',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+
+      const { challengeId, code } = await initiateStepUp(tokens.accessToken);
+
+      const alertsBefore = emailAdapter.sent.filter(
+        (m) => m.subject === SECURITY_ALERT_SUBJECT,
+      ).length;
+
+      await request(app.getHttpServer())
+        .post('/auth/change-phone')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ newPhone: '+2348022200099', challengeId, code })
+        .expect(204);
+
+      // The alert goes to the account's email, not SMS — fire-and-forget,
+      // not a blocking gate.
+      await waitFor(
+        () =>
+          emailAdapter.sent.filter((m) => m.subject === SECURITY_ALERT_SUBJECT)
+            .length > alertsBefore,
+      );
+      const alert = latestEmailWithSubject(SECURITY_ALERT_SUBJECT);
+      expect(alert.to).toBe('change-phone-happy@example.com');
+
+      // Live phone hasn't changed yet — only pendingPhone is set.
+      const midFlight = await userRepo.findOneByOrFail({ id: user.id });
+      expect(midFlight.phone).toBe('+2348022200001');
+      expect(midFlight.pendingPhone).toBe('+2348022200099');
+
+      const sent = await waitForVerificationSms('+2348022200099');
+      const confirmCode = extractSixDigitCode(sent.body);
+
+      await request(app.getHttpServer())
+        .post('/auth/change-phone/confirm')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ code: confirmCode, revokeOtherSessions: false })
+        .expect(204);
+
+      const updated = await userRepo.findOneByOrFail({ id: user.id });
+      expect(updated.phone).toBe('+2348022200099');
+      expect(updated.pendingPhone).toBeNull();
+      expect(updated.phoneVerifiedAt).toBeInstanceOf(Date);
+    });
+
+    it('rejects change-phone without a valid step-up challenge, leaving the phone unchanged', async () => {
+      const { user } = await registerUser({
+        email: 'change-phone-no-stepup@example.com',
+        username: 'change_phone_no_stepup',
+        phone: '+2348022200002',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+
+      await request(app.getHttpServer())
+        .post('/auth/change-phone')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({
+          newPhone: '+2348022200098',
+          challengeId: '00000000-0000-0000-0000-000000000000',
+          code: '123456',
+        })
+        .expect(404);
+
+      const unchanged = await userRepo.findOneByOrFail({ id: user.id });
+      expect(unchanged.phone).toBe('+2348022200002');
+      expect(unchanged.pendingPhone).toBeNull();
+    });
+
+    it("rejects change-phone using another user's step-up challenge", async () => {
+      const { user: userA } = await registerUser({
+        email: 'change-phone-owner-a@example.com',
+        username: 'change_phone_owner_a',
+        phone: '+2348022200003',
+      });
+      const { tokens: tokensA } = await loginAndVerify(
+        userA.email,
+        'a-strong-unique-passphrase',
+      );
+      const { user: userB } = await registerUser({
+        email: 'change-phone-owner-b@example.com',
+        username: 'change_phone_owner_b',
+        phone: '+2348022200004',
+      });
+      const { tokens: tokensB } = await loginAndVerify(
+        userB.email,
+        'a-strong-unique-passphrase',
+      );
+
+      const { challengeId, code } = await initiateStepUp(tokensA.accessToken);
+
+      await request(app.getHttpServer())
+        .post('/auth/change-phone')
+        .set('Authorization', `Bearer ${tokensB.accessToken}`)
+        .send({
+          newPhone: '+2348022200097',
+          challengeId,
+          code,
+        })
+        .expect(410);
+
+      const unchangedB = await userRepo.findOneByOrFail({ id: userB.id });
+      expect(unchangedB.pendingPhone).toBeNull();
+    });
+
+    it('rejects confirm with a wrong, expired/unrecognized, or reused code, never changing the phone', async () => {
+      const { user } = await registerUser({
+        email: 'change-phone-bad-confirm@example.com',
+        username: 'change_phone_bad_confirm',
+        phone: '+2348022200005',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+      const { challengeId, code } = await initiateStepUp(tokens.accessToken);
+
+      await request(app.getHttpServer())
+        .post('/auth/change-phone')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({
+          newPhone: '+2348022200096',
+          challengeId,
+          code,
+        })
+        .expect(204);
+
+      // Unrecognized code.
+      await request(app.getHttpServer())
+        .post('/auth/change-phone/confirm')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ code: '000000', revokeOtherSessions: false })
+        .expect(410);
+
+      const stillPending = await userRepo.findOneByOrFail({ id: user.id });
+      expect(stillPending.phone).toBe('+2348022200005');
+      expect(stillPending.pendingPhone).toBe('+2348022200096');
+
+      const sent = await waitForVerificationSms('+2348022200096');
+      const confirmCode = extractSixDigitCode(sent.body);
+
+      await request(app.getHttpServer())
+        .post('/auth/change-phone/confirm')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ code: confirmCode, revokeOtherSessions: false })
+        .expect(204);
+
+      // Reusing the same (now-consumed) code fails and doesn't touch the
+      // already-confirmed phone again.
+      await request(app.getHttpServer())
+        .post('/auth/change-phone/confirm')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ code: confirmCode, revokeOtherSessions: false })
+        .expect(410);
+
+      const finalUser = await userRepo.findOneByOrFail({ id: user.id });
+      expect(finalUser.phone).toBe('+2348022200096');
+    });
+
+    it('rejects a missing revokeOtherSessions as a validation error, rather than defaulting to false', async () => {
+      const { user } = await registerUser({
+        email: 'change-phone-missing-revoke@example.com',
+        username: 'change_phone_missing_revoke',
+        phone: '+2348022200006',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+
+      await request(app.getHttpServer())
+        .post('/auth/change-phone/confirm')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ code: 'irrelevant-code' })
+        .expect(400);
+    });
+
+    it('revokeOtherSessions: true revokes every other session but leaves the confirming one active', async () => {
+      const { user } = await registerUser({
+        email: 'change-phone-revoke-true@example.com',
+        username: 'change_phone_revoke_true',
+        phone: '+2348022200007',
+      });
+      await loginAndVerify(user.email, 'a-strong-unique-passphrase');
+      const { tokens: secondLoginTokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+
+      const sessionsBefore = await sessionRepo.find({
+        where: { userId: user.id },
+        order: { createdAt: 'ASC' },
+      });
+      expect(sessionsBefore.length).toBe(2);
+      const otherSessionId = sessionsBefore[0].id;
+
+      const { challengeId, code } = await initiateStepUp(
+        secondLoginTokens.accessToken,
+      );
+      await request(app.getHttpServer())
+        .post('/auth/change-phone')
+        .set('Authorization', `Bearer ${secondLoginTokens.accessToken}`)
+        .send({
+          newPhone: '+2348022200095',
+          challengeId,
+          code,
+        })
+        .expect(204);
+
+      const sent = await waitForVerificationSms('+2348022200095');
+      const confirmCode = extractSixDigitCode(sent.body);
+
+      await request(app.getHttpServer())
+        .post('/auth/change-phone/confirm')
+        .set('Authorization', `Bearer ${secondLoginTokens.accessToken}`)
+        .send({ code: confirmCode, revokeOtherSessions: true })
+        .expect(204);
+
+      const otherSession = await sessionRepo.findOneByOrFail({
+        id: otherSessionId,
+      });
+      expect(otherSession.status).toBe('revoked');
+
+      // The confirming call's own session (from secondLoginTokens) survives.
+      const sessionsAfter = await sessionRepo.find({
+        where: { userId: user.id },
+      });
+      const activeSessions = sessionsAfter.filter((s) => s.status === 'active');
+      expect(activeSessions.length).toBe(1);
+      expect(activeSessions[0].id).not.toBe(otherSessionId);
+    });
+
+    it('revokeOtherSessions: false leaves every session active', async () => {
+      const { user } = await registerUser({
+        email: 'change-phone-revoke-false@example.com',
+        username: 'change_phone_revoke_false',
+        phone: '+2348022200008',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+      const { challengeId, code } = await initiateStepUp(tokens.accessToken);
+
+      await request(app.getHttpServer())
+        .post('/auth/change-phone')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({
+          newPhone: '+2348022200094',
+          challengeId,
+          code,
+        })
+        .expect(204);
+
+      const sent = await waitForVerificationSms('+2348022200094');
+      const confirmCode = extractSixDigitCode(sent.body);
+
+      await request(app.getHttpServer())
+        .post('/auth/change-phone/confirm')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ code: confirmCode, revokeOtherSessions: false })
+        .expect(204);
+
+      const sessionsAfter = await sessionRepo.find({
+        where: { userId: user.id },
+      });
+      expect(sessionsAfter.length).toBeGreaterThan(0);
+      expect(sessionsAfter.every((s) => s.status === 'active')).toBe(true);
+    });
+
+    it('rejects an unauthenticated step-up request', async () => {
+      await request(app.getHttpServer())
+        .post('/auth/change-phone/step-up')
         .send({})
         .expect(401);
     });

@@ -4,6 +4,7 @@ import { DataSource, EntityManager } from 'typeorm';
 import { User } from './entities/user.entity';
 import {
   NoPendingEmailChangeException,
+  NoPendingPhoneChangeException,
   UsernameChangeCooldownException,
 } from './internal/errors';
 import { mapUsersUniqueViolation } from './internal/errors';
@@ -105,6 +106,35 @@ export class UsersService {
     user.email = user.pendingEmail;
     user.pendingEmail = null;
     user.emailVerifiedAt = new Date();
+    try {
+      await repo.save(user);
+    } catch (error) {
+      mapUsersUniqueViolation(error);
+    }
+    return user;
+  }
+
+  // Called by AuthService.changePhone once step-up MFA has been proven —
+  // stashes the new number without touching the live `phone` (see issue #10).
+  async setPendingPhone(userId: string, newPhone: string): Promise<void> {
+    await this.dataSource
+      .getRepository(User)
+      .update(userId, { pendingPhone: newPhone });
+  }
+
+  // Called by AuthService.confirmPhoneChange once the new number's
+  // verification code has been consumed. Insert-and-catch on the unique
+  // violation, same race-free pattern as confirmPendingEmail.
+  async confirmPendingPhone(userId: string): Promise<User> {
+    const repo = this.dataSource.getRepository(User);
+    const user = await repo.findOneByOrFail({ id: userId });
+    if (!user.pendingPhone) {
+      throw new NoPendingPhoneChangeException();
+    }
+
+    user.phone = user.pendingPhone;
+    user.pendingPhone = null;
+    user.phoneVerifiedAt = new Date();
     try {
       await repo.save(user);
     } catch (error) {

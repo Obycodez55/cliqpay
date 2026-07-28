@@ -29,6 +29,8 @@ import { LogoutDto } from './dto/logout.dto';
 import { VerifyMfaChallengeDto } from './dto/verify-mfa-challenge.dto';
 import { ChangeEmailDto } from './dto/change-email.dto';
 import { ConfirmChangeEmailDto } from './dto/confirm-change-email.dto';
+import { ChangePhoneDto } from './dto/change-phone.dto';
+import { ConfirmChangePhoneDto } from './dto/confirm-change-phone.dto';
 import { StepUpChallengeResponseDto } from './dto/step-up-challenge-response.dto';
 import {
   RegisterResponseDto,
@@ -130,7 +132,10 @@ export class AuthService {
       user.email,
     );
     await this.eventBus.publish(emailEvent);
-    const phoneEvent = await this.buildPhoneVerificationEvent(user);
+    const phoneEvent = await this.buildPhoneVerificationEvent(
+      user.id,
+      user.phone,
+    );
     await this.eventBus.publish(phoneEvent);
 
     return toRegisterResponse(user, wallet);
@@ -191,12 +196,16 @@ export class AuthService {
     await this.eventBus.dispatchAndAwait(event);
   }
 
-  private async buildPhoneVerificationEvent(user: {
-    id: string;
-    phone: string;
-  }): Promise<DomainEventEnvelope<string, PhoneVerificationOtpEventPayload>> {
+  // Takes the target number directly, not a user object — reused by
+  // changePhone() to send to a *new*, not-yet-live number (see issue #10),
+  // as well as register()/resendPhoneVerification() sending to the current
+  // one. Mirrors buildEmailVerificationEvent's shape.
+  private async buildPhoneVerificationEvent(
+    userId: string,
+    phone: string,
+  ): Promise<DomainEventEnvelope<string, PhoneVerificationOtpEventPayload>> {
     const { token, expiresAt } = await this.verificationCodeService.issue(
-      user.id,
+      userId,
       'phone_verification',
       PHONE_VERIFICATION_TTL_MS,
       'numeric',
@@ -205,8 +214,8 @@ export class AuthService {
     return {
       name: PHONE_VERIFICATION_OTP_EVENT,
       payload: {
-        userId: user.id,
-        phone: user.phone,
+        userId,
+        phone,
         code: token,
         expiresInMinutes: Math.round(
           (expiresAt.getTime() - Date.now()) / 60_000,
@@ -236,7 +245,7 @@ export class AuthService {
 
     // Synchronous/awaited — unlike register()'s automatic send, this is a
     // deliberate action the user is actively waiting on right now.
-    const event = await this.buildPhoneVerificationEvent(user);
+    const event = await this.buildPhoneVerificationEvent(user.id, user.phone);
     await this.eventBus.dispatchAndAwait(event);
   }
 
@@ -390,6 +399,77 @@ export class AuthService {
     }
 
     await this.usersService.confirmPendingEmail(userId);
+
+    if (dto.revokeOtherSessions) {
+      await this.dataSource
+        .getRepository(Session)
+        .update(
+          { userId, status: 'active', id: Not(sessionId) },
+          { status: 'revoked' },
+        );
+    }
+  }
+
+  // Step 1 of 3 for change-phone (see docs/adr/0006, issue #10) — same
+  // step-up shape as change-email, sharing MfaService.createStepUpChallenge
+  // directly rather than new MFA plumbing.
+  async initiatePhoneChangeStepUp(
+    userId: string,
+  ): Promise<StepUpChallengeResponseDto> {
+    const user = await this.usersService.findById(userId);
+    return this.mfaService.createStepUpChallenge(user);
+  }
+
+  // Step 2 of 3 — verifies the step-up challenge, stashes newPhone as
+  // pending (not live yet — see users.User.pendingPhone), sends a numeric
+  // OTP to it (reusing 'phone_verification', same as issue #6), and
+  // fire-and-forget alerts the account. There's no SMS-based security-alert
+  // channel in this codebase, and the account's email is unaffected by this
+  // change, so the alert reuses SECURITY_ALERT_EVENT to the user's email
+  // rather than adding a new SMS alert type for one caller.
+  async changePhone(userId: string, dto: ChangePhoneDto): Promise<void> {
+    const { userId: challengeUserId } = await this.mfaService.verifyChallenge(
+      dto.challengeId,
+      dto.code,
+    );
+    if (challengeUserId !== userId) {
+      throw new MfaChallengeInvalidException();
+    }
+
+    const user = await this.usersService.findById(userId);
+    await this.usersService.setPendingPhone(userId, dto.newPhone);
+
+    const event = await this.buildPhoneVerificationEvent(userId, dto.newPhone);
+    await this.eventBus.dispatchAndAwait(event);
+
+    await this.eventBus.publish<string, SecurityAlertEventPayload>({
+      name: SECURITY_ALERT_EVENT,
+      payload: {
+        userId,
+        email: user.email,
+        message: `We received a request to change the phone number on your account to ${dto.newPhone}. If this wasn't you, please secure your account immediately.`,
+      },
+      occurredAt: new Date(),
+    });
+  }
+
+  // Step 3 of 3 — only on a valid, unexpired, unused code does the phone
+  // number actually change. Same caller-scoping and session-revocation
+  // shape as confirmEmailChange.
+  async confirmPhoneChange(
+    userId: string,
+    sessionId: string,
+    dto: ConfirmChangePhoneDto,
+  ): Promise<void> {
+    const { userId: codeUserId } = await this.verificationCodeService.consume(
+      'phone_verification',
+      dto.code,
+    );
+    if (codeUserId !== userId) {
+      throw new VerificationCodeInvalidException();
+    }
+
+    await this.usersService.confirmPendingPhone(userId);
 
     if (dto.revokeOtherSessions) {
       await this.dataSource
