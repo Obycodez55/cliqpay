@@ -32,6 +32,8 @@ import { ChangeEmailDto } from './dto/change-email.dto';
 import { ConfirmChangeEmailDto } from './dto/confirm-change-email.dto';
 import { ChangePhoneDto } from './dto/change-phone.dto';
 import { ConfirmChangePhoneDto } from './dto/confirm-change-phone.dto';
+import { EnrollTotpDto } from './dto/enroll-totp.dto';
+import { EnrollTotpResponseDto } from './dto/enroll-totp-response.dto';
 import { StepUpChallengeResponseDto } from './dto/step-up-challenge-response.dto';
 import {
   RegisterResponseDto,
@@ -386,6 +388,38 @@ export class AuthService {
     }
   }
 
+  // Step-up for TOTP enrollment (docs/architecture.md §3.8 lists "MFA
+  // methods" directly among the changes step-up must gate, unconditionally
+  // regardless of trusted-device status) — same shape as the change-email/
+  // phone/password step-up flows below (docs/adr/0006).
+  async initiateTotpEnrollStepUp(
+    userId: string,
+  ): Promise<StepUpChallengeResponseDto> {
+    const user = await this.usersService.findById(userId);
+    return this.mfaService.createStepUpChallenge(user);
+  }
+
+  // Gates MfaService.enrollTotp behind the step-up challenge above — a
+  // pending TOTP method can only be created here, so confirmTotp (which
+  // only ever activates a method that already exists) doesn't need its own
+  // separate step-up gate. Same caller-ownership check as changeEmail/
+  // changePhone/changePassword: verifyChallenge isn't caller-scoped, so this
+  // checks the returned userId itself and reuses the same exception the
+  // method already throws for an invalid challenge.
+  async enrollTotp(
+    userId: string,
+    dto: EnrollTotpDto,
+  ): Promise<EnrollTotpResponseDto> {
+    const { userId: challengeUserId } = await this.mfaService.verifyChallenge(
+      dto.challengeId,
+      dto.code,
+    );
+    if (challengeUserId !== userId) {
+      throw new MfaChallengeInvalidException();
+    }
+    return this.mfaService.enrollTotp(userId);
+  }
+
   // Step 1 of 3 for change-email (see docs/adr/0006) — fires unconditionally,
   // regardless of trusted-device status (docs/architecture.md §3.8), unlike
   // login's challenge which a trusted device can skip. Caller submits the
@@ -414,6 +448,16 @@ export class AuthService {
     if (challengeUserId !== userId) {
       throw new MfaChallengeInvalidException();
     }
+
+    // Same 60s/5-per-hour bound as every other email_verification send
+    // (resendEmailVerification) — without it, a caller could repeatedly
+    // target an arbitrary third-party address with this endpoint. Checked
+    // before any state changes, so a rate-limited attempt has no side
+    // effects.
+    await this.verificationCodeService.assertResendAllowed(
+      userId,
+      'email_verification',
+    );
 
     const user = await this.usersService.findById(userId);
     await this.usersService.setPendingEmail(userId, dto.newEmail);
@@ -489,6 +533,16 @@ export class AuthService {
     if (challengeUserId !== userId) {
       throw new MfaChallengeInvalidException();
     }
+
+    // Same 60s/5-per-hour bound as every other phone_verification send
+    // (resendPhoneVerification) — SMS costs real money per send, so this
+    // also bounds cost-abuse against an arbitrary third-party number.
+    // Checked before any state changes, so a rate-limited attempt has no
+    // side effects.
+    await this.verificationCodeService.assertResendAllowed(
+      userId,
+      'phone_verification',
+    );
 
     const user = await this.usersService.findById(userId);
     await this.usersService.setPendingPhone(userId, dto.newPhone);

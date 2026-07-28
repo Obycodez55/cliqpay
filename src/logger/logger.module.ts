@@ -9,6 +9,8 @@ const REDACT_PATHS = [
   'req.headers.authorization',
   'req.headers.cookie',
   'req.body.password',
+  'req.body.currentPassword',
+  'req.body.newPassword',
   'req.body.pin',
   'req.body.transactionPin',
   'req.body.bvn',
@@ -18,6 +20,9 @@ const REDACT_PATHS = [
   'req.body.cvv',
   'req.body.refreshToken',
   'req.body.accessToken',
+  'req.body.token',
+  'req.body.code',
+  'req.body.challengeId',
   'res.headers["set-cookie"]',
 ];
 

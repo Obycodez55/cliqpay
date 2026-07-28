@@ -14,7 +14,9 @@ import { Request, Response } from 'express';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { AuthService } from './auth.service';
 import { ConfirmTotpDto } from './dto/confirm-totp.dto';
+import { EnrollTotpDto } from './dto/enroll-totp.dto';
 import { EnrollTotpResponseDto } from './dto/enroll-totp-response.dto';
+import { StepUpChallengeResponseDto } from './dto/step-up-challenge-response.dto';
 import { TokenPairResponseDto } from './dto/token-pair-response.dto';
 import { VerifyMfaChallengeDto } from './dto/verify-mfa-challenge.dto';
 import { setTrustedDeviceCookie } from './internal/cookie.util';
@@ -33,11 +35,29 @@ export class MfaController {
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
+  // Step-up initiate for TOTP enrollment — see docs/architecture.md §3.8
+  // ("MFA methods" is directly on the step-up trigger list) and
+  // AuthService.initiateTotpEnrollStepUp. Same shape as the change-email/
+  // phone/password step-up endpoints.
+  @Post('totp/enroll/step-up')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  initiateTotpEnrollStepUp(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<StepUpChallengeResponseDto> {
+    return this.authService.initiateTotpEnrollStepUp(req.user.userId);
+  }
+
   @Post('totp/enroll')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
-  enrollTotp(@Req() req: AuthenticatedRequest): Promise<EnrollTotpResponseDto> {
-    return this.mfaService.enrollTotp(req.user.userId);
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  enrollTotp(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: EnrollTotpDto,
+  ): Promise<EnrollTotpResponseDto> {
+    return this.authService.enrollTotp(req.user.userId, dto);
   }
 
   @Post('totp/confirm')

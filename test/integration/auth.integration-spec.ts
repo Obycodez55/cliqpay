@@ -337,6 +337,23 @@ describe('Auth module — registration against a real Postgres', () => {
     return smsAdapter.sent.find((m) => m.to === phone)!;
   }
 
+  // Registration always issues an email_verification and a
+  // phone_verification code fire-and-forget, and changeEmail/changePhone
+  // are rate-limited against those same purposes (they can bomb an
+  // arbitrary third-party address otherwise — see the audit finding this
+  // closes). Tests that aren't exercising that rate limit itself need to
+  // step past registration's own code first, same as the resend tests do,
+  // rather than sleeping the test for real cooldown time.
+  async function agePastResendCooldown(
+    userId: string,
+    purpose: 'email_verification' | 'phone_verification',
+  ): Promise<void> {
+    await verificationCodeRepo.update(
+      { userId, purpose },
+      { createdAt: new Date(Date.now() - 61_000) },
+    );
+  }
+
   // login() forks on device trust (docs/architecture.md §3.8) — this drives
   // it through the untrusted-device path via the real email dispatch and
   // returns finished tokens, for tests that just need a working session.
@@ -951,21 +968,112 @@ describe('Auth module — registration against a real Postgres', () => {
         .expect(401);
     });
 
-    it('accepts an authenticated TOTP enroll request', async () => {
+    // Step-up gating on TOTP enroll (§3.8 lists "MFA methods" directly on
+    // the step-up trigger list) — without it, a bearer token alone could
+    // silently plant a persistent TOTP backdoor. See docs/adr/0006 for the
+    // shared step-up pattern this reuses.
+    async function initiateTotpEnrollStepUp(
+      accessToken: string,
+    ): Promise<{ challengeId: string; code: string }> {
+      const res = await request(app.getHttpServer())
+        .post('/mfa/totp/enroll/step-up')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({})
+        .expect(200);
+      const challengeId = (res.body as { challengeId: string }).challengeId;
+      const code = extractSixDigitCode(
+        latestEmailWithSubject('Your Cliqpay sign-in code').text,
+      );
+      return { challengeId, code };
+    }
+
+    it('accepts a TOTP enroll request completed with a valid step-up challenge', async () => {
+      const { user } = await registerUser({
+        email: 'totp-enroll-stepup@example.com',
+        username: 'totp_enroll_stepup',
+        phone: '+2348055555590',
+      });
       const { tokens } = await loginAndVerify(
-        'http-cookie@example.com',
+        user.email,
         'a-strong-unique-passphrase',
+      );
+      const { challengeId, code } = await initiateTotpEnrollStepUp(
+        tokens.accessToken,
       );
 
       const res = await request(app.getHttpServer())
         .post('/mfa/totp/enroll')
         .set('Authorization', `Bearer ${tokens.accessToken}`)
-        .send({})
+        .send({ challengeId, code })
         .expect(200);
 
       const body = res.body as EnrollTotpResponseDto;
       expect(body.secret).toBeDefined();
       expect(body.otpauthUrl).toContain('otpauth://totp/');
+    });
+
+    it('rejects a TOTP enroll without a valid step-up challenge, creating no pending method', async () => {
+      const { user } = await registerUser({
+        email: 'totp-enroll-no-stepup@example.com',
+        username: 'totp_enroll_no_stepup',
+        phone: '+2348055555591',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+
+      await request(app.getHttpServer())
+        .post('/mfa/totp/enroll')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({
+          challengeId: '00000000-0000-0000-0000-000000000000',
+          code: '123456',
+        })
+        .expect(404);
+
+      const method = await mfaMethodRepo.findOneBy({
+        userId: user.id,
+        type: 'totp',
+      });
+      expect(method).toBeNull();
+    });
+
+    it("rejects a TOTP enroll using another user's step-up challenge", async () => {
+      const { user: userA } = await registerUser({
+        email: 'totp-enroll-owner-a@example.com',
+        username: 'totp_enroll_owner_a',
+        phone: '+2348055555592',
+      });
+      const { tokens: tokensA } = await loginAndVerify(
+        userA.email,
+        'a-strong-unique-passphrase',
+      );
+      const { user: userB } = await registerUser({
+        email: 'totp-enroll-owner-b@example.com',
+        username: 'totp_enroll_owner_b',
+        phone: '+2348055555593',
+      });
+      const { tokens: tokensB } = await loginAndVerify(
+        userB.email,
+        'a-strong-unique-passphrase',
+      );
+
+      const { challengeId, code } = await initiateTotpEnrollStepUp(
+        tokensA.accessToken,
+      );
+
+      await request(app.getHttpServer())
+        .post('/mfa/totp/enroll')
+        .set('Authorization', `Bearer ${tokensB.accessToken}`)
+        .send({ challengeId, code })
+        .expect(410);
+
+      const methodB = await mfaMethodRepo.findOneBy({
+        userId: userB.id,
+        type: 'totp',
+      });
+      expect(methodB).toBeNull();
     });
   });
 
@@ -1705,6 +1813,7 @@ describe('Auth module — registration against a real Postgres', () => {
         username: 'change_email_happy',
         phone: '+2348011100001',
       });
+      await agePastResendCooldown(user.id, 'email_verification');
       const { tokens } = await loginAndVerify(
         user.email,
         'a-strong-unique-passphrase',
@@ -1751,6 +1860,41 @@ describe('Auth module — registration against a real Postgres', () => {
       expect(updated.email).toBe('change-email-new@example.com');
       expect(updated.pendingEmail).toBeNull();
       expect(updated.emailVerifiedAt).toBeInstanceOf(Date);
+    });
+
+    // Registration already issues an email_verification code fire-and-forget
+    // (see "email verification" describe block below) — changeEmail must be
+    // bound by the same 60s/5-per-hour cooldown against that same purpose,
+    // regardless of which address it's targeting, or it becomes a way to
+    // bomb an arbitrary third-party address (see the audit finding this
+    // closes).
+    it('rate-limits the new-address code the same way resend does, regardless of target address', async () => {
+      const { user } = await registerUser({
+        email: 'change-email-rate-limit@example.com',
+        username: 'change_email_rate_limit',
+        phone: '+2348011100099',
+      });
+      await waitForVerificationEmail(user.email); // the automatic send lands
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+      const { challengeId, code } = await initiateStepUp(tokens.accessToken);
+
+      const sentBefore = emailAdapter.sent.length;
+      await request(app.getHttpServer())
+        .post('/auth/change-email')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({
+          newEmail: 'change-email-rate-limit-target@example.com',
+          challengeId,
+          code,
+        })
+        .expect(429);
+      expect(emailAdapter.sent.length).toBe(sentBefore); // no code sent
+
+      const user2 = await userRepo.findOneByOrFail({ id: user.id });
+      expect(user2.pendingEmail).toBeNull(); // no state change either
     });
 
     it('rejects change-email without a valid step-up challenge, leaving the email unchanged', async () => {
@@ -1821,6 +1965,7 @@ describe('Auth module — registration against a real Postgres', () => {
         username: 'change_email_bad_confirm',
         phone: '+2348011100005',
       });
+      await agePastResendCooldown(user.id, 'email_verification');
       const { tokens } = await loginAndVerify(
         user.email,
         'a-strong-unique-passphrase',
@@ -1897,6 +2042,7 @@ describe('Auth module — registration against a real Postgres', () => {
         username: 'change_email_revoke_true',
         phone: '+2348011100007',
       });
+      await agePastResendCooldown(user.id, 'email_verification');
       await loginAndVerify(user.email, 'a-strong-unique-passphrase');
       const { tokens: secondLoginTokens } = await loginAndVerify(
         user.email,
@@ -1954,6 +2100,7 @@ describe('Auth module — registration against a real Postgres', () => {
         username: 'change_email_revoke_false',
         phone: '+2348011100008',
       });
+      await agePastResendCooldown(user.id, 'email_verification');
       const { tokens } = await loginAndVerify(
         user.email,
         'a-strong-unique-passphrase',
@@ -2028,6 +2175,7 @@ describe('Auth module — registration against a real Postgres', () => {
         username: 'change_phone_happy',
         phone: '+2348022200001',
       });
+      await agePastResendCooldown(user.id, 'phone_verification');
       const { tokens } = await loginAndVerify(
         user.email,
         'a-strong-unique-passphrase',
@@ -2073,6 +2221,35 @@ describe('Auth module — registration against a real Postgres', () => {
       expect(updated.phone).toBe('+2348022200099');
       expect(updated.pendingPhone).toBeNull();
       expect(updated.phoneVerifiedAt).toBeInstanceOf(Date);
+    });
+
+    // Same reasoning as change-email's rate-limit test — registration
+    // already issues a phone_verification code fire-and-forget, and SMS
+    // costs real money per send, so this closes a real cost-abuse vector
+    // against an arbitrary third-party number (see the audit finding).
+    it('rate-limits the new-number code the same way resend does, regardless of target number', async () => {
+      const { user } = await registerUser({
+        email: 'change-phone-rate-limit@example.com',
+        username: 'change_phone_rate_limit',
+        phone: '+2348022200097',
+      });
+      await waitForVerificationSms(user.phone); // the automatic send lands
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+      const { challengeId, code } = await initiateStepUp(tokens.accessToken);
+
+      const smsSentBefore = smsAdapter.sent.length;
+      await request(app.getHttpServer())
+        .post('/auth/change-phone')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ newPhone: '+2348022200096', challengeId, code })
+        .expect(429);
+      expect(smsAdapter.sent.length).toBe(smsSentBefore); // no code sent
+
+      const user2 = await userRepo.findOneByOrFail({ id: user.id });
+      expect(user2.pendingPhone).toBeNull(); // no state change either
     });
 
     it('rejects change-phone without a valid step-up challenge, leaving the phone unchanged', async () => {
@@ -2143,6 +2320,7 @@ describe('Auth module — registration against a real Postgres', () => {
         username: 'change_phone_bad_confirm',
         phone: '+2348022200005',
       });
+      await agePastResendCooldown(user.id, 'phone_verification');
       const { tokens } = await loginAndVerify(
         user.email,
         'a-strong-unique-passphrase',
@@ -2215,6 +2393,7 @@ describe('Auth module — registration against a real Postgres', () => {
         username: 'change_phone_revoke_true',
         phone: '+2348022200007',
       });
+      await agePastResendCooldown(user.id, 'phone_verification');
       await loginAndVerify(user.email, 'a-strong-unique-passphrase');
       const { tokens: secondLoginTokens } = await loginAndVerify(
         user.email,
@@ -2270,6 +2449,7 @@ describe('Auth module — registration against a real Postgres', () => {
         username: 'change_phone_revoke_false',
         phone: '+2348022200008',
       });
+      await agePastResendCooldown(user.id, 'phone_verification');
       const { tokens } = await loginAndVerify(
         user.email,
         'a-strong-unique-passphrase',

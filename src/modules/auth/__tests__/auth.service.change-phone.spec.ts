@@ -57,6 +57,10 @@ describe('AuthService — change phone', () => {
       Promise<{ userId: string }>,
       [VerificationPurpose, string]
     >;
+    assertResendAllowed: jest.Mock<
+      Promise<void>,
+      [string, VerificationPurpose]
+    >;
   };
   let sessionRepo: {
     update: jest.Mock<Promise<unknown>, [Partial<Session>, Partial<Session>]>;
@@ -108,6 +112,9 @@ describe('AuthService — change phone', () => {
       ),
       consume: jest.fn((_purpose: VerificationPurpose, _code: string) =>
         Promise.resolve({ userId: 'user-1' }),
+      ),
+      assertResendAllowed: jest.fn(
+        (_userId: string, _purpose: VerificationPurpose) => Promise.resolve(),
       ),
     };
     sessionRepo = {

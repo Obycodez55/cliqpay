@@ -43,6 +43,19 @@ export default tseslint.config(
   // module. Element patterns are defined now, ahead of any module existing,
   // so the very first module added under src/modules/ is governed by this
   // from day one.
+  //
+  // `auth` and `users` are each their own element type, not lumped into one
+  // generic `core-module` type like `ledger`/`payments` — ADR-0005's actual
+  // invariant is directional (`auth` depends on `users`, never the reverse,
+  // specifically to avoid a cycle), and a single shared `core-module` type
+  // can't express "these two core modules may not depend on each other in
+  // one direction." Policies below repeat per module type instead of using
+  // `{ type: { anyOf: [...] } }` to group them — the installed
+  // eslint-plugin-boundaries version (7.0.2) throws
+  // ("template.replaceAll is not a function") when a dependencies/
+  // entry-point selector's `type` uses `anyOf` or a plain array; verified
+  // directly by hitting it. Single-string `type` per policy entry avoids
+  // the broken code path.
   {
     plugins: { boundaries },
     settings: {
@@ -53,8 +66,20 @@ export default tseslint.config(
       },
       'boundaries/elements': [
         {
-          type: 'core-module',
-          pattern: 'src/modules/{ledger,payments,auth,users}',
+          type: 'ledger-module',
+          pattern: 'src/modules/ledger/**',
+        },
+        {
+          type: 'payments-module',
+          pattern: 'src/modules/payments/**',
+        },
+        {
+          type: 'auth-module',
+          pattern: 'src/modules/auth/**',
+        },
+        {
+          type: 'users-module',
+          pattern: 'src/modules/users/**',
         },
         {
           type: 'peripheral-module',
@@ -74,10 +99,34 @@ export default tseslint.config(
           default: 'allow',
           policies: [
             {
-              from: { element: { type: 'core-module' } },
+              from: { element: { type: 'ledger-module' } },
               disallow: { to: { element: { type: 'peripheral-module' } } },
               message:
-                'Core modules (ledger, payments, auth) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
+                'Core modules (ledger, payments, auth, users) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
+            },
+            {
+              from: { element: { type: 'payments-module' } },
+              disallow: { to: { element: { type: 'peripheral-module' } } },
+              message:
+                'Core modules (ledger, payments, auth, users) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
+            },
+            {
+              from: { element: { type: 'auth-module' } },
+              disallow: { to: { element: { type: 'peripheral-module' } } },
+              message:
+                'Core modules (ledger, payments, auth, users) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
+            },
+            {
+              from: { element: { type: 'users-module' } },
+              disallow: { to: { element: { type: 'peripheral-module' } } },
+              message:
+                'Core modules (ledger, payments, auth, users) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
+            },
+            {
+              from: { element: { type: 'users-module' } },
+              disallow: { to: { element: { type: 'auth-module' } } },
+              message:
+                '`users` must never import from `auth` — `auth` depends on `users`, never the reverse, specifically to avoid a cycle (see docs/adr/0005-users-auth-split.md).',
             },
           ],
         },
@@ -97,8 +146,27 @@ export default tseslint.config(
             // LedgerModule) is normal modular-monolith structure, not a
             // breach of "one exported service" — that rule is about
             // reaching into a module's internals, not about DI composition.
+            // Four separate entries, not one with an array `type` — the
+            // legacy entry-point rule's matcher throws
+            // ("template.replaceAll is not a function") when `type` is an
+            // array rather than a single string, a real bug in this
+            // deprecated rule at the installed plugin version. Verified by
+            // hitting it directly; splitting into single-string entries
+            // avoids the broken code path entirely.
             {
-              target: { type: 'core-module' },
+              target: { type: 'ledger-module' },
+              allow: '*.(service|module).ts',
+            },
+            {
+              target: { type: 'payments-module' },
+              allow: '*.(service|module).ts',
+            },
+            {
+              target: { type: 'auth-module' },
+              allow: '*.(service|module).ts',
+            },
+            {
+              target: { type: 'users-module' },
               allow: '*.(service|module).ts',
             },
             {
