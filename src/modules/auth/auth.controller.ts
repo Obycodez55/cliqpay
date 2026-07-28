@@ -7,6 +7,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
@@ -34,6 +35,7 @@ import {
   JwtAuthGuard,
 } from '../../common/guards/jwt-auth.guard';
 
+@ApiTags('auth')
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
@@ -41,6 +43,7 @@ export class AuthController {
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Register a new user account' })
   register(@Body() dto: RegisterDto): Promise<RegisterResponseDto> {
     return this.authService.register(dto);
   }
@@ -52,6 +55,9 @@ export class AuthController {
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Log in with email and password, may return an MFA challenge',
+  })
   login(@Body() dto: LoginDto, @Req() req: Request): Promise<LoginResponseDto> {
     return this.authService.login(
       dto,
@@ -62,12 +68,14 @@ export class AuthController {
 
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Exchange a refresh token for a new token pair' })
   refresh(@Body() dto: RefreshDto): Promise<TokenPairResponseDto> {
     return this.authService.refresh(dto);
   }
 
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: 'Log out and revoke the current session' })
   logout(@Body() dto: LogoutDto): Promise<void> {
     return this.authService.logout(dto);
   }
@@ -76,6 +84,9 @@ export class AuthController {
   @Post('verify-email')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Verify an email address using its verification token',
+  })
   verifyEmail(@Body() dto: VerifyEmailDto): Promise<void> {
     return this.authService.verifyEmail(dto.token);
   }
@@ -85,6 +96,8 @@ export class AuthController {
   @Post('verify-email/resend')
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Resend the email verification link' })
   resendVerificationEmail(@Req() req: AuthenticatedRequest): Promise<void> {
     return this.authService.resendEmailVerification(req.user.userId);
   }
@@ -93,6 +106,9 @@ export class AuthController {
   @Post('verify-phone')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Verify a phone number using its verification code',
+  })
   verifyPhone(@Body() dto: VerifyPhoneDto): Promise<void> {
     return this.authService.verifyPhone(dto.code);
   }
@@ -102,6 +118,8 @@ export class AuthController {
   @Post('verify-phone/resend')
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Resend the phone verification code' })
   resendVerificationPhone(@Req() req: AuthenticatedRequest): Promise<void> {
     return this.authService.resendPhoneVerification(req.user.userId);
   }
@@ -112,6 +130,7 @@ export class AuthController {
   @Post('password-reset/request')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Request a password reset email' })
   requestPasswordReset(@Body() dto: RequestPasswordResetDto): Promise<void> {
     return this.authService.requestPasswordReset(dto.email);
   }
@@ -120,6 +139,7 @@ export class AuthController {
   @Post('password-reset/complete')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Complete a password reset using its reset token' })
   completePasswordReset(@Body() dto: CompletePasswordResetDto): Promise<void> {
     return this.authService.completePasswordReset(
       dto.token,
@@ -134,6 +154,8 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Start a step-up challenge for a password change' })
   initiateChangePasswordStepUp(
     @Req() req: AuthenticatedRequest,
   ): Promise<StepUpChallengeResponseDto> {
@@ -147,6 +169,10 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Change the current password using a step-up challenge',
+  })
   changePassword(
     @Req() req: AuthenticatedRequest,
     @Body() dto: ChangePasswordDto,
@@ -164,6 +190,8 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Start a step-up challenge for an email change' })
   initiateChangeEmailStepUp(
     @Req() req: AuthenticatedRequest,
   ): Promise<StepUpChallengeResponseDto> {
@@ -176,6 +204,11 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Request an email change, sends a verification code to the new address',
+  })
   changeEmail(
     @Req() req: AuthenticatedRequest,
     @Body() dto: ChangeEmailDto,
@@ -189,6 +222,10 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Confirm an email change using its verification code',
+  })
   confirmChangeEmail(
     @Req() req: AuthenticatedRequest,
     @Body() dto: ConfirmChangeEmailDto,
@@ -206,6 +243,10 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Start a step-up challenge for a phone number change',
+  })
   initiateChangePhoneStepUp(
     @Req() req: AuthenticatedRequest,
   ): Promise<StepUpChallengeResponseDto> {
@@ -218,6 +259,10 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Request a phone number change, sends an OTP to the new number',
+  })
   changePhone(
     @Req() req: AuthenticatedRequest,
     @Body() dto: ChangePhoneDto,
@@ -231,6 +276,8 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Confirm a phone number change using its OTP' })
   confirmChangePhone(
     @Req() req: AuthenticatedRequest,
     @Body() dto: ConfirmChangePhoneDto,

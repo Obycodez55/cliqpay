@@ -9,6 +9,7 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Request, Response } from 'express';
 import { APP_CONFIG, AppConfig } from '../../config';
@@ -27,6 +28,7 @@ import {
 import { MfaService, TRUSTED_DEVICE_TTL_MS } from './mfa.service';
 import { extractDeviceMetadata } from './internal/device-metadata.util';
 
+@ApiTags('mfa')
 @Controller('mfa')
 export class MfaController {
   constructor(
@@ -43,6 +45,8 @@ export class MfaController {
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Start a step-up challenge for TOTP enrollment' })
   initiateTotpEnrollStepUp(
     @Req() req: AuthenticatedRequest,
   ): Promise<StepUpChallengeResponseDto> {
@@ -53,6 +57,10 @@ export class MfaController {
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Enroll a TOTP MFA method using a step-up challenge',
+  })
   enrollTotp(
     @Req() req: AuthenticatedRequest,
     @Body() dto: EnrollTotpDto,
@@ -63,6 +71,10 @@ export class MfaController {
   @Post('totp/confirm')
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Confirm TOTP enrollment using a code from the authenticator app',
+  })
   confirmTotp(
     @Req() req: AuthenticatedRequest,
     @Body() dto: ConfirmTotpDto,
@@ -73,6 +85,7 @@ export class MfaController {
   @Post('verify')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Verify an MFA challenge and issue a token pair' })
   async verify(
     @Body() dto: VerifyMfaChallengeDto,
     @Req() req: Request,

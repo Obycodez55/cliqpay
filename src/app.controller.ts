@@ -11,10 +11,12 @@ import {
   HealthIndicatorService,
   TypeOrmHealthIndicator,
 } from '@nestjs/terminus';
+import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import Redis from 'ioredis';
 import { AppService } from './app.service';
 import { REDIS_CLIENT } from './redis/redis.module';
 
+@ApiTags('app')
 @Controller()
 export class AppController {
   constructor(
@@ -26,6 +28,7 @@ export class AppController {
   ) {}
 
   @Get()
+  @ApiOperation({ summary: 'Basic liveness greeting' })
   getHello(): string {
     return this.appService.getHello();
   }
@@ -35,6 +38,7 @@ export class AppController {
   @Version(VERSION_NEUTRAL)
   @Get('health')
   @HealthCheck()
+  @ApiOperation({ summary: 'Health check for database and Redis connectivity' })
   checkHealth() {
     return this.health.check([
       () => this.db.pingCheck('database'),

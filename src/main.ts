@@ -9,6 +9,7 @@ import helmet from 'helmet';
 import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
 import { APP_CONFIG, AppConfig } from './config';
+import { setupApiDocs } from './docs/setup-api-docs';
 
 const SHUTDOWN_SIGNALS: NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];
 const FORCE_EXIT_TIMEOUT_MS = 10_000;
@@ -86,6 +87,14 @@ async function bootstrap() {
     credentials: true,
   });
 
+  setupApiDocs(app, config);
+
   await app.listen(config.app.port);
+
+  // app.getUrl() resolves to whatever the OS actually bound ([::1],
+  // 0.0.0.0, etc.) — not what a developer would type into a browser.
+  const baseUrl = `http://localhost:${config.app.port}`;
+  logger.log(`Application running on: ${baseUrl}`);
+  logger.log(`API docs: ${baseUrl}/reference`);
 }
 void bootstrap();

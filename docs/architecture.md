@@ -626,7 +626,7 @@ These are non-negotiable standards applied across all phases, not deferred to a 
 - Pagination on all list endpoints
 - Versioned API routes (`/v1/`)
 - Comprehensive input validation with descriptive error messages
-- **[v7.1, deferred]** OpenAPI/Swagger docs generated from NestJS decorators — originally scoped for Phase 1 as cheap-now groundwork for the separate mobile/admin repos, but not being added for now; revisit once a client repo actually needs the reference
+- **[v7.2]** OpenAPI docs generated from NestJS/`@nestjs/swagger` decorators (`src/docs/setup-api-docs.ts`), rendered via Scalar at `/reference` (raw spec at `/doc`) instead of the default Swagger UI. A co-located check (`src/docs/__tests__/api-docs-completeness.spec.ts`) walks the module graph and fails if any route handler is missing `@ApiOperation` — the guard against decorators quietly not keeping up as new endpoints are added. Both routes are public in every environment for now — there's no staff/admin auth system yet to gate them behind (see admin auth note below), and building one just for this would be its own feature; revisit if that need becomes real.
 
 ---
 
