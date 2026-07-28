@@ -16,15 +16,13 @@ interface AccessTokenClaims {
   sid: string;
 }
 
-// First protected route in the app (issue #4's TOTP enroll/confirm) — reuses
-// the JwtService already registered by AuthModule for signing access tokens
-// rather than pulling in @nestjs/passport for a single verify call.
-//
-// Lives in its own guards/ folder, not internal/ — a guard doesn't need
-// internal/'s hiding trick (see mfa.service.ts's own note): the
-// boundaries/entry-point allow-list only matches `*.service.ts`/`*.module.ts`
-// at a module's root, so a file named `*.guard.ts` is never a valid
-// cross-module entry point regardless of which folder it sits in.
+// Cross-cutting infra, not auth-internal — users and ledger both guard
+// routes with this too (profile, wallet balance), so it lives in
+// common/guards/ rather than inside the auth module. Verifies the JWT
+// itself (via JwtService) rather than looking anything up, so it has no
+// dependency on auth/users beyond the token's own claims. Any module that
+// uses it must import JwtModule itself (see auth/users/ledger modules) —
+// this file registers no providers of its own.
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   constructor(private readonly jwtService: JwtService) {}

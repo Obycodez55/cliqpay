@@ -3,12 +3,9 @@ import {
   CreateDateColumn,
   Entity,
   Index,
-  JoinColumn,
-  ManyToOne,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { User } from './user.entity';
 
 export type MfaMethodType = 'email' | 'totp';
 export type MfaMethodStatus = 'pending' | 'active';
@@ -19,13 +16,11 @@ export class MfaMethod {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  // Cross-module reference to users.User — no FK, no relation decorator
+  // (ADR-0005, amending ADR-0002). See DropUserForeignKeys migration.
   @Index()
   @Column('uuid')
   userId: string;
-
-  @ManyToOne(() => User)
-  @JoinColumn({ name: 'user_id' })
-  user?: User;
 
   @Column({ type: 'varchar' })
   type: MfaMethodType;

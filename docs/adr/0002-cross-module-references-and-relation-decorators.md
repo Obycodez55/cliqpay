@@ -26,6 +26,20 @@ This is a broader instance of the same reasoning behind the modular-monolith str
 - **Relation decorators without real FKs, to get TypeORM's join/eager-load ergonomics across module boundaries too** — rejected; a relation decorator implies referential integrity to anyone reading the entity, and there wouldn't be any. Misleading is worse than inconvenient.
 - **No relation decorators at all, ever, even same-module** — this was the status quo until `Session` prompted the question. Rejected going forward: where a real constraint exists, expressing it as a relation is strictly more informative and doesn't cost anything (it's additive, not eager, and doesn't change how the plain id column is used elsewhere in the code).
 
+**[2026-07-27, amended]** `User` moved out of `auth` into its own `users`
+core module (see ADR-0005). `Session.userId`, `VerificationCode.userId`,
+`MfaMethod.userId`, and `TrustedDevice.userId` — all same-module real FKs
+to `users(id)` when this ADR was written — became cross-module references
+the moment that move happened, since `users(id)` no longer lives in the
+same module as any of those four tables. Per rule 1 above, a real FK
+can't survive a table moving to its own module, so all four FK constraints
+were dropped (`DropUserForeignKeys` migration) and their relation
+decorators (`Session.user`, `MfaMethod.user`, `TrustedDevice.user`) removed
+— the same treatment `Account.userId`/`PushToken.userId` already had from
+day one, not an exception to this ADR's rules but exactly what they predict
+for a same-module reference that stops being same-module. `MfaChallenge.method`
+(→ `mfa_methods`, still `auth`-internal) is unaffected.
+
 ## Consequences
 
 - A cross-module dangling reference (e.g. an `Account.userId` pointing at a deleted/nonexistent user) is not caught by the database — it has to be caught by application logic or tests, not a constraint. This is an accepted, standing trade-off, not a gap to eventually close.

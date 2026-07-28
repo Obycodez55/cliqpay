@@ -3,25 +3,20 @@ import {
   CreateDateColumn,
   Entity,
   Index,
-  JoinColumn,
-  ManyToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { DeviceMetadata } from '../internal/device-metadata.util';
-import { User } from './user.entity';
 
 @Entity('trusted_devices')
 export class TrustedDevice {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  // Cross-module reference to users.User — no FK, no relation decorator
+  // (ADR-0005, amending ADR-0002). See DropUserForeignKeys migration.
   @Index()
   @Column('uuid')
   userId: string;
-
-  @ManyToOne(() => User)
-  @JoinColumn({ name: 'user_id' })
-  user?: User;
 
   // SHA-256, not bcrypt — same reasoning as Session's refresh-token hashes
   // (docs/architecture.md §3.7): a high-entropy random value, not a human

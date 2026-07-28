@@ -6,37 +6,23 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
-@Entity('users')
-export class User {
+// IAM mechanics split off `users.User` (see ADR-0005) — password, PIN, and
+// lockout state, 1:1 with a `users` row via a plain `userId` column. No FK:
+// `users` is a separate core module (cross-module reference, per ADR-0002).
+// `userId` is unique to enforce the 1:1 cardinality locally.
+@Entity('credentials')
+export class Credential {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'varchar', unique: true })
-  email: string;
+  @Column({ type: 'uuid', unique: true })
+  userId: string;
 
   @Column('varchar')
   passwordHash: string;
 
-  @Column('varchar')
-  firstName: string;
-
-  @Column('varchar')
-  lastName: string;
-
-  @Column({ type: 'varchar', unique: true })
-  username: string;
-
-  @Column({ type: 'varchar', unique: true })
-  phone: string;
-
   @Column({ type: 'varchar', nullable: true })
   transactionPinHash: string | null;
-
-  @Column({ type: 'timestamptz', nullable: true })
-  emailVerifiedAt: Date | null;
-
-  @Column({ type: 'timestamptz', nullable: true })
-  phoneVerifiedAt: Date | null;
 
   @Column({ type: 'int', default: 0 })
   failedLoginAttempts: number;

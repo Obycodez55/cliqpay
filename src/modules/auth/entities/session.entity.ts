@@ -9,7 +9,6 @@ import {
 } from 'typeorm';
 import { DeviceMetadata } from '../internal/device-metadata.util';
 import { TrustedDevice } from './trusted-device.entity';
-import { User } from './user.entity';
 
 export type SessionStatus = 'active' | 'revoked';
 
@@ -18,18 +17,13 @@ export class Session {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  // Plain column, not just a relation artifact — AuthService reads/writes
-  // this directly (see auth.service.ts). `user` below maps the same
-  // `user_id` column as an explicit, same-module FK (real constraint in
-  // CreateSessions migration); it's lazy — nothing eager-loads it, a query
-  // has to ask for `relations: ['user']` to get it populated.
+  // Cross-module reference to users.User — no FK, no relation decorator
+  // (ADR-0005, amending ADR-0002's same-module-only relation rule). Was a
+  // real FK with a `user` relation before `User` moved to its own module;
+  // see the DropUserForeignKeys migration.
   @Index()
   @Column('uuid')
   userId: string;
-
-  @ManyToOne(() => User)
-  @JoinColumn({ name: 'user_id' })
-  user?: User;
 
   @Column({ type: 'varchar', unique: true })
   currentTokenHash: string;

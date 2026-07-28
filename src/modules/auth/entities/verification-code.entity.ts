@@ -3,11 +3,8 @@ import {
   CreateDateColumn,
   Entity,
   Index,
-  JoinColumn,
-  ManyToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
-import { User } from './user.entity';
 
 export type VerificationPurpose =
   | 'email_verification'
@@ -17,6 +14,9 @@ export type VerificationPurpose =
 // No uniqueness constraint on codeHash — a future OTP-shaped purpose (a
 // short numeric code) has low enough entropy that a cross-user collision is
 // plausible, same reasoning as MfaChallenge.codeHash.
+//
+// Cross-module reference to users.User (userId) — no FK, no relation
+// decorator (ADR-0005, amending ADR-0002). See DropUserForeignKeys migration.
 @Entity('verification_codes')
 @Index(['userId', 'purpose'])
 export class VerificationCode {
@@ -26,10 +26,6 @@ export class VerificationCode {
   @Index()
   @Column('uuid')
   userId: string;
-
-  @ManyToOne(() => User)
-  @JoinColumn({ name: 'user_id' })
-  user?: User;
 
   @Column('varchar')
   purpose: VerificationPurpose;
