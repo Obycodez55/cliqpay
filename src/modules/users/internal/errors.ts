@@ -38,6 +38,21 @@ export class UsernameChangeCooldownException extends DomainException {
   }
 }
 
+// Reachable if a code for some other `email_verification`-purpose flow
+// (e.g. a stale signup-verification link, same purpose) gets submitted to
+// change-email/confirm instead — the code consumes fine (it's a real,
+// unused, unexpired code for this user) but there's no pending change to
+// apply.
+export class NoPendingEmailChangeException extends DomainException {
+  readonly code = 'NO_PENDING_EMAIL_CHANGE';
+  constructor() {
+    super(
+      'No pending email change to confirm — start with change-email first',
+      HttpStatus.NOT_FOUND,
+    );
+  }
+}
+
 const CONSTRAINT_EXCEPTIONS: Record<string, () => DomainException> = {
   UQ_users_email: () => new EmailAlreadyRegisteredException(),
   UQ_users_username: () => new UsernameAlreadyTakenException(),

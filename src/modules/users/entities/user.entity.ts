@@ -35,6 +35,12 @@ export class User {
   @Column({ type: 'timestamptz', nullable: true })
   emailVerifiedAt: Date | null;
 
+  // Set by change-email (issue #9) between its verification-code send and
+  // confirm — `email` itself never changes until confirm succeeds, so the
+  // account is never live on an unverified address.
+  @Column({ type: 'varchar', nullable: true })
+  pendingEmail: string | null;
+
   @Column({ type: 'timestamptz', nullable: true })
   phoneVerifiedAt: Date | null;
 
