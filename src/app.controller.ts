@@ -16,7 +16,7 @@ import Redis from 'ioredis';
 import { AppService } from './app.service';
 import { REDIS_CLIENT } from './redis/redis.module';
 
-@ApiTags('app')
+@ApiTags('Application')
 @Controller()
 export class AppController {
   constructor(

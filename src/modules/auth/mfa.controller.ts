@@ -28,7 +28,7 @@ import {
 import { MfaService, TRUSTED_DEVICE_TTL_MS } from './mfa.service';
 import { extractDeviceMetadata } from './internal/device-metadata.util';
 
-@ApiTags('mfa')
+@ApiTags('MFA')
 @Controller('mfa')
 export class MfaController {
   constructor(

@@ -10,7 +10,7 @@ import {
   toWalletBalanceResponse,
 } from './dto/wallet-balance-response.dto';
 
-@ApiTags('wallet')
+@ApiTags('Wallet')
 @ApiBearerAuth()
 @Controller('wallet')
 @UseGuards(JwtAuthGuard)

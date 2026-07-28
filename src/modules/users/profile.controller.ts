@@ -8,7 +8,7 @@ import { UsersService } from './users.service';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ProfileResponseDto } from './dto/profile-response.dto';
 
-@ApiTags('profile')
+@ApiTags('Profile')
 @ApiBearerAuth()
 @Controller('profile')
 @UseGuards(JwtAuthGuard)
