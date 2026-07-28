@@ -4,6 +4,7 @@ import { INestApplication } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { apiReference } from '@scalar/nestjs-api-reference';
 import { Response } from 'express';
+import { ErrorResponseDto } from '../common/dto/error-response.dto';
 import { AppConfig } from '../config';
 
 const SCALAR_STANDALONE_BUNDLE_PATH = join(
@@ -19,7 +20,11 @@ const SCALAR_ASSET_PATH = '/reference-assets/standalone.js';
 export function setupApiDocs(app: INestApplication, config: AppConfig): void {
   const documentConfig = new DocumentBuilder()
     .setTitle('Cliqpay API')
-    .setDescription('Cliqpay peer-to-peer wallet platform API')
+    .setDescription(
+      'Cliqpay peer-to-peer wallet platform API\n\n' +
+        '**Errors** — every failure response across every endpoint below ' +
+        'follows the same shape, see the `ErrorResponseDto` model.',
+    )
     .setVersion('1')
     .addBearerAuth()
     .addTag('Application', 'Liveness and health checks')
@@ -32,7 +37,9 @@ export function setupApiDocs(app: INestApplication, config: AppConfig): void {
     .addTag('Wallet', "The current user's wallet balance")
     .build();
 
-  const document = SwaggerModule.createDocument(app, documentConfig);
+  const document = SwaggerModule.createDocument(app, documentConfig, {
+    extraModels: [ErrorResponseDto],
+  });
 
   // Scalar/Redoc-style sidebar grouping (x-tagGroups). Once this key is
   // present it's exhaustive — any tag not listed in a group disappears
@@ -86,6 +93,17 @@ export function setupApiDocs(app: INestApplication, config: AppConfig): void {
       cdn: SCALAR_ASSET_PATH,
       theme: 'purple',
       hideClientButton: config.app.env === 'production',
+      // Hides Scalar's developer-tools panel and "Load additional APIs" —
+      // dev conveniences that default to visible on localhost.
+      showDeveloperTools: 'never',
+      // "Generate MCP"/"Connect MCP" need a real running MCP server
+      // (mcp.url) we don't have; disabled rather than left as a dead
+      // button. "Ask AI" has no equivalent documented flag — it's gated
+      // by an internal, unexposed prop tied to the same "is this
+      // localhost" check as the line above, so it won't appear for real
+      // users on a deployed domain regardless; not worth an undocumented
+      // workaround for what's already a localhost-only artifact.
+      mcp: { disabled: true },
     }),
   );
 }
