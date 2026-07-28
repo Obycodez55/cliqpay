@@ -1,6 +1,6 @@
 # Cliqpay
 
-A production-grade peer-to-peer wallet platform for Africa (Nigeria first) — NestJS, PostgreSQL, TypeORM, integrated with Kora. Full design: [docs/architecture.md](docs/architecture.md). Read it before touching the ledger, auth, or payments modules — this file only holds the operating rules, not the design itself.
+A production-grade peer-to-peer wallet platform for Africa (Nigeria first) — NestJS, PostgreSQL, TypeORM, integrated with Kora. Full design: [docs/architecture.md](docs/architecture.md). Read it before touching the ledger, auth, or payments modules — this file only holds the operating rules, not the design itself. For *how* to run a phase end-to-end (design → issues → implementation → audit → e2e), see [docs/phase-playbook.md](docs/phase-playbook.md) — read it before starting a new phase.
 
 ## Git — hard rules
 
