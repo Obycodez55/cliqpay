@@ -5,7 +5,7 @@
 
 ## Context
 
-Issue #9 requires `POST /profile/change-email` to be gated by a **step-up**
+Issue #9 requires change-email to be gated by a **step-up**
 MFA challenge — re-proving MFA on an already-authenticated session,
 unconditionally, regardless of trusted-device status (docs/architecture.md
 §3.8). Issue #4 only built MFA for login, where the challenge is created
@@ -32,12 +32,12 @@ matters here because the address isn't the user's current one yet.
 **Three endpoints, all reusing existing machinery instead of introducing new
 token concepts:**
 
-1. `POST /profile/change-email/step-up` — creates a step-up `MfaChallenge`
+1. `POST /auth/change-email/step-up` — creates a step-up `MfaChallenge`
    for the caller (`MfaService.createStepUpChallenge`, sharing
    `createChallengeForLogin`'s method-picking/dispatch logic) and returns
    `{ challengeId, method, expiresAt }` — the same shape `login()`'s
    `mfaRequired: true` branch already returns.
-2. `POST /profile/change-email` — body `{ newEmail, challengeId, code }`.
+2. `POST /auth/change-email` — body `{ newEmail, challengeId, code }`.
    Verifies the step-up challenge via the existing
    `MfaService.verifyChallenge` (same 5-attempt lockout, TTL, single-verify
    as login), checks the challenge's owner matches the caller, stashes
@@ -45,9 +45,20 @@ token concepts:**
    stays untouched until confirm), sends the verification code to the new
    address, and fires a fire-and-forget `SECURITY_ALERT_EVENT` to the
    *current* address.
-3. `POST /profile/change-email/confirm` — body `{ code,
+3. `POST /auth/change-email/confirm` — body `{ code,
    revokeOtherSessions }`. Consumes the verification code, checks its owner
    matches the caller, and only then swaps `pendingEmail` into `email`.
+
+All three routes are added to the existing `AuthController` (`@Controller
+('auth')`), not a new controller or route prefix. The mechanics involved —
+`MfaChallenge`, `VerificationCode`, `Session` — are entirely `auth`'s own
+tables; nothing about this flow touches `users` except the single
+`UsersService.setPendingEmail`/`confirmPendingEmail` calls at the point
+identity actually changes, the same shape every other `auth`→`users`
+crossing already takes (ADR-0005). There's no reason to invent a second
+controller or borrow `/profile`'s route prefix just because the *result* is
+an identity field — `verify-email`/`verify-phone`/`password-reset` all
+already live under `/auth` despite also ultimately writing to `users`.
 
 Both `verifyChallenge` and `consume` return a bare `userId` with no caller
 scoping — they were built for pre-auth flows (login, password reset) where
@@ -72,6 +83,19 @@ whose challenge or code it actually was.
   endpoint** — rejected: overloads one route with two different meanings
   based on which fields are present, which is more surprising for a client
   to implement correctly than a dedicated `step-up` endpoint.
+- **Routing under `/profile` (matching issue #8's `GET`/`PATCH /profile`)
+  via a second, `auth`-internal controller** — tried first, then reverted.
+  The reasoning was that email is identity data so its URL should read like
+  the rest of the profile surface even though `auth` owns the mechanics.
+  Rejected on review: every other identity-adjacent write `auth` already
+  does (`verify-email`, `password-reset`) lives under `/auth`, not
+  `/profile`, precisely because the *mechanics* — not the field being
+  written — are what the module boundary is about. A second controller
+  existed only to preserve that borrowed prefix; once the prefix goes, so
+  does the reason for a second controller, and the three endpoints fold
+  into the existing `AuthController` alongside `verify-email`/
+  `password-reset`, which they resemble far more than they resemble
+  `GET`/`PATCH /profile`.
 - **A generic `metadata: jsonb` column on `VerificationCode`** instead of
   `User.pendingEmail`, to hold the target address (and be reusable for
   future purposes). Rejected per CLAUDE.md's incremental-build rule — issue

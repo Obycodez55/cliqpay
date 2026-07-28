@@ -92,6 +92,30 @@ export class MfaService {
     method: 'email' | 'totp';
     expiresAt: Date;
   }> {
+    return this.buildChallenge(user);
+  }
+
+  // Step-up — re-proving MFA on an already-authenticated session before a
+  // security-sensitive change (change-email, and eventually change-phone /
+  // change-password — see docs/architecture.md §3.8). Fires unconditionally,
+  // regardless of trusted-device status, unlike login's challenge which is
+  // skipped on a trusted device — that's enforced by the caller never
+  // consulting TrustedDevice before calling this, not by anything in here.
+  // Shares createChallengeForLogin's method-picking/dispatch machinery
+  // rather than duplicating it.
+  async createStepUpChallenge(user: { id: string; email: string }): Promise<{
+    challengeId: string;
+    method: 'email' | 'totp';
+    expiresAt: Date;
+  }> {
+    return this.buildChallenge(user);
+  }
+
+  private async buildChallenge(user: { id: string; email: string }): Promise<{
+    challengeId: string;
+    method: 'email' | 'totp';
+    expiresAt: Date;
+  }> {
     const methods = await this.dataSource
       .getRepository(MfaMethod)
       .find({ where: { userId: user.id } });

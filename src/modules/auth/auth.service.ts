@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectDataSource } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
-import { DataSource, EntityManager } from 'typeorm';
+import { DataSource, EntityManager, Not } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { runInTransaction } from '../../database/transaction.util';
 import {
@@ -27,6 +27,9 @@ import { LoginResponseDto } from './dto/login-response.dto';
 import { RefreshDto } from './dto/refresh.dto';
 import { LogoutDto } from './dto/logout.dto';
 import { VerifyMfaChallengeDto } from './dto/verify-mfa-challenge.dto';
+import { ChangeEmailDto } from './dto/change-email.dto';
+import { ConfirmChangeEmailDto } from './dto/confirm-change-email.dto';
+import { StepUpChallengeResponseDto } from './dto/step-up-challenge-response.dto';
 import {
   RegisterResponseDto,
   toRegisterResponse,
@@ -40,8 +43,10 @@ import {
   EmailAlreadyVerifiedException,
   InvalidCredentialsException,
   InvalidRefreshTokenException,
+  MfaChallengeInvalidException,
   PhoneAlreadyVerifiedException,
   SessionRevokedException,
+  VerificationCodeInvalidException,
   VerificationCodeRateLimitedException,
 } from './internal/errors';
 import { MfaService } from './mfa.service';
@@ -120,7 +125,10 @@ export class AuthService {
     // Fire-and-forget, after the transaction commits — nothing gates on
     // emailVerifiedAt/phoneVerifiedAt, so a delivery hiccup shouldn't fail
     // the registration.
-    const emailEvent = await this.buildEmailVerificationEvent(user);
+    const emailEvent = await this.buildEmailVerificationEvent(
+      user.id,
+      user.email,
+    );
     await this.eventBus.publish(emailEvent);
     const phoneEvent = await this.buildPhoneVerificationEvent(user);
     await this.eventBus.publish(phoneEvent);
@@ -128,12 +136,16 @@ export class AuthService {
     return toRegisterResponse(user, wallet);
   }
 
-  private async buildEmailVerificationEvent(user: {
-    id: string;
-    email: string;
-  }): Promise<DomainEventEnvelope<string, EmailVerificationOtpEventPayload>> {
+  // Takes the target address directly, not a user object — reused by
+  // changeEmail() to send to a *new*, not-yet-live address (see issue #9),
+  // as well as register()/resendEmailVerification() sending to the current
+  // one.
+  private async buildEmailVerificationEvent(
+    userId: string,
+    email: string,
+  ): Promise<DomainEventEnvelope<string, EmailVerificationOtpEventPayload>> {
     const { token, expiresAt } = await this.verificationCodeService.issue(
-      user.id,
+      userId,
       'email_verification',
       EMAIL_VERIFICATION_TTL_MS,
     );
@@ -144,8 +156,8 @@ export class AuthService {
     return {
       name: EMAIL_VERIFICATION_OTP_EVENT,
       payload: {
-        userId: user.id,
-        email: user.email,
+        userId,
+        email,
         verificationUrl: url.toString(),
         expiresInMinutes: Math.round(
           (expiresAt.getTime() - Date.now()) / 60_000,
@@ -175,7 +187,7 @@ export class AuthService {
 
     // Synchronous/awaited — unlike register()'s automatic send, this is a
     // deliberate action the user is actively waiting on right now.
-    const event = await this.buildEmailVerificationEvent(user);
+    const event = await this.buildEmailVerificationEvent(user.id, user.email);
     await this.eventBus.dispatchAndAwait(event);
   }
 
@@ -308,6 +320,84 @@ export class AuthService {
       await this.dataSource
         .getRepository(Session)
         .update({ userId }, { status: 'revoked' });
+    }
+  }
+
+  // Step 1 of 3 for change-email (see docs/adr/0006) — fires unconditionally,
+  // regardless of trusted-device status (docs/architecture.md §3.8), unlike
+  // login's challenge which a trusted device can skip. Caller submits the
+  // returned challengeId+code to changeEmail() below.
+  async initiateEmailChangeStepUp(
+    userId: string,
+  ): Promise<StepUpChallengeResponseDto> {
+    const user = await this.usersService.findById(userId);
+    return this.mfaService.createStepUpChallenge(user);
+  }
+
+  // Step 2 of 3 — verifies the step-up challenge, stashes newEmail as
+  // pending (not live yet — see users.User.pendingEmail), sends a
+  // verification code to it, and fire-and-forget alerts the *current*
+  // email that a change is underway.
+  async changeEmail(userId: string, dto: ChangeEmailDto): Promise<void> {
+    const { userId: challengeUserId } = await this.mfaService.verifyChallenge(
+      dto.challengeId,
+      dto.code,
+    );
+    // verifyChallenge isn't caller-scoped (it wasn't built for an
+    // already-authenticated caller — login's challenge/verify is pre-auth),
+    // so this endpoint checks ownership itself. Same "invalid" exception the
+    // method already throws for a wrong/expired challenge — no separate
+    // exception type, no signal about whose challenge it actually was.
+    if (challengeUserId !== userId) {
+      throw new MfaChallengeInvalidException();
+    }
+
+    const user = await this.usersService.findById(userId);
+    await this.usersService.setPendingEmail(userId, dto.newEmail);
+
+    const event = await this.buildEmailVerificationEvent(userId, dto.newEmail);
+    await this.eventBus.dispatchAndAwait(event);
+
+    await this.eventBus.publish<string, SecurityAlertEventPayload>({
+      name: SECURITY_ALERT_EVENT,
+      payload: {
+        userId,
+        email: user.email,
+        message: `We received a request to change the email on your account to ${dto.newEmail}. If this wasn't you, please secure your account immediately.`,
+      },
+      occurredAt: new Date(),
+    });
+  }
+
+  // Step 3 of 3 — only on a valid, unexpired, unused code does the email
+  // actually change. `sessionId` is the caller's own session (from the
+  // access token), excluded from revocation when revokeOtherSessions is
+  // true — unlike completePasswordReset's unauthenticated "revoke all",
+  // this flow knows exactly which session is asking.
+  async confirmEmailChange(
+    userId: string,
+    sessionId: string,
+    dto: ConfirmChangeEmailDto,
+  ): Promise<void> {
+    const { userId: codeUserId } = await this.verificationCodeService.consume(
+      'email_verification',
+      dto.code,
+    );
+    // Same caller-scoping reasoning as changeEmail() above — consume() isn't
+    // scoped to a caller either.
+    if (codeUserId !== userId) {
+      throw new VerificationCodeInvalidException();
+    }
+
+    await this.usersService.confirmPendingEmail(userId);
+
+    if (dto.revokeOtherSessions) {
+      await this.dataSource
+        .getRepository(Session)
+        .update(
+          { userId, status: 'active', id: Not(sessionId) },
+          { status: 'revoked' },
+        );
     }
   }
 

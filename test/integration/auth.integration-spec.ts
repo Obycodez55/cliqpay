@@ -31,6 +31,7 @@ import { ConvertMfaAndTrustedDevicesTimestamps1784707276060 } from '../../src/da
 import { AddUsernameChangedAtToUsers1784707276061 } from '../../src/database/migrations/1784707276061-AddUsernameChangedAtToUsers';
 import { CreateCredentials1784707276062 } from '../../src/database/migrations/1784707276062-CreateCredentials';
 import { DropUserForeignKeys1784707276063 } from '../../src/database/migrations/1784707276063-DropUserForeignKeys';
+import { AddPendingEmailToUsers1784707276064 } from '../../src/database/migrations/1784707276064-AddPendingEmailToUsers';
 import { seedSystemAccounts } from '../../src/database/seed-system-accounts';
 import { AuthModule } from '../../src/modules/auth/auth.module';
 import { AuthService } from '../../src/modules/auth/auth.service';
@@ -202,6 +203,7 @@ describe('Auth module — registration against a real Postgres', () => {
     await new AddUsernameChangedAtToUsers1784707276061().up(queryRunner);
     await new CreateCredentials1784707276062().up(queryRunner);
     await new DropUserForeignKeys1784707276063().up(queryRunner);
+    await new AddPendingEmailToUsers1784707276064().up(queryRunner);
     await queryRunner.release();
     await setupDataSource.destroy();
 
@@ -1668,6 +1670,327 @@ describe('Auth module — registration against a real Postgres', () => {
 
     it('rejects an unauthenticated wallet balance request', async () => {
       await request(app.getHttpServer()).get('/wallet/balance').expect(401);
+    });
+  });
+
+  // Reuses this file's existing helpers throughout — extractSixDigitCode for
+  // the step-up challenge (same MFA machinery/email template as login),
+  // extractVerificationToken for the new-address confirmation code (same
+  // 'email_verification' purpose as issue #5), latestEmailWithSubject to
+  // find the old-address security alert.
+  describe('change email', () => {
+    const SIGN_IN_CODE_SUBJECT = 'Your Cliqpay sign-in code';
+    const SECURITY_ALERT_SUBJECT = 'Security alert on your Cliqpay account';
+
+    async function initiateStepUp(
+      accessToken: string,
+    ): Promise<{ challengeId: string; code: string }> {
+      const res = await request(app.getHttpServer())
+        .post('/auth/change-email/step-up')
+        .set('Authorization', `Bearer ${accessToken}`)
+        .send({})
+        .expect(200);
+      const challengeId = (res.body as { challengeId: string }).challengeId;
+      const code = extractSixDigitCode(
+        latestEmailWithSubject(SIGN_IN_CODE_SUBJECT).text,
+      );
+      return { challengeId, code };
+    }
+
+    it('completes the full happy path: step-up, change, then confirm swaps the live email', async () => {
+      const { user } = await registerUser({
+        email: 'change-email-happy@example.com',
+        username: 'change_email_happy',
+        phone: '+2348011100001',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+
+      const { challengeId, code } = await initiateStepUp(tokens.accessToken);
+
+      const alertsBefore = emailAdapter.sent.filter(
+        (m) => m.subject === SECURITY_ALERT_SUBJECT,
+      ).length;
+
+      await request(app.getHttpServer())
+        .post('/auth/change-email')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ newEmail: 'change-email-new@example.com', challengeId, code })
+        .expect(204);
+
+      // Old address gets a fire-and-forget alert, not a blocking gate.
+      await waitFor(
+        () =>
+          emailAdapter.sent.filter((m) => m.subject === SECURITY_ALERT_SUBJECT)
+            .length > alertsBefore,
+      );
+      const alert = latestEmailWithSubject(SECURITY_ALERT_SUBJECT);
+      expect(alert.to).toBe('change-email-happy@example.com');
+
+      // Live email hasn't changed yet — only pendingEmail is set.
+      const midFlight = await userRepo.findOneByOrFail({ id: user.id });
+      expect(midFlight.email).toBe('change-email-happy@example.com');
+      expect(midFlight.pendingEmail).toBe('change-email-new@example.com');
+
+      const sent = await waitForVerificationEmail(
+        'change-email-new@example.com',
+      );
+      const confirmCode = extractVerificationToken(sent.text);
+
+      await request(app.getHttpServer())
+        .post('/auth/change-email/confirm')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ code: confirmCode, revokeOtherSessions: false })
+        .expect(204);
+
+      const updated = await userRepo.findOneByOrFail({ id: user.id });
+      expect(updated.email).toBe('change-email-new@example.com');
+      expect(updated.pendingEmail).toBeNull();
+      expect(updated.emailVerifiedAt).toBeInstanceOf(Date);
+    });
+
+    it('rejects change-email without a valid step-up challenge, leaving the email unchanged', async () => {
+      const { user } = await registerUser({
+        email: 'change-email-no-stepup@example.com',
+        username: 'change_email_no_stepup',
+        phone: '+2348011100002',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+
+      await request(app.getHttpServer())
+        .post('/auth/change-email')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({
+          newEmail: 'change-email-blocked@example.com',
+          challengeId: '00000000-0000-0000-0000-000000000000',
+          code: '123456',
+        })
+        .expect(404);
+
+      const unchanged = await userRepo.findOneByOrFail({ id: user.id });
+      expect(unchanged.email).toBe('change-email-no-stepup@example.com');
+      expect(unchanged.pendingEmail).toBeNull();
+    });
+
+    it("rejects change-email using another user's step-up challenge", async () => {
+      const { user: userA } = await registerUser({
+        email: 'change-email-owner-a@example.com',
+        username: 'change_email_owner_a',
+        phone: '+2348011100003',
+      });
+      const { tokens: tokensA } = await loginAndVerify(
+        userA.email,
+        'a-strong-unique-passphrase',
+      );
+      const { user: userB } = await registerUser({
+        email: 'change-email-owner-b@example.com',
+        username: 'change_email_owner_b',
+        phone: '+2348011100004',
+      });
+      const { tokens: tokensB } = await loginAndVerify(
+        userB.email,
+        'a-strong-unique-passphrase',
+      );
+
+      const { challengeId, code } = await initiateStepUp(tokensA.accessToken);
+
+      await request(app.getHttpServer())
+        .post('/auth/change-email')
+        .set('Authorization', `Bearer ${tokensB.accessToken}`)
+        .send({
+          newEmail: 'change-email-stolen@example.com',
+          challengeId,
+          code,
+        })
+        .expect(410);
+
+      const unchangedB = await userRepo.findOneByOrFail({ id: userB.id });
+      expect(unchangedB.pendingEmail).toBeNull();
+    });
+
+    it('rejects confirm with a wrong, expired/unrecognized, or reused code, never changing the email', async () => {
+      const { user } = await registerUser({
+        email: 'change-email-bad-confirm@example.com',
+        username: 'change_email_bad_confirm',
+        phone: '+2348011100005',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+      const { challengeId, code } = await initiateStepUp(tokens.accessToken);
+
+      await request(app.getHttpServer())
+        .post('/auth/change-email')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({
+          newEmail: 'change-email-bad-confirm-new@example.com',
+          challengeId,
+          code,
+        })
+        .expect(204);
+
+      // Unrecognized code.
+      await request(app.getHttpServer())
+        .post('/auth/change-email/confirm')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ code: 'never-issued-token', revokeOtherSessions: false })
+        .expect(410);
+
+      const stillPending = await userRepo.findOneByOrFail({ id: user.id });
+      expect(stillPending.email).toBe('change-email-bad-confirm@example.com');
+      expect(stillPending.pendingEmail).toBe(
+        'change-email-bad-confirm-new@example.com',
+      );
+
+      const sent = await waitForVerificationEmail(
+        'change-email-bad-confirm-new@example.com',
+      );
+      const confirmCode = extractVerificationToken(sent.text);
+
+      await request(app.getHttpServer())
+        .post('/auth/change-email/confirm')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ code: confirmCode, revokeOtherSessions: false })
+        .expect(204);
+
+      // Reusing the same (now-consumed) code fails and doesn't touch the
+      // already-confirmed email again.
+      await request(app.getHttpServer())
+        .post('/auth/change-email/confirm')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ code: confirmCode, revokeOtherSessions: false })
+        .expect(410);
+
+      const finalUser = await userRepo.findOneByOrFail({ id: user.id });
+      expect(finalUser.email).toBe('change-email-bad-confirm-new@example.com');
+    });
+
+    it('rejects a missing revokeOtherSessions as a validation error, rather than defaulting to false', async () => {
+      const { user } = await registerUser({
+        email: 'change-email-missing-revoke@example.com',
+        username: 'change_email_missing_revoke',
+        phone: '+2348011100006',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+
+      await request(app.getHttpServer())
+        .post('/auth/change-email/confirm')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ code: 'irrelevant-code' })
+        .expect(400);
+    });
+
+    it('revokeOtherSessions: true revokes every other session but leaves the confirming one active', async () => {
+      const { user } = await registerUser({
+        email: 'change-email-revoke-true@example.com',
+        username: 'change_email_revoke_true',
+        phone: '+2348011100007',
+      });
+      await loginAndVerify(user.email, 'a-strong-unique-passphrase');
+      const { tokens: secondLoginTokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+
+      const sessionsBefore = await sessionRepo.find({
+        where: { userId: user.id },
+        order: { createdAt: 'ASC' },
+      });
+      expect(sessionsBefore.length).toBe(2);
+      const otherSessionId = sessionsBefore[0].id;
+
+      const { challengeId, code } = await initiateStepUp(
+        secondLoginTokens.accessToken,
+      );
+      await request(app.getHttpServer())
+        .post('/auth/change-email')
+        .set('Authorization', `Bearer ${secondLoginTokens.accessToken}`)
+        .send({
+          newEmail: 'change-email-revoke-true-new@example.com',
+          challengeId,
+          code,
+        })
+        .expect(204);
+
+      const sent = await waitForVerificationEmail(
+        'change-email-revoke-true-new@example.com',
+      );
+      const confirmCode = extractVerificationToken(sent.text);
+
+      await request(app.getHttpServer())
+        .post('/auth/change-email/confirm')
+        .set('Authorization', `Bearer ${secondLoginTokens.accessToken}`)
+        .send({ code: confirmCode, revokeOtherSessions: true })
+        .expect(204);
+
+      const otherSession = await sessionRepo.findOneByOrFail({
+        id: otherSessionId,
+      });
+      expect(otherSession.status).toBe('revoked');
+
+      // The confirming call's own session (from secondLoginTokens) survives.
+      const sessionsAfter = await sessionRepo.find({
+        where: { userId: user.id },
+      });
+      const activeSessions = sessionsAfter.filter((s) => s.status === 'active');
+      expect(activeSessions.length).toBe(1);
+      expect(activeSessions[0].id).not.toBe(otherSessionId);
+    });
+
+    it('revokeOtherSessions: false leaves every session active', async () => {
+      const { user } = await registerUser({
+        email: 'change-email-revoke-false@example.com',
+        username: 'change_email_revoke_false',
+        phone: '+2348011100008',
+      });
+      const { tokens } = await loginAndVerify(
+        user.email,
+        'a-strong-unique-passphrase',
+      );
+      const { challengeId, code } = await initiateStepUp(tokens.accessToken);
+
+      await request(app.getHttpServer())
+        .post('/auth/change-email')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({
+          newEmail: 'change-email-revoke-false-new@example.com',
+          challengeId,
+          code,
+        })
+        .expect(204);
+
+      const sent = await waitForVerificationEmail(
+        'change-email-revoke-false-new@example.com',
+      );
+      const confirmCode = extractVerificationToken(sent.text);
+
+      await request(app.getHttpServer())
+        .post('/auth/change-email/confirm')
+        .set('Authorization', `Bearer ${tokens.accessToken}`)
+        .send({ code: confirmCode, revokeOtherSessions: false })
+        .expect(204);
+
+      const sessionsAfter = await sessionRepo.find({
+        where: { userId: user.id },
+      });
+      expect(sessionsAfter.length).toBeGreaterThan(0);
+      expect(sessionsAfter.every((s) => s.status === 'active')).toBe(true);
+    });
+
+    it('rejects an unauthenticated step-up request', async () => {
+      await request(app.getHttpServer())
+        .post('/auth/change-email/step-up')
+        .send({})
+        .expect(401);
     });
   });
 });

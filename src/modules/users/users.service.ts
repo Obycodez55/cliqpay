@@ -2,7 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, EntityManager } from 'typeorm';
 import { User } from './entities/user.entity';
-import { UsernameChangeCooldownException } from './internal/errors';
+import {
+  NoPendingEmailChangeException,
+  UsernameChangeCooldownException,
+} from './internal/errors';
 import { mapUsersUniqueViolation } from './internal/errors';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import {
@@ -78,6 +81,36 @@ export class UsersService {
     await this.dataSource
       .getRepository(User)
       .update(userId, { phoneVerifiedAt: new Date() });
+  }
+
+  // Called by AuthService.changeEmail once step-up MFA has been proven —
+  // stashes the new address without touching the live `email` (see issue #9).
+  async setPendingEmail(userId: string, newEmail: string): Promise<void> {
+    await this.dataSource
+      .getRepository(User)
+      .update(userId, { pendingEmail: newEmail });
+  }
+
+  // Called by AuthService.confirmEmailChange once the new address's
+  // verification code has been consumed. Insert-and-catch on the unique
+  // violation, same race-free pattern as changeUsername — no pre-check
+  // findByEmail.
+  async confirmPendingEmail(userId: string): Promise<User> {
+    const repo = this.dataSource.getRepository(User);
+    const user = await repo.findOneByOrFail({ id: userId });
+    if (!user.pendingEmail) {
+      throw new NoPendingEmailChangeException();
+    }
+
+    user.email = user.pendingEmail;
+    user.pendingEmail = null;
+    user.emailVerifiedAt = new Date();
+    try {
+      await repo.save(user);
+    } catch (error) {
+      mapUsersUniqueViolation(error);
+    }
+    return user;
   }
 
   async getProfile(userId: string): Promise<ProfileResponseDto> {

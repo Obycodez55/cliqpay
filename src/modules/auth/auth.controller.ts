@@ -21,6 +21,9 @@ import { VerifyEmailDto } from './dto/verify-email.dto';
 import { VerifyPhoneDto } from './dto/verify-phone.dto';
 import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 import { CompletePasswordResetDto } from './dto/complete-password-reset.dto';
+import { ChangeEmailDto } from './dto/change-email.dto';
+import { ConfirmChangeEmailDto } from './dto/confirm-change-email.dto';
+import { StepUpChallengeResponseDto } from './dto/step-up-challenge-response.dto';
 import { readTrustedDeviceCookie } from './internal/cookie.util';
 import { extractDeviceMetadata } from './internal/device-metadata.util';
 import {
@@ -119,6 +122,48 @@ export class AuthController {
       dto.token,
       dto.newPassword,
       dto.revokeOtherSessions,
+    );
+  }
+
+  // Step 1 of 3 (see docs/adr/0006) — fires unconditionally, regardless of
+  // trusted-device status (docs/architecture.md §3.8).
+  @Post('change-email/step-up')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  initiateChangeEmailStepUp(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<StepUpChallengeResponseDto> {
+    return this.authService.initiateEmailChangeStepUp(req.user.userId);
+  }
+
+  // Step 2 of 3 — verifies the step-up challenge and sends a verification
+  // code to the new address; the live email doesn't change until confirm.
+  @Post('change-email')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  changeEmail(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: ChangeEmailDto,
+  ): Promise<void> {
+    return this.authService.changeEmail(req.user.userId, dto);
+  }
+
+  // Step 3 of 3 — only on a valid, unexpired, unused code does the email
+  // actually change.
+  @Post('change-email/confirm')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  confirmChangeEmail(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: ConfirmChangeEmailDto,
+  ): Promise<void> {
+    return this.authService.confirmEmailChange(
+      req.user.userId,
+      req.user.sessionId,
+      dto,
     );
   }
 }
