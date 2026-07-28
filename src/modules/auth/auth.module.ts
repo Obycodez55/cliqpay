@@ -3,6 +3,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { EventBusModule } from '../../shared/events/event-bus.module';
 import { LedgerModule } from '../ledger/ledger.module';
+import { UsersModule } from '../users/users.module';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { MfaController } from './mfa.controller';
@@ -11,6 +12,7 @@ import { VerificationCodeService } from './verification-code.service';
 
 @Module({
   imports: [
+    UsersModule,
     LedgerModule,
     EventBusModule,
     JwtModule.registerAsync({

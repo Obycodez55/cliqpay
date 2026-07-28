@@ -4,10 +4,11 @@ import { DataSource, EntityManager, FindOneOptions } from 'typeorm';
 import { AppConfig } from '../../../config';
 import { AuthService } from '../auth.service';
 import { LedgerService } from '../../ledger/ledger.service';
+import { UsersService } from '../../users/users.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
+import { Credential } from '../entities/credential.entity';
 import { Session } from '../entities/session.entity';
 import { TrustedDevice } from '../entities/trusted-device.entity';
-import { User } from '../entities/user.entity';
 import { LoginDto } from '../dto/login.dto';
 import { RefreshDto } from '../dto/refresh.dto';
 import { LogoutDto } from '../dto/logout.dto';
@@ -37,18 +38,42 @@ const bcryptCompare = bcrypt.compare as jest.Mock<
   [string, string]
 >;
 
-function buildUser(overrides: Partial<User> = {}): User {
-  return Object.assign(new User(), {
+// Structural, not `users.User` — auth's tests can't import another core
+// module's entity (only its exported service), same reasoning as
+// MfaService's own narrowed parameter types.
+interface UserFixture {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  username: string;
+  usernameChangedAt: Date | null;
+  phone: string;
+  emailVerifiedAt: Date | null;
+  phoneVerifiedAt: Date | null;
+}
+
+function buildUser(overrides: Partial<UserFixture> = {}): UserFixture {
+  return {
     id: 'user-1',
     email: 'ada@example.com',
-    passwordHash: 'hashed-password',
     firstName: 'Ada',
     lastName: 'Lovelace',
     username: 'ada_l',
+    usernameChangedAt: null,
     phone: '+2348012345678',
-    transactionPinHash: null,
     emailVerifiedAt: null,
     phoneVerifiedAt: null,
+    ...overrides,
+  };
+}
+
+function buildCredential(overrides: Partial<Credential> = {}): Credential {
+  return Object.assign(new Credential(), {
+    id: 'credential-1',
+    userId: 'user-1',
+    passwordHash: 'hashed-password',
+    transactionPinHash: null,
     failedLoginAttempts: 0,
     lockedUntil: null,
     ...overrides,
@@ -83,9 +108,9 @@ function buildSession(overrides: Partial<Session> = {}): Session {
   });
 }
 
-interface FakeUserRepo {
-  findOneBy: jest.Mock<Promise<User | null>, [Partial<User>]>;
-  save: jest.Mock<Promise<User>, [User]>;
+interface FakeCredentialRepo {
+  findOneByOrFail: jest.Mock<Promise<Credential>, [Partial<Credential>]>;
+  save: jest.Mock<Promise<Credential>, [Credential]>;
 }
 
 interface FakeSessionRepo {
@@ -96,7 +121,11 @@ interface FakeSessionRepo {
 }
 
 describe('AuthService — login, refresh, logout', () => {
-  let userRepo: FakeUserRepo;
+  let usersService: {
+    findByEmail: jest.Mock<Promise<UserFixture | null>, [string]>;
+    findById: jest.Mock<Promise<UserFixture>, [string]>;
+  };
+  let credentialRepo: FakeCredentialRepo;
   let sessionRepo: FakeSessionRepo;
   let manager: { getRepository: jest.Mock<unknown, [unknown]> };
   let dataSource: {
@@ -122,15 +151,21 @@ describe('AuthService — login, refresh, logout', () => {
     >;
   };
   let service: AuthService;
-  let existingUser: User;
+  let existingUser: UserFixture;
+  let existingCredential: Credential;
 
   beforeEach(() => {
     existingUser = buildUser();
-    userRepo = {
-      findOneBy: jest.fn((_where: Partial<User>) =>
-        Promise.resolve(existingUser),
+    existingCredential = buildCredential();
+    usersService = {
+      findByEmail: jest.fn((_email: string) => Promise.resolve(existingUser)),
+      findById: jest.fn((_userId: string) => Promise.resolve(existingUser)),
+    };
+    credentialRepo = {
+      findOneByOrFail: jest.fn((_where: Partial<Credential>) =>
+        Promise.resolve(existingCredential),
       ),
-      save: jest.fn((entity: User) => Promise.resolve(entity)),
+      save: jest.fn((entity: Credential) => Promise.resolve(entity)),
     };
     sessionRepo = {
       create: jest.fn((data: Partial<Session>) =>
@@ -143,7 +178,7 @@ describe('AuthService — login, refresh, logout', () => {
       ),
     };
     const repoFor = (entity: unknown) =>
-      entity === User ? userRepo : sessionRepo;
+      entity === Session ? sessionRepo : credentialRepo;
     manager = { getRepository: jest.fn(repoFor) };
     dataSource = {
       getRepository: jest.fn(repoFor),
@@ -180,6 +215,7 @@ describe('AuthService — login, refresh, logout', () => {
       {
         app: { emailVerificationUrl: 'http://localhost:3000/verify-email' },
       } as unknown as AppConfig,
+      usersService as unknown as UsersService,
       {} as LedgerService,
       jwtService as unknown as JwtService,
       eventBus as unknown as EventBusService,
@@ -197,17 +233,17 @@ describe('AuthService — login, refresh, logout', () => {
   }
 
   describe('login', () => {
-    it('rejects an unknown email without touching any user row', async () => {
-      userRepo.findOneBy.mockResolvedValueOnce(null);
+    it('rejects an unknown email without touching any credential row', async () => {
+      usersService.findByEmail.mockResolvedValueOnce(null);
 
       await expect(
         service.login(loginDto(), null, TEST_DEVICE),
       ).rejects.toBeInstanceOf(InvalidCredentialsException);
-      expect(userRepo.save).not.toHaveBeenCalled();
+      expect(credentialRepo.save).not.toHaveBeenCalled();
     });
 
     it('rejects a locked account before comparing the password', async () => {
-      existingUser.lockedUntil = new Date(Date.now() + 60_000);
+      existingCredential.lockedUntil = new Date(Date.now() + 60_000);
 
       await expect(
         service.login(loginDto(), null, TEST_DEVICE),
@@ -216,45 +252,45 @@ describe('AuthService — login, refresh, logout', () => {
     });
 
     it('increments failedLoginAttempts on a wrong password', async () => {
-      existingUser.failedLoginAttempts = 2;
+      existingCredential.failedLoginAttempts = 2;
       bcryptCompare.mockResolvedValueOnce(false);
 
       await expect(
         service.login(loginDto(), null, TEST_DEVICE),
       ).rejects.toBeInstanceOf(InvalidCredentialsException);
-      expect(userRepo.save).toHaveBeenCalledWith(
+      expect(credentialRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ failedLoginAttempts: 3, lockedUntil: null }),
       );
     });
 
     it('locks the account for 15 minutes on the 5th consecutive failure', async () => {
-      existingUser.failedLoginAttempts = 4;
+      existingCredential.failedLoginAttempts = 4;
       bcryptCompare.mockResolvedValueOnce(false);
 
       await expect(
         service.login(loginDto(), null, TEST_DEVICE),
       ).rejects.toBeInstanceOf(InvalidCredentialsException);
-      const saved = userRepo.save.mock.calls[0][0];
+      const saved = credentialRepo.save.mock.calls[0][0];
       expect(saved.failedLoginAttempts).toBe(5);
       expect(saved.lockedUntil).toBeInstanceOf(Date);
       expect(saved.lockedUntil!.getTime()).toBeGreaterThan(Date.now());
     });
 
     it('gives a fresh attempt count once the lockout window has passed', async () => {
-      existingUser.failedLoginAttempts = 5;
-      existingUser.lockedUntil = new Date(Date.now() - 1000);
+      existingCredential.failedLoginAttempts = 5;
+      existingCredential.lockedUntil = new Date(Date.now() - 1000);
       bcryptCompare.mockResolvedValueOnce(false);
 
       await expect(
         service.login(loginDto(), null, TEST_DEVICE),
       ).rejects.toBeInstanceOf(InvalidCredentialsException);
-      const saved = userRepo.save.mock.calls[0][0];
+      const saved = credentialRepo.save.mock.calls[0][0];
       expect(saved.failedLoginAttempts).toBe(1);
       expect(saved.lockedUntil).toBeNull();
     });
 
     it('creates an MFA challenge instead of issuing tokens when no device is trusted', async () => {
-      existingUser.failedLoginAttempts = 3;
+      existingCredential.failedLoginAttempts = 3;
       bcryptCompare.mockResolvedValueOnce(true);
 
       const result = await service.login(loginDto(), null, TEST_DEVICE);
@@ -272,13 +308,13 @@ describe('AuthService — login, refresh, logout', () => {
 
       // The password was still correct — lockout state resets regardless
       // of what MFA does next.
-      expect(userRepo.save).toHaveBeenCalledWith(
+      expect(credentialRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ failedLoginAttempts: 0, lockedUntil: null }),
       );
     });
 
     it('resets lockout state and issues a token pair when the presented device is already trusted', async () => {
-      existingUser.failedLoginAttempts = 3;
+      existingCredential.failedLoginAttempts = 3;
       bcryptCompare.mockResolvedValueOnce(true);
       const trustedDevice = buildTrustedDevice();
       mfaService.findValidTrustedDevice.mockResolvedValueOnce(trustedDevice);
@@ -301,7 +337,7 @@ describe('AuthService — login, refresh, logout', () => {
         { expiresIn: 15 * 60 },
       );
 
-      expect(userRepo.save).toHaveBeenCalledWith(
+      expect(credentialRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ failedLoginAttempts: 0, lockedUntil: null }),
       );
       expect(mfaService.touchTrustedDevice).toHaveBeenCalledWith(
@@ -351,7 +387,6 @@ describe('AuthService — login, refresh, logout', () => {
       const session = buildSession({
         currentTokenHash: 'some-newer-hash',
         previousTokenHash: hashOpaqueToken(staleToken),
-        user: existingUser,
       });
       sessionRepo.findOneBy.mockResolvedValueOnce(null); // no current-hash match
       sessionRepo.findOne.mockImplementation(
@@ -370,6 +405,7 @@ describe('AuthService — login, refresh, logout', () => {
       expect(sessionRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'revoked' }),
       );
+      expect(usersService.findById).toHaveBeenCalledWith(session.userId);
       const publishedEvent = eventBus.publish.mock.calls[0]?.[0] as {
         name: string;
         payload: { userId: string; email: string; message: string };

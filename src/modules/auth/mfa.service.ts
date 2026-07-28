@@ -8,10 +8,10 @@ import {
   MfaChallengeOtpEventPayload,
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
+import { UsersService } from '../users/users.service';
 import { MfaChallenge } from './entities/mfa-challenge.entity';
-import { MfaMethod } from './entities/mfa-method.entity';
+import { MfaMethod, MfaMethodType } from './entities/mfa-method.entity';
 import { TrustedDevice } from './entities/trusted-device.entity';
-import { User } from './entities/user.entity';
 import {
   InvalidMfaCodeException,
   MfaChallengeInvalidException,
@@ -50,6 +50,7 @@ export class MfaService {
     @InjectDataSource() private readonly dataSource: DataSource,
     @Inject(APP_CONFIG) config: AppConfig,
     private readonly eventBus: EventBusService,
+    private readonly usersService: UsersService,
   ) {
     this.encryptionKey = encryptionKeyFromHex(config.encryption.key);
   }
@@ -72,7 +73,21 @@ export class MfaService {
     await repo.save(method);
   }
 
-  async createChallengeForLogin(user: User): Promise<{
+  // "Enrolled" means active — a pending TOTP enrollment hasn't been
+  // confirmed yet, so it isn't a method the user can actually challenge
+  // against (see pickChallengeMethod).
+  async getEnrolledMethodTypes(userId: string): Promise<MfaMethodType[]> {
+    const methods = await this.dataSource
+      .getRepository(MfaMethod)
+      .find({ where: { userId, status: 'active' } });
+    return methods.map((method) => method.type);
+  }
+
+  // Structural, not `users.User` — auth's service layer can't import
+  // another core module's entity (only its exported service), so this
+  // takes the narrow shape it actually needs, same reasoning as
+  // RegisterResponseDto's WalletSummary.
+  async createChallengeForLogin(user: { id: string; email: string }): Promise<{
     challengeId: string;
     method: 'email' | 'totp';
     expiresAt: Date;
@@ -113,7 +128,7 @@ export class MfaService {
   }
 
   private async createChallenge(
-    user: User,
+    user: { id: string; email: string },
     method: MfaMethod,
   ): Promise<MfaChallenge> {
     const now = new Date();
@@ -255,9 +270,7 @@ export class MfaService {
   async enrollTotp(
     userId: string,
   ): Promise<{ secret: string; otpauthUrl: string }> {
-    const user = await this.dataSource
-      .getRepository(User)
-      .findOneByOrFail({ id: userId });
+    const user = await this.usersService.findById(userId);
     const methodRepo = this.dataSource.getRepository(MfaMethod);
     const existing = await methodRepo.findOneBy({ userId, type: 'totp' });
     if (existing?.status === 'active') {

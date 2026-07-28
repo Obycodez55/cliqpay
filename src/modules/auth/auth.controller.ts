@@ -23,7 +23,10 @@ import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 import { CompletePasswordResetDto } from './dto/complete-password-reset.dto';
 import { readTrustedDeviceCookie } from './internal/cookie.util';
 import { extractDeviceMetadata } from './internal/device-metadata.util';
-import { AuthenticatedRequest, JwtAuthGuard } from './guards/jwt-auth.guard';
+import {
+  AuthenticatedRequest,
+  JwtAuthGuard,
+} from '../../common/guards/jwt-auth.guard';
 
 @Controller('auth')
 export class AuthController {

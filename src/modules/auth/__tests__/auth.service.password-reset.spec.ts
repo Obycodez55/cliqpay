@@ -5,35 +5,53 @@ import { DomainEventEnvelope } from '../../../shared/events/domain-events';
 import { AuthService } from '../auth.service';
 import { LedgerService } from '../../ledger/ledger.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
+import { Credential } from '../entities/credential.entity';
 import { Session } from '../entities/session.entity';
-import { User } from '../entities/user.entity';
+import { UsersService } from '../../users/users.service';
 import { VerificationPurpose } from '../entities/verification-code.entity';
 import { VerificationCodeRateLimitedException } from '../internal/errors';
 import { MfaService } from '../mfa.service';
 import { VerificationCodeService } from '../verification-code.service';
 
-function buildUser(overrides: Partial<User> = {}): User {
-  return Object.assign(new User(), {
+// Structural, not `users.User` — auth's tests can't import another core
+// module's entity (only its exported service), same reasoning as
+// MfaService's own narrowed parameter types.
+interface UserFixture {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  username: string;
+  usernameChangedAt: Date | null;
+  phone: string;
+  emailVerifiedAt: Date | null;
+  phoneVerifiedAt: Date | null;
+}
+
+function buildUser(overrides: Partial<UserFixture> = {}): UserFixture {
+  return {
     id: 'user-1',
     email: 'ada@example.com',
-    passwordHash: 'old-hashed-password',
     firstName: 'Ada',
     lastName: 'Lovelace',
     username: 'ada_l',
+    usernameChangedAt: null,
     phone: '+2348012345678',
-    transactionPinHash: null,
     emailVerifiedAt: null,
     phoneVerifiedAt: null,
-    failedLoginAttempts: 0,
-    lockedUntil: null,
     ...overrides,
-  });
+  };
 }
 
 describe('AuthService — password reset', () => {
-  let userRepo: {
-    findOneBy: jest.Mock<Promise<User | null>, [Partial<User>]>;
-    update: jest.Mock<Promise<unknown>, [string, Partial<User>]>;
+  let usersService: {
+    findByEmail: jest.Mock<Promise<UserFixture | null>, [string]>;
+  };
+  let credentialRepo: {
+    update: jest.Mock<
+      Promise<unknown>,
+      [Partial<Credential>, Partial<Credential>]
+    >;
   };
   let sessionRepo: {
     update: jest.Mock<Promise<unknown>, [Partial<Session>, Partial<Session>]>;
@@ -62,12 +80,13 @@ describe('AuthService — password reset', () => {
   let service: AuthService;
 
   beforeEach(() => {
-    userRepo = {
-      findOneBy: jest.fn((_where: Partial<User>) =>
-        Promise.resolve(buildUser()),
-      ),
-      update: jest.fn((_id: string, _fields: Partial<User>) =>
-        Promise.resolve(),
+    usersService = {
+      findByEmail: jest.fn((_email: string) => Promise.resolve(buildUser())),
+    };
+    credentialRepo = {
+      update: jest.fn(
+        (_criteria: Partial<Credential>, _partial: Partial<Credential>) =>
+          Promise.resolve(),
       ),
     };
     sessionRepo = {
@@ -78,7 +97,7 @@ describe('AuthService — password reset', () => {
     };
     dataSource = {
       getRepository: jest.fn((entity: unknown) =>
-        entity === Session ? sessionRepo : userRepo,
+        entity === Session ? sessionRepo : credentialRepo,
       ),
     };
     eventBus = {
@@ -106,6 +125,7 @@ describe('AuthService — password reset', () => {
       {
         app: { passwordResetUrl: 'http://localhost:3000/reset-password' },
       } as unknown as AppConfig,
+      usersService as unknown as UsersService,
       {} as LedgerService,
       { signAsync: jest.fn() } as unknown as JwtService,
       eventBus as unknown as EventBusService,
@@ -118,9 +138,7 @@ describe('AuthService — password reset', () => {
     it('issues a code and dispatches an email for an existing user', async () => {
       await service.requestPasswordReset('ada@example.com');
 
-      expect(userRepo.findOneBy).toHaveBeenCalledWith({
-        email: 'ada@example.com',
-      });
+      expect(usersService.findByEmail).toHaveBeenCalledWith('ada@example.com');
       expect(verificationCodeService.assertResendAllowed).toHaveBeenCalledWith(
         'user-1',
         'password_reset',
@@ -136,7 +154,7 @@ describe('AuthService — password reset', () => {
     });
 
     it('resolves without issuing or dispatching anything for a nonexistent email', async () => {
-      userRepo.findOneBy.mockResolvedValueOnce(null);
+      usersService.findByEmail.mockResolvedValueOnce(null);
 
       await expect(
         service.requestPasswordReset('nobody@example.com'),
@@ -180,7 +198,7 @@ describe('AuthService — password reset', () => {
   });
 
   describe('completePasswordReset', () => {
-    it('consumes the token and updates the password hash', async () => {
+    it('consumes the token and updates the credential password hash', async () => {
       await service.completePasswordReset(
         'some-token',
         'a-brand-new-passphrase',
@@ -191,8 +209,8 @@ describe('AuthService — password reset', () => {
         'password_reset',
         'some-token',
       );
-      const [updatedId, updatedFields] = userRepo.update.mock.calls[0];
-      expect(updatedId).toBe('user-1');
+      const [criteria, updatedFields] = credentialRepo.update.mock.calls[0];
+      expect(criteria).toEqual({ userId: 'user-1' });
       expect(updatedFields.passwordHash).toEqual(expect.any(String));
       expect(updatedFields.passwordHash).not.toBe('a-brand-new-passphrase');
       expect(sessionRepo.update).not.toHaveBeenCalled();
@@ -221,7 +239,7 @@ describe('AuthService — password reset', () => {
       expect(sessionRepo.update).not.toHaveBeenCalled();
     });
 
-    it('propagates VerificationCodeService.consume rejecting an invalid/reused token without touching User or Session', async () => {
+    it('propagates VerificationCodeService.consume rejecting an invalid/reused token without touching Credential or Session', async () => {
       const error = new Error('invalid');
       verificationCodeService.consume.mockRejectedValueOnce(error);
 
@@ -232,7 +250,7 @@ describe('AuthService — password reset', () => {
           true,
         ),
       ).rejects.toBe(error);
-      expect(userRepo.update).not.toHaveBeenCalled();
+      expect(credentialRepo.update).not.toHaveBeenCalled();
       expect(sessionRepo.update).not.toHaveBeenCalled();
     });
   });

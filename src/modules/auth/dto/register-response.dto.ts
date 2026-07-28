@@ -1,14 +1,23 @@
-import { User } from '../entities/user.entity';
 import { Money } from '../../../shared/primitives/money';
 
-// Structural, not `Account` — auth's DTO layer has no business importing
-// ledger's entity (docs/architecture.md §10: only a module's exported
-// service is importable from outside it). Only the fields this response
-// actually needs.
+// Structural, not `Account`/`User` — auth's DTO layer has no business
+// importing ledger's or users' entity (docs/architecture.md §10: only a
+// module's exported service is importable from outside it). Only the
+// fields this response actually needs.
 export interface WalletSummary {
   id: string;
   currency: string;
   balance: bigint;
+}
+
+export interface UserSummary {
+  id: string;
+  email: string;
+  username: string;
+  phone: string;
+  firstName: string;
+  lastName: string;
+  createdAt: Date;
 }
 
 export interface RegisterResponseDto {
@@ -31,7 +40,7 @@ export interface RegisterResponseDto {
 // Explicit shape, never the raw entity — passwordHash/transactionPinHash
 // must never reach a response.
 export function toRegisterResponse(
-  user: User,
+  user: UserSummary,
   wallet: WalletSummary,
 ): RegisterResponseDto {
   return {

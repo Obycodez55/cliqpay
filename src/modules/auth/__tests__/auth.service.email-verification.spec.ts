@@ -5,34 +5,46 @@ import { DomainEventEnvelope } from '../../../shared/events/domain-events';
 import { AuthService } from '../auth.service';
 import { LedgerService } from '../../ledger/ledger.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
-import { User } from '../entities/user.entity';
+import { UsersService } from '../../users/users.service';
 import { VerificationPurpose } from '../entities/verification-code.entity';
 import { EmailAlreadyVerifiedException } from '../internal/errors';
 import { MfaService } from '../mfa.service';
 import { VerificationCodeService } from '../verification-code.service';
 
-function buildUser(overrides: Partial<User> = {}): User {
-  return Object.assign(new User(), {
+// Structural, not `users.User` — auth's tests can't import another core
+// module's entity (only its exported service), same reasoning as
+// MfaService's own narrowed parameter types.
+interface UserFixture {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  username: string;
+  usernameChangedAt: Date | null;
+  phone: string;
+  emailVerifiedAt: Date | null;
+  phoneVerifiedAt: Date | null;
+}
+
+function buildUser(overrides: Partial<UserFixture> = {}): UserFixture {
+  return {
     id: 'user-1',
     email: 'ada@example.com',
-    passwordHash: 'hashed-password',
     firstName: 'Ada',
     lastName: 'Lovelace',
     username: 'ada_l',
+    usernameChangedAt: null,
     phone: '+2348012345678',
-    transactionPinHash: null,
     emailVerifiedAt: null,
     phoneVerifiedAt: null,
-    failedLoginAttempts: 0,
-    lockedUntil: null,
     ...overrides,
-  });
+  };
 }
 
 describe('AuthService — email verification', () => {
-  let userRepo: {
-    update: jest.Mock<Promise<unknown>, [string, Partial<User>]>;
-    findOneByOrFail: jest.Mock<Promise<User>, [Partial<User>]>;
+  let usersService: {
+    findById: jest.Mock<Promise<UserFixture>, [string]>;
+    markEmailVerified: jest.Mock<Promise<void>, [string]>;
   };
   let dataSource: { getRepository: jest.Mock<unknown, unknown[]> };
   let eventBus: {
@@ -58,15 +70,11 @@ describe('AuthService — email verification', () => {
   let service: AuthService;
 
   beforeEach(() => {
-    userRepo = {
-      update: jest.fn((_id: string, _fields: Partial<User>) =>
-        Promise.resolve(),
-      ),
-      findOneByOrFail: jest.fn((_where: Partial<User>) =>
-        Promise.resolve(buildUser()),
-      ),
+    usersService = {
+      findById: jest.fn((_userId: string) => Promise.resolve(buildUser())),
+      markEmailVerified: jest.fn((_userId: string) => Promise.resolve()),
     };
-    dataSource = { getRepository: jest.fn(() => userRepo) };
+    dataSource = { getRepository: jest.fn((_entity: unknown) => undefined) };
     eventBus = {
       dispatchAndAwait: jest.fn(
         (_event: DomainEventEnvelope<string, unknown>) => Promise.resolve(),
@@ -92,6 +100,7 @@ describe('AuthService — email verification', () => {
       {
         app: { emailVerificationUrl: 'http://localhost:3000/verify-email' },
       } as unknown as AppConfig,
+      usersService as unknown as UsersService,
       {} as LedgerService,
       { signAsync: jest.fn() } as unknown as JwtService,
       eventBus as unknown as EventBusService,
@@ -101,16 +110,14 @@ describe('AuthService — email verification', () => {
   });
 
   describe('verifyEmail', () => {
-    it('consumes the token and sets emailVerifiedAt on the resolved user', async () => {
+    it('consumes the token and marks the resolved user as email-verified', async () => {
       await service.verifyEmail('some-token');
 
       expect(verificationCodeService.consume).toHaveBeenCalledWith(
         'email_verification',
         'some-token',
       );
-      const [updatedId, updatedFields] = userRepo.update.mock.calls[0];
-      expect(updatedId).toBe('user-1');
-      expect(updatedFields.emailVerifiedAt).toBeInstanceOf(Date);
+      expect(usersService.markEmailVerified).toHaveBeenCalledWith('user-1');
     });
 
     it('propagates VerificationCodeService.consume rejecting an invalid token without touching the user', async () => {
@@ -118,7 +125,7 @@ describe('AuthService — email verification', () => {
       verificationCodeService.consume.mockRejectedValueOnce(error);
 
       await expect(service.verifyEmail('bad-token')).rejects.toBe(error);
-      expect(userRepo.update).not.toHaveBeenCalled();
+      expect(usersService.markEmailVerified).not.toHaveBeenCalled();
     });
   });
 
@@ -141,7 +148,7 @@ describe('AuthService — email verification', () => {
     });
 
     it('rejects an already-verified user without issuing a new code', async () => {
-      userRepo.findOneByOrFail.mockResolvedValueOnce(
+      usersService.findById.mockResolvedValueOnce(
         buildUser({ emailVerifiedAt: new Date() }),
       );
 

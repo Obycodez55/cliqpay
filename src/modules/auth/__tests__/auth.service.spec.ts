@@ -6,15 +6,28 @@ import { DomainEventEnvelope } from '../../../shared/events/domain-events';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { AuthService } from '../auth.service';
 import { LedgerService } from '../../ledger/ledger.service';
-import { User } from '../entities/user.entity';
+import { UsersService } from '../../users/users.service';
+import { Credential } from '../entities/credential.entity';
 import { RegisterDto } from '../dto/register.dto';
-import {
-  EmailAlreadyRegisteredException,
-  PhoneAlreadyRegisteredException,
-  UsernameAlreadyTakenException,
-} from '../internal/errors';
 import { MfaService } from '../mfa.service';
 import { VerificationCodeService } from '../verification-code.service';
+
+// Structural, not `users.User` — auth's tests can't import another core
+// module's entity (only its exported service), same reasoning as
+// MfaService's own narrowed parameter types.
+interface UserFixture {
+  id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  username: string;
+  usernameChangedAt: Date | null;
+  phone: string;
+  emailVerifiedAt: Date | null;
+  phoneVerifiedAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
 
 function buildDto(overrides: Partial<RegisterDto> = {}): RegisterDto {
   return Object.assign(new RegisterDto(), {
@@ -28,20 +41,40 @@ function buildDto(overrides: Partial<RegisterDto> = {}): RegisterDto {
   });
 }
 
+function buildCreatedUser(overrides: Partial<UserFixture> = {}): UserFixture {
+  return {
+    id: 'user-1',
+    email: 'ada@example.com',
+    firstName: 'Ada',
+    lastName: 'Lovelace',
+    username: 'ada_l',
+    usernameChangedAt: null,
+    phone: '+2348012345678',
+    emailVerifiedAt: null,
+    phoneVerifiedAt: null,
+    createdAt: new Date('2026-01-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    ...overrides,
+  };
+}
+
 // TypeORM's real Repository.create/save are heavily overloaded (single vs
 // array args) — jest.Mocked<Pick<Repository<T>, ...>> can't satisfy every
 // overload with one mock implementation, so this only models the one
 // signature AuthService actually calls.
-interface FakeUserRepo {
-  create: jest.Mock<User, [Partial<User>]>;
-  save: jest.Mock<Promise<User>, [User]>;
+interface FakeCredentialRepo {
+  create: jest.Mock<Credential, [Partial<Credential>]>;
+  save: jest.Mock<Promise<Credential>, [Credential]>;
 }
 
 describe('AuthService.register', () => {
-  let userRepo: FakeUserRepo;
-  let manager: { getRepository: jest.Mock<FakeUserRepo, unknown[]> };
+  let credentialRepo: FakeCredentialRepo;
+  let manager: { getRepository: jest.Mock<FakeCredentialRepo, unknown[]> };
   let dataSource: {
     transaction: jest.Mock<unknown, [(m: EntityManager) => unknown]>;
+  };
+  let usersService: {
+    createUser: jest.Mock<Promise<UserFixture>, [EntityManager, unknown]>;
   };
   let ledgerService: {
     createUserWallet: jest.Mock<
@@ -59,18 +92,24 @@ describe('AuthService.register', () => {
   let service: AuthService;
 
   beforeEach(() => {
-    userRepo = {
+    credentialRepo = {
       create: jest.fn(
-        (data: Partial<User>) => ({ id: 'user-1', ...data }) as User,
+        (data: Partial<Credential>) =>
+          ({ id: 'credential-1', ...data }) as Credential,
       ),
-      save: jest.fn((entity: User) => Promise.resolve(entity)),
+      save: jest.fn((entity: Credential) => Promise.resolve(entity)),
     };
     manager = {
-      getRepository: jest.fn(() => userRepo),
+      getRepository: jest.fn(() => credentialRepo),
     };
     dataSource = {
       transaction: jest.fn((work: (m: EntityManager) => unknown) =>
         work(manager as unknown as EntityManager),
+      ),
+    };
+    usersService = {
+      createUser: jest.fn((_manager: EntityManager, _data: unknown) =>
+        Promise.resolve(buildCreatedUser()),
       ),
     };
     ledgerService = {
@@ -97,6 +136,7 @@ describe('AuthService.register', () => {
       {
         app: { emailVerificationUrl: 'http://localhost:3000/verify-email' },
       } as unknown as AppConfig,
+      usersService as unknown as UsersService,
       ledgerService as unknown as LedgerService,
       { signAsync: jest.fn() } as unknown as JwtService,
       eventBus as unknown as EventBusService,
@@ -105,17 +145,25 @@ describe('AuthService.register', () => {
     );
   });
 
-  it('hashes the password with bcrypt, never returns it, and leaves the PIN unset', async () => {
+  it('creates the user via UsersService inside the transaction, then hashes the password onto Credential, never returning it', async () => {
     const dto = buildDto();
 
     const result = await service.register(dto);
 
-    const savedUser = userRepo.save.mock.calls[0][0];
-    expect(savedUser.passwordHash).not.toBe(dto.password);
+    expect(usersService.createUser).toHaveBeenCalledWith(expect.anything(), {
+      email: dto.email,
+      phone: dto.phone,
+      username: dto.username,
+      firstName: dto.firstName,
+      lastName: dto.lastName,
+    });
+    const savedCredential = credentialRepo.save.mock.calls[0][0];
+    expect(savedCredential.userId).toBe('user-1');
+    expect(savedCredential.passwordHash).not.toBe(dto.password);
     await expect(
-      bcrypt.compare(dto.password, savedUser.passwordHash),
+      bcrypt.compare(dto.password, savedCredential.passwordHash),
     ).resolves.toBe(true);
-    expect(JSON.stringify(result)).not.toContain(savedUser.passwordHash);
+    expect(JSON.stringify(result)).not.toContain(savedCredential.passwordHash);
   });
 
   it('creates the wallet inside the same transaction as the user insert', async () => {
@@ -138,32 +186,18 @@ describe('AuthService.register', () => {
     );
   });
 
-  it.each([
-    ['UQ_users_email', EmailAlreadyRegisteredException],
-    ['UQ_users_username', UsernameAlreadyTakenException],
-    ['UQ_users_phone', PhoneAlreadyRegisteredException],
-  ] as const)(
-    'maps a %s unique violation to its specific domain exception',
-    async (constraint, ExpectedException) => {
-      userRepo.save.mockRejectedValueOnce(
-        Object.assign(new Error('duplicate key value'), {
-          code: '23505',
-          constraint,
-        }),
-      );
-
-      await expect(service.register(buildDto())).rejects.toBeInstanceOf(
-        ExpectedException,
-      );
-      expect(ledgerService.createUserWallet).not.toHaveBeenCalled();
-    },
-  );
-
-  it('propagates a non-unique-violation error unchanged', async () => {
-    const boom = new Error('connection lost');
-    userRepo.save.mockRejectedValueOnce(boom);
+  // The specific unique-violation → domain-exception mapping is now
+  // UsersService's own concern (see users.service.spec.ts) — AuthService
+  // only needs to propagate whatever UsersService.createUser rejects with,
+  // unchanged, and skip the wallet/MFA/credential steps that would
+  // otherwise follow.
+  it('propagates a rejection from UsersService.createUser and creates neither a credential nor a wallet', async () => {
+    const boom = new Error('email already registered');
+    usersService.createUser.mockRejectedValueOnce(boom);
 
     await expect(service.register(buildDto())).rejects.toBe(boom);
+    expect(credentialRepo.save).not.toHaveBeenCalled();
+    expect(ledgerService.createUserWallet).not.toHaveBeenCalled();
   });
 
   describe('email verification dispatch on register', () => {

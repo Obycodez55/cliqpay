@@ -18,7 +18,10 @@ import { EnrollTotpResponseDto } from './dto/enroll-totp-response.dto';
 import { TokenPairResponseDto } from './dto/token-pair-response.dto';
 import { VerifyMfaChallengeDto } from './dto/verify-mfa-challenge.dto';
 import { setTrustedDeviceCookie } from './internal/cookie.util';
-import { AuthenticatedRequest, JwtAuthGuard } from './guards/jwt-auth.guard';
+import {
+  AuthenticatedRequest,
+  JwtAuthGuard,
+} from '../../common/guards/jwt-auth.guard';
 import { MfaService, TRUSTED_DEVICE_TTL_MS } from './mfa.service';
 import { extractDeviceMetadata } from './internal/device-metadata.util';
 

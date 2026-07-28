@@ -18,8 +18,9 @@ import {
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
 import { LedgerService } from '../ledger/ledger.service';
+import { UsersService } from '../users/users.service';
+import { Credential } from './entities/credential.entity';
 import { Session } from './entities/session.entity';
-import { User } from './entities/user.entity';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { LoginResponseDto } from './dto/login-response.dto';
@@ -42,7 +43,6 @@ import {
   PhoneAlreadyVerifiedException,
   SessionRevokedException,
   VerificationCodeRateLimitedException,
-  mapUsersUniqueViolation,
 } from './internal/errors';
 import { MfaService } from './mfa.service';
 import { generateOpaqueToken, hashOpaqueToken } from './internal/secrets.util';
@@ -63,13 +63,18 @@ const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000; // 1 hour
 /**
  * The one exported surface of the auth module — see docs/architecture.md
  * §10. Covers registration, login (including the MFA/trusted-device fork —
- * see §3.8), session rotation/revocation, and lockout.
+ * see §3.8), session rotation/revocation, and lockout. Identity itself
+ * (email/phone/username/name) lives in `users` (see ADR-0005) — this
+ * service resolves a `userId` via UsersService wherever it needs one and
+ * otherwise works entirely against its own `Credential`/`Session`/MFA
+ * tables.
  */
 @Injectable()
 export class AuthService {
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    private readonly usersService: UsersService,
     private readonly ledgerService: LedgerService,
     private readonly jwtService: JwtService,
     private readonly eventBus: EventBusService,
@@ -83,21 +88,21 @@ export class AuthService {
     const { user, wallet } = await runInTransaction(
       this.dataSource,
       async (manager) => {
-        const userRepo = manager.getRepository(User);
-        const user = userRepo.create({
+        const user = await this.usersService.createUser(manager, {
           email: dto.email,
-          passwordHash,
+          phone: dto.phone,
+          username: dto.username,
           firstName: dto.firstName,
           lastName: dto.lastName,
-          username: dto.username,
-          phone: dto.phone,
         });
 
-        try {
-          await userRepo.save(user);
-        } catch (error) {
-          mapUsersUniqueViolation(error);
-        }
+        const credentialRepo = manager.getRepository(Credential);
+        const credential = credentialRepo.create({
+          userId: user.id,
+          passwordHash,
+          transactionPinHash: null,
+        });
+        await credentialRepo.save(credential);
 
         // Auto-enrolled, not a separate call
         await this.mfaService.enrollEmailMethod(manager, user.id);
@@ -123,9 +128,10 @@ export class AuthService {
     return toRegisterResponse(user, wallet);
   }
 
-  private async buildEmailVerificationEvent(
-    user: User,
-  ): Promise<DomainEventEnvelope<string, EmailVerificationOtpEventPayload>> {
+  private async buildEmailVerificationEvent(user: {
+    id: string;
+    email: string;
+  }): Promise<DomainEventEnvelope<string, EmailVerificationOtpEventPayload>> {
     const { token, expiresAt } = await this.verificationCodeService.issue(
       user.id,
       'email_verification',
@@ -154,15 +160,11 @@ export class AuthService {
       'email_verification',
       token,
     );
-    await this.dataSource
-      .getRepository(User)
-      .update(userId, { emailVerifiedAt: new Date() });
+    await this.usersService.markEmailVerified(userId);
   }
 
   async resendEmailVerification(userId: string): Promise<void> {
-    const user = await this.dataSource
-      .getRepository(User)
-      .findOneByOrFail({ id: userId });
+    const user = await this.usersService.findById(userId);
     if (user.emailVerifiedAt) {
       throw new EmailAlreadyVerifiedException();
     }
@@ -177,9 +179,10 @@ export class AuthService {
     await this.eventBus.dispatchAndAwait(event);
   }
 
-  private async buildPhoneVerificationEvent(
-    user: User,
-  ): Promise<DomainEventEnvelope<string, PhoneVerificationOtpEventPayload>> {
+  private async buildPhoneVerificationEvent(user: {
+    id: string;
+    phone: string;
+  }): Promise<DomainEventEnvelope<string, PhoneVerificationOtpEventPayload>> {
     const { token, expiresAt } = await this.verificationCodeService.issue(
       user.id,
       'phone_verification',
@@ -206,15 +209,11 @@ export class AuthService {
       'phone_verification',
       code,
     );
-    await this.dataSource
-      .getRepository(User)
-      .update(userId, { phoneVerifiedAt: new Date() });
+    await this.usersService.markPhoneVerified(userId);
   }
 
   async resendPhoneVerification(userId: string): Promise<void> {
-    const user = await this.dataSource
-      .getRepository(User)
-      .findOneByOrFail({ id: userId });
+    const user = await this.usersService.findById(userId);
     if (user.phoneVerifiedAt) {
       throw new PhoneAlreadyVerifiedException();
     }
@@ -229,9 +228,10 @@ export class AuthService {
     await this.eventBus.dispatchAndAwait(event);
   }
 
-  private async buildPasswordResetEvent(
-    user: User,
-  ): Promise<DomainEventEnvelope<string, PasswordResetOtpEventPayload>> {
+  private async buildPasswordResetEvent(user: {
+    id: string;
+    email: string;
+  }): Promise<DomainEventEnvelope<string, PasswordResetOtpEventPayload>> {
     const { token, expiresAt } = await this.verificationCodeService.issue(
       user.id,
       'password_reset',
@@ -263,7 +263,7 @@ export class AuthService {
   // per the same "user is actively waiting on this" reasoning as
   // resend{Email,Phone}Verification.
   async requestPasswordReset(email: string): Promise<void> {
-    const user = await this.dataSource.getRepository(User).findOneBy({ email });
+    const user = await this.usersService.findByEmail(email);
     if (!user) {
       return;
     }
@@ -298,7 +298,9 @@ export class AuthService {
     );
 
     const passwordHash = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
-    await this.dataSource.getRepository(User).update(userId, { passwordHash });
+    await this.dataSource
+      .getRepository(Credential)
+      .update({ userId }, { passwordHash });
 
     if (revokeOtherSessions) {
       // Unauthenticated flow — no session is "completing the request" to
@@ -319,33 +321,37 @@ export class AuthService {
     trustedDeviceToken: string | null,
     device: DeviceMetadata,
   ): Promise<LoginResponseDto> {
-    const userRepo = this.dataSource.getRepository(User);
-    const user = await userRepo.findOneBy({ email: dto.email });
+    const user = await this.usersService.findByEmail(dto.email);
     if (!user) {
       throw new InvalidCredentialsException();
     }
 
+    const credentialRepo = this.dataSource.getRepository(Credential);
+    const credential = await credentialRepo.findOneByOrFail({
+      userId: user.id,
+    });
+
     const now = new Date();
-    if (user.lockedUntil) {
-      if (user.lockedUntil > now) {
-        throw new AccountLockedException(user.lockedUntil);
+    if (credential.lockedUntil) {
+      if (credential.lockedUntil > now) {
+        throw new AccountLockedException(credential.lockedUntil);
       }
       // Lockout window has passed — this attempt gets a fresh count rather
       // than instantly re-locking on one more wrong guess.
-      user.lockedUntil = null;
-      user.failedLoginAttempts = 0;
+      credential.lockedUntil = null;
+      credential.failedLoginAttempts = 0;
     }
 
     const passwordMatches = await bcrypt.compare(
       dto.password,
-      user.passwordHash,
+      credential.passwordHash,
     );
     if (!passwordMatches) {
-      user.failedLoginAttempts += 1;
-      if (user.failedLoginAttempts >= MAX_FAILED_LOGIN_ATTEMPTS) {
-        user.lockedUntil = new Date(now.getTime() + LOCKOUT_DURATION_MS);
+      credential.failedLoginAttempts += 1;
+      if (credential.failedLoginAttempts >= MAX_FAILED_LOGIN_ATTEMPTS) {
+        credential.lockedUntil = new Date(now.getTime() + LOCKOUT_DURATION_MS);
       }
-      await userRepo.save(user);
+      await credentialRepo.save(credential);
       throw new InvalidCredentialsException();
     }
 
@@ -353,9 +359,9 @@ export class AuthService {
     // reset persists unconditionally — same immediate-plain-save shape as
     // the wrong-password path above, not deferred into a transaction that
     // might not run (the MFA-required fork below issues no session).
-    user.failedLoginAttempts = 0;
-    user.lockedUntil = null;
-    await userRepo.save(user);
+    credential.failedLoginAttempts = 0;
+    credential.lockedUntil = null;
+    await credentialRepo.save(credential);
 
     const trustedDevice = trustedDeviceToken
       ? await this.mfaService.findValidTrustedDevice(
@@ -469,11 +475,12 @@ export class AuthService {
       // docs/architecture.md §3.7.
       const previousMatch = await sessionRepo.findOne({
         where: { previousTokenHash: hash },
-        relations: { user: true },
       });
       if (previousMatch) {
         previousMatch.status = 'revoked';
         await sessionRepo.save(previousMatch);
+
+        const user = await this.usersService.findById(previousMatch.userId);
 
         // Published after the revoke above has committed, per
         // EventBusService's own rule — auth (core) can't call
@@ -484,7 +491,7 @@ export class AuthService {
           name: SECURITY_ALERT_EVENT,
           payload: {
             userId: previousMatch.userId,
-            email: previousMatch.user!.email,
+            email: user.email,
             message:
               'We detected an already-used refresh token being replayed and revoked the affected session for your protection. If this wasn’t you, please change your password.',
           },
