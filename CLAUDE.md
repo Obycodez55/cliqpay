@@ -46,8 +46,10 @@ Modular monolith, one exported service per module (`src/modules/<name>/<name>.se
 
 Every PR: lint + unit + integration. Nightly/pre-release only: contract tests + higher-iteration property fuzzing.
 
+Integration spec files are scoped per feature area, not left to grow as one file per module — split when a file's covering several unrelated flows, not by a line-count threshold. Share the expensive setup (app bootstrap, Testcontainers, common request helpers) through a test-support module the split files import, rather than duplicating it or avoiding the split to save that cost.
+
 ## General conventions
 
 - Don't add abstractions, error handling, or config beyond what the current phase actually needs — see the architecture doc's phased plan before building ahead of it.
-- Comments only where the *why* isn't obvious from the code (a workaround, a non-obvious invariant) — never comments that restate what the code does.
+- Comments only where the *why* isn't obvious from the code (a workaround, a non-obvious invariant) — never comments that restate what the code does. Don't cite an issue number, ADR, or doc section as a stand-in for the reasoning itself — either the *why* is worth a short sentence inline, or it doesn't need a comment at all. A reader shouldn't have to go open something else to find out why a line exists.
 - **Don't spin up a new module/service pair for a capability that's really one more method on something that already exists.** A new file is a bigger commitment than a new method — more DI wiring, another public surface to reason about, another thing for module-boundary rules to govern. Before scaffolding `<thing>.module.ts` + `<thing>.service.ts`, check whether the closest existing module or shared service (e.g. `src/shared/events/event-bus.service.ts`) can just grow a method instead. Reserve a new module for a genuinely distinct responsibility, not for "this is a different queue" or "this is a different flavor of the same infra."
