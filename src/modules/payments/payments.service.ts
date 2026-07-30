@@ -2,6 +2,7 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { LedgerService } from '../ledger/ledger.service';
@@ -44,6 +45,8 @@ interface KoraChargeWebhookPayload {
  */
 @Injectable()
 export class PaymentsService {
+  private readonly logger = new Logger(PaymentsService.name);
+
   constructor(
     private readonly ledgerService: LedgerService,
     private readonly usersService: UsersService,
@@ -155,17 +158,23 @@ export class PaymentsService {
       return;
     }
 
-    const user = await this.usersService.findById(result.userId);
-    await this.eventBus.publish<string, FundingCompletedEventPayload>({
-      name: FUNDING_COMPLETED_EVENT,
-      payload: {
-        userId: result.userId,
-        email: user.email,
-        amount: result.netAmount.toDecimalString(),
-        currency: result.netAmount.currency,
-      },
-      occurredAt: new Date(),
-    });
+    try {
+      const user = await this.usersService.findById(result.userId);
+      await this.eventBus.publish<string, FundingCompletedEventPayload>({
+        name: FUNDING_COMPLETED_EVENT,
+        payload: {
+          userId: result.userId,
+          email: user.email,
+          amount: result.netAmount.toDecimalString(),
+          currency: result.netAmount.currency,
+        },
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `handleFundingWebhook: funding for reference "${data.reference}" posted successfully, but publishing the completion notification failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
   }
 }
 
