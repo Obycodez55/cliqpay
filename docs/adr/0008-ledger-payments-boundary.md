@@ -76,11 +76,11 @@ Nothing should answer yes to both.
 this rule: **`ledger` serves what needs no provider; `payments` serves what
 does.**
 
-At Phase 3–4 that gives `ledger` balance, transaction history, and P2P send
-(pure ledger movement, no external rail), and `payments` fund and withdraw.
-`@ApiTags('Wallet')` on both is correct rather than duplicated — Swagger
-groups by tag, and a user should see one Wallet section regardless of which
-module happens to serve a given route.
+At Phase 4 that gives `ledger` balance and transaction history (pure ledger
+reads, no external rail), and `payments` fund, withdraw, and bank-account
+management. `@ApiTags('Wallet')` on both is correct rather than duplicated —
+Swagger groups by tag, and a user should see one Wallet section regardless
+of which module happens to serve a given route.
 
 The `payments` controller stays `payments.controller.ts` /
 `PaymentsController` — named after the module, the same pattern
@@ -91,6 +91,32 @@ would need re-litigating the moment that arrives. The namespace being
 shared with `ledger`'s `WalletController` is documented here, in this ADR
 and in CLAUDE.md — it doesn't need to be re-derivable from the class name
 itself.
+
+### What belongs under `/wallet`, and what doesn't
+
+`/wallet` is not "every endpoint `ledger` or `payments` happens to serve" —
+it's specifically **actions with no counterparty**: something a user does
+*to their own wallet* (fund it, withdraw from it, check it, see its
+history), as opposed to something they do *to another person* that happens
+to move ledger balances as a side effect.
+
+By that test: balance, fund, withdraw, bank-account management, and
+transaction history all belong under `/wallet` — including P2P activity
+*appearing* in that history, since history is "my financial history"
+regardless of which module produced a given entry (Phase 3 explicitly
+requires sent/received to be distinguishable there). But **P2P send/request
+itself (Phase 3) does not belong under `/wallet`** — "send money to
+`@username`" is a distinct user action with a counterparty, not wallet
+management, the same distinction consumer wallet apps (Cash App, PalmPay)
+draw between a Wallet tab and a Send flow even though both move the same
+balance underneath. P2P gets its own namespace (`/v1/transfers`) and its own
+`Transfers` tag when Phase 3 lands, sharing no route surface with `/wallet`
+even though `ledger` serves both.
+
+The reusable rule for future phases: a route's namespace is decided by
+*what the user is doing* (manage my money vs. pay/request from someone),
+never by *which module happens to implement it* — the same module can (and
+here, does) serve more than one namespace.
 
 ## Alternatives considered
 

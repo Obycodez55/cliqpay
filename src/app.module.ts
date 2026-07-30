@@ -13,6 +13,7 @@ import { NotificationsModule } from './modules/notifications/notifications.modul
 import { LedgerModule } from './modules/ledger/ledger.module';
 import { UsersModule } from './modules/users/users.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { AuthModule } from './modules/auth/auth.module';
     LedgerModule,
     UsersModule,
     AuthModule,
+    PaymentsModule,
     TerminusModule,
   ],
   controllers: [AppController],
