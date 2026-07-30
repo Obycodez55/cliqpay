@@ -271,16 +271,29 @@ export class LedgerService {
       );
     }
 
-    const newWalletBalance = wallet.balance + facts.netAmount.amount;
-    const newFloatBalance = float.balance + facts.netAmount.amount;
-    const newFeeExpenseBalance = feeExpense.balance + facts.providerFee.amount;
-    const newFeeRecoveryBalance =
-      feeRecovery.balance + facts.providerFee.amount;
+    // Routed through Money.add(), not raw bigint arithmetic — CLAUDE.md's
+    // "all money math goes through Money" rule, and it's not just style
+    // here: .add() asserts matching currencies, so a facts/account currency
+    // mismatch throws instead of silently corrupting a balance.
+    const newWalletBalance = Money.of(wallet.balance, wallet.currency).add(
+      facts.netAmount,
+    );
+    const newFloatBalance = Money.of(float.balance, float.currency).add(
+      facts.netAmount,
+    );
+    const newFeeExpenseBalance = Money.of(
+      feeExpense.balance,
+      feeExpense.currency,
+    ).add(facts.providerFee);
+    const newFeeRecoveryBalance = Money.of(
+      feeRecovery.balance,
+      feeRecovery.currency,
+    ).add(facts.providerFee);
 
-    wallet.balance = newWalletBalance;
-    float.balance = newFloatBalance;
-    feeExpense.balance = newFeeExpenseBalance;
-    feeRecovery.balance = newFeeRecoveryBalance;
+    wallet.balance = newWalletBalance.amount;
+    float.balance = newFloatBalance.amount;
+    feeExpense.balance = newFeeExpenseBalance.amount;
+    feeRecovery.balance = newFeeRecoveryBalance.amount;
     // §2: the cache is written in the same DB transaction, from the same
     // computation that produces the ledger entries below — one place.
     await accountRepo.save([wallet, float, feeExpense, feeRecovery]);
@@ -292,28 +305,28 @@ export class LedgerService {
         accountId: float.id,
         direction: 'debit',
         amount: facts.netAmount.amount,
-        runningBalance: newFloatBalance,
+        runningBalance: newFloatBalance.amount,
       }),
       entryRepo.create({
         transactionId: transaction.id,
         accountId: wallet.id,
         direction: 'credit',
         amount: facts.netAmount.amount,
-        runningBalance: newWalletBalance,
+        runningBalance: newWalletBalance.amount,
       }),
       entryRepo.create({
         transactionId: transaction.id,
         accountId: feeExpense.id,
         direction: 'debit',
         amount: facts.providerFee.amount,
-        runningBalance: newFeeExpenseBalance,
+        runningBalance: newFeeExpenseBalance.amount,
       }),
       entryRepo.create({
         transactionId: transaction.id,
         accountId: feeRecovery.id,
         direction: 'credit',
         amount: facts.providerFee.amount,
-        runningBalance: newFeeRecoveryBalance,
+        runningBalance: newFeeRecoveryBalance.amount,
       }),
     ]);
 

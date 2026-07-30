@@ -13,7 +13,8 @@ import { extractTopLevelJsonField } from '../internal/raw-json';
 const KORA_BASE_URL = 'https://api.korapay.com/merchant/api/v1';
 
 // Without this, a hung Kora connection hangs the request handling it
-
+// indefinitely — there's no other timeout upstream that's guaranteed to
+// apply.
 const KORA_TIMEOUT_MS = 15_000;
 
 interface KoraInitializeResponse {
