@@ -46,6 +46,13 @@ describe('FakeAdapter', () => {
   });
 
   describe('verifyWebhookSignature', () => {
+    function rawBody(data: unknown): Buffer {
+      return Buffer.from(
+        JSON.stringify({ event: 'charge.success', data }),
+        'utf8',
+      );
+    }
+
     it('accepts a signature computed with its own fake secret', () => {
       const adapter = new FakeAdapter();
       const data = { reference: 'cliqpay-ref-1', status: 'success' };
@@ -53,7 +60,9 @@ describe('FakeAdapter', () => {
         .update(JSON.stringify(data))
         .digest('hex');
 
-      expect(adapter.verifyWebhookSignature(data, signature)).toBe(true);
+      expect(adapter.verifyWebhookSignature(rawBody(data), signature)).toBe(
+        true,
+      );
     });
 
     it('rejects an arbitrary signature', () => {
@@ -61,7 +70,7 @@ describe('FakeAdapter', () => {
 
       expect(
         adapter.verifyWebhookSignature(
-          { reference: 'cliqpay-ref-1' },
+          rawBody({ reference: 'cliqpay-ref-1' }),
           'not-a-real-signature',
         ),
       ).toBe(false);

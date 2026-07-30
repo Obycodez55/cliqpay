@@ -6,6 +6,7 @@ import {
   PaymentProviderAdapter,
 } from './payment-provider.interface';
 import { maybeThrowFakePaymentFailure } from '../internal/errors';
+import { extractTopLevelJsonField } from '../internal/raw-json';
 
 // Not config-injected — a fixed, in-memory secret is all a fake needs.
 // Deliberately the same HMAC-SHA256-over-JSON.stringify(data) scheme
@@ -31,9 +32,13 @@ export class FakeAdapter implements PaymentProviderAdapter {
     };
   }
 
-  verifyWebhookSignature(data: unknown, signature: string): boolean {
+  verifyWebhookSignature(rawBody: Buffer, signature: string): boolean {
+    const rawData = extractTopLevelJsonField(rawBody, 'data');
+    if (!rawData) {
+      return false;
+    }
     const expected = createHmac('sha256', FAKE_SECRET_KEY)
-      .update(JSON.stringify(data))
+      .update(rawData)
       .digest('hex');
     return expected === signature;
   }

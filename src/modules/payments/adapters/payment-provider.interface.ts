@@ -20,10 +20,7 @@ export interface PaymentProviderAdapter {
     params: InitiatePaymentParams,
   ): Promise<InitiatePaymentResult>;
 
-  // `data` is the provider's own payload (the parsed `data` field of a
-  // webhook body, for Kora) — the adapter re-derives the signature from it
-  // and compares, rather than the caller pre-computing anything.
-  verifyWebhookSignature(data: unknown, signature: string): boolean;
+  verifyWebhookSignature(rawBody: Buffer, signature: string): boolean;
 }
 
 export const PAYMENT_PROVIDER_ADAPTER = Symbol('PAYMENT_PROVIDER_ADAPTER');

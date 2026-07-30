@@ -111,6 +111,13 @@ describe('KoraAdapter', () => {
   });
 
   describe('verifyWebhookSignature', () => {
+    function rawBody(data: unknown): Buffer {
+      return Buffer.from(
+        JSON.stringify({ event: 'charge.success', data }),
+        'utf8',
+      );
+    }
+
     it('accepts a signature computed the same way Kora computes it', () => {
       const adapter = new KoraAdapter(buildConfig());
       const data = { reference: 'cliqpay-ref-1', status: 'success' };
@@ -118,7 +125,9 @@ describe('KoraAdapter', () => {
         .update(JSON.stringify(data))
         .digest('hex');
 
-      expect(adapter.verifyWebhookSignature(data, signature)).toBe(true);
+      expect(adapter.verifyWebhookSignature(rawBody(data), signature)).toBe(
+        true,
+      );
     });
 
     it('rejects a signature computed with the wrong secret', () => {
@@ -128,7 +137,9 @@ describe('KoraAdapter', () => {
         .update(JSON.stringify(data))
         .digest('hex');
 
-      expect(adapter.verifyWebhookSignature(data, signature)).toBe(false);
+      expect(adapter.verifyWebhookSignature(rawBody(data), signature)).toBe(
+        false,
+      );
     });
 
     it('rejects a signature for different data', () => {
@@ -139,10 +150,39 @@ describe('KoraAdapter', () => {
 
       expect(
         adapter.verifyWebhookSignature(
-          { reference: 'cliqpay-ref-2' },
+          rawBody({ reference: 'cliqpay-ref-2' }),
           signature,
         ),
       ).toBe(false);
+    });
+
+    it('rejects a malformed body with no top-level data field', () => {
+      const adapter = new KoraAdapter(buildConfig());
+      const signature = createHmac('sha256', 'sk_test_secret')
+        .update(JSON.stringify({ reference: 'cliqpay-ref-1' }))
+        .digest('hex');
+
+      expect(
+        adapter.verifyWebhookSignature(
+          Buffer.from(JSON.stringify({ event: 'charge.success' }), 'utf8'),
+          signature,
+        ),
+      ).toBe(false);
+    });
+
+    it('is unaffected by pretty-printing the surrounding envelope', () => {
+      const adapter = new KoraAdapter(buildConfig());
+      const data = { reference: 'cliqpay-ref-1', status: 'success' };
+      const signature = createHmac('sha256', 'sk_test_secret')
+        .update(JSON.stringify(data))
+        .digest('hex');
+
+      const prettyBody = Buffer.from(
+        `{\n  "event": "charge.success",\n  "data": ${JSON.stringify(data)}\n}`,
+        'utf8',
+      );
+
+      expect(adapter.verifyWebhookSignature(prettyBody, signature)).toBe(true);
     });
   });
 });

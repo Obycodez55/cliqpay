@@ -6,6 +6,7 @@ import {
   InitiatePaymentResult,
   PaymentProviderAdapter,
 } from './payment-provider.interface';
+import { extractTopLevelJsonField } from '../internal/raw-json';
 
 const KORA_BASE_URL = 'https://api.korapay.com/merchant/api/v1';
 
@@ -77,15 +78,13 @@ export class KoraAdapter implements PaymentProviderAdapter {
     return { checkoutUrl: body.data.checkout_url };
   }
 
-  // Per Kora's docs: HMAC-SHA256 of the JSON-stringified `data` object,
-  // signed with the secret key, hex-encoded — compared against the
-  // `x-korapay-signature` header (the caller passes that header's value in
-  // as `signature`). timingSafeEqual over the raw bytes rather than `===`
-  // on the hex strings, so an invalid signature doesn't leak timing
-  // information about how much of it matched.
-  verifyWebhookSignature(data: unknown, signature: string): boolean {
+  verifyWebhookSignature(rawBody: Buffer, signature: string): boolean {
+    const rawData = extractTopLevelJsonField(rawBody, 'data');
+    if (!rawData) {
+      return false;
+    }
     const expected = createHmac('sha256', this.secretKey)
-      .update(JSON.stringify(data))
+      .update(rawData)
       .digest('hex');
 
     const expectedBuffer = Buffer.from(expected, 'hex');
