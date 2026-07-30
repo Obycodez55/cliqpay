@@ -1,8 +1,10 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager } from 'typeorm';
+import { Brackets, DataSource, EntityManager } from 'typeorm';
+import { runInTransaction } from '../../database/transaction.util';
 import { Money } from '../../shared/primitives/money';
 import { Account } from './entities/account.entity';
+import { LedgerEntry } from './entities/ledger-entry.entity';
 import {
   FundingTransactionMetadata,
   Transaction,
@@ -18,6 +20,18 @@ export interface CreatePendingFundingTransactionData {
   metadata: FundingTransactionMetadata;
 }
 
+export interface PostFundingFacts {
+  reference: string;
+  netAmount: Money;
+  providerFee: Money;
+  providerStatus: 'success' | 'failed';
+}
+
+export interface PostFundingResult {
+  userId: string;
+  netAmount: Money;
+}
+
 /**
  * The one exported surface of the ledger module — see
  * docs/architecture.md §10. `createUserWallet` and `getUserWallet` exist for
@@ -26,6 +40,8 @@ export interface CreatePendingFundingTransactionData {
  */
 @Injectable()
 export class LedgerService {
+  private readonly logger = new Logger(LedgerService.name);
+
   constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
 
   /**
@@ -118,5 +134,159 @@ export class LedgerService {
     await this.dataSource
       .getRepository(Transaction)
       .update({ reference }, { status: 'failed' });
+  }
+
+  /**
+   * The single place funding ledger entries are ever posted (docs/adr/0008)
+   * — `payments`' webhook handler and #14's poll job both call this with
+   * provider facts; this decides what they post to. Idempotent: the
+   * `pending` -> terminal transition happens via one atomic UPDATE guarded
+   * on current status, so a duplicate delivery (this called twice for the
+   * same reference) finds 0 rows affected on the second call and returns
+   * null without touching ledger_entries or accounts again.
+   */
+  async postFunding(
+    facts: PostFundingFacts,
+  ): Promise<PostFundingResult | null> {
+    return runInTransaction(this.dataSource, async (manager) => {
+      const nextStatus =
+        facts.providerStatus === 'success' ? 'completed' : 'failed';
+
+      const updateResult = await manager
+        .createQueryBuilder()
+        .update(Transaction)
+        .set({ status: nextStatus })
+        .where('reference = :reference', { reference: facts.reference })
+        .andWhere('status = :pending', { pending: 'pending' })
+        .execute();
+      if (!updateResult.affected) {
+        this.logger.debug(
+          `postFunding: no pending transaction for reference "${facts.reference}" — duplicate delivery or already resolved`,
+        );
+        return null;
+      }
+
+      const transaction = await manager
+        .getRepository(Transaction)
+        .findOneByOrFail({ reference: facts.reference });
+
+      if (nextStatus !== 'completed') {
+        return null;
+      }
+
+      return this.postFundingEntries(manager, transaction, facts);
+    });
+  }
+
+  // Split out from postFunding purely so the "am I done" early-returns above
+  // stay flat — this is the part that actually touches ledger_entries and
+  // accounts, once the atomic status transition has already proven this is
+  // the one delivery that gets to post.
+  private async postFundingEntries(
+    manager: EntityManager,
+    transaction: Transaction,
+    facts: PostFundingFacts,
+  ): Promise<PostFundingResult> {
+    const accountRepo = manager.getRepository(Account);
+
+    // Lock ordering (CLAUDE.md): every multi-row wallet lock is acquired by
+    // account_id ascending, regardless of debit/credit direction — one
+    // query, ORDER BY id ASC, FOR UPDATE, so concurrent postings of
+    // different transactions touching overlapping system accounts can never
+    // deadlock against each other.
+    const accounts = await accountRepo
+      .createQueryBuilder('account')
+      .where(
+        new Brackets((qb) => {
+          qb.where('account.id = :walletId', {
+            walletId: transaction.recipientWalletId,
+          })
+            .orWhere(
+              '(account.role = :float AND account.provider = :provider AND account.currency = :currency AND account.userId IS NULL)',
+              {
+                float: 'float',
+                provider: transaction.provider,
+                currency: transaction.currency,
+              },
+            )
+            .orWhere(
+              '(account.role = :feeExpense AND account.provider = :provider AND account.currency = :currency AND account.userId IS NULL)',
+              {
+                feeExpense: 'fee_expense',
+                provider: transaction.provider,
+                currency: transaction.currency,
+              },
+            )
+            .orWhere(
+              '(account.role = :feeRecovery AND account.provider = :provider AND account.currency = :currency AND account.userId IS NULL)',
+              {
+                feeRecovery: 'fee_recovery',
+                provider: transaction.provider,
+                currency: transaction.currency,
+              },
+            );
+        }),
+      )
+      .orderBy('account.id', 'ASC')
+      .setLock('pessimistic_write')
+      .getMany();
+
+    const wallet = accounts.find((a) => a.id === transaction.recipientWalletId);
+    const float = accounts.find((a) => a.role === 'float');
+    const feeExpense = accounts.find((a) => a.role === 'fee_expense');
+    const feeRecovery = accounts.find((a) => a.role === 'fee_recovery');
+    if (!wallet || !float || !feeExpense || !feeRecovery) {
+      throw new Error(
+        `postFunding: missing one of wallet/float/fee_expense/fee_recovery accounts for transaction "${transaction.reference}"`,
+      );
+    }
+
+    const newWalletBalance = wallet.balance + facts.netAmount.amount;
+    const newFloatBalance = float.balance + facts.netAmount.amount;
+    const newFeeExpenseBalance = feeExpense.balance + facts.providerFee.amount;
+    const newFeeRecoveryBalance =
+      feeRecovery.balance + facts.providerFee.amount;
+
+    wallet.balance = newWalletBalance;
+    float.balance = newFloatBalance;
+    feeExpense.balance = newFeeExpenseBalance;
+    feeRecovery.balance = newFeeRecoveryBalance;
+    // §2: the cache is written in the same DB transaction, from the same
+    // computation that produces the ledger entries below — one place.
+    await accountRepo.save([wallet, float, feeExpense, feeRecovery]);
+
+    const entryRepo = manager.getRepository(LedgerEntry);
+    await entryRepo.save([
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: float.id,
+        direction: 'debit',
+        amount: facts.netAmount.amount,
+        runningBalance: newFloatBalance,
+      }),
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: wallet.id,
+        direction: 'credit',
+        amount: facts.netAmount.amount,
+        runningBalance: newWalletBalance,
+      }),
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: feeExpense.id,
+        direction: 'debit',
+        amount: facts.providerFee.amount,
+        runningBalance: newFeeExpenseBalance,
+      }),
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: feeRecovery.id,
+        direction: 'credit',
+        amount: facts.providerFee.amount,
+        runningBalance: newFeeRecoveryBalance,
+      }),
+    ]);
+
+    return { userId: wallet.userId!, netAmount: facts.netAmount };
   }
 }

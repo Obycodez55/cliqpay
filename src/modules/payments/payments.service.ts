@@ -1,7 +1,17 @@
-import { ConflictException, Inject, Injectable } from '@nestjs/common';
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { LedgerService } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
 import { Money } from '../../shared/primitives/money';
+import {
+  FUNDING_COMPLETED_EVENT,
+  FundingCompletedEventPayload,
+} from '../../shared/events/domain-events';
+import { EventBusService } from '../../shared/events/event-bus.service';
 import { FundWalletDto } from './dto/fund-wallet.dto';
 import { FundWalletResponseDto } from './dto/fund-wallet-response.dto';
 import {
@@ -12,6 +22,19 @@ import {
 import { isUniqueViolation } from './internal/errors';
 
 const NGN = 'NGN'; // Funding is NGN-only for now — see issue #12.
+
+// Ground truth: docs/adr/0007 — a real sandbox charge-verify response has
+// this shape for the `data` field, and per Kora's docs the webhook payload
+// mirrors it. Only the fields this handler actually reads.
+interface KoraChargeWebhookPayload {
+  event: string;
+  data: {
+    reference: string;
+    status: string;
+    amount: string;
+    fee: number;
+  };
+}
 
 /**
  * The one exported surface of the payments module — see
@@ -24,6 +47,7 @@ export class PaymentsService {
   constructor(
     private readonly ledgerService: LedgerService,
     private readonly usersService: UsersService,
+    private readonly eventBus: EventBusService,
     @Inject(PAYMENT_PROVIDER_ADAPTER)
     private readonly adapter: PaymentProviderAdapter,
   ) {}
@@ -91,6 +115,57 @@ export class PaymentsService {
       result.checkoutUrl,
     );
     return { checkoutUrl: result.checkoutUrl };
+  }
+
+  // Signature verified against the raw bytes Kora actually signed (see
+  // KoraAdapter.verifyWebhookSignature) — invalid signature never reaches
+  // the ledger, never changes transaction status (ADR-0008, issue #13).
+  // Everything past that point is provider-fact mapping only: this owns no
+  // accounting knowledge, LedgerService.postFunding decides what these
+  // facts post to.
+  async handleFundingWebhook(
+    rawBody: Buffer,
+    signature: string | undefined,
+  ): Promise<void> {
+    if (
+      !signature ||
+      !this.adapter.verifyWebhookSignature(rawBody, signature)
+    ) {
+      throw new UnauthorizedException('Invalid webhook signature');
+    }
+
+    const payload = JSON.parse(
+      rawBody.toString('utf8'),
+    ) as KoraChargeWebhookPayload;
+    const { data } = payload;
+
+    const netAmount = Money.fromDecimalString(data.amount, NGN);
+    const providerFee = Money.fromDecimalString(String(data.fee), NGN);
+    const providerStatus = data.status === 'success' ? 'success' : 'failed';
+
+    const result = await this.ledgerService.postFunding({
+      reference: data.reference,
+      netAmount,
+      providerFee,
+      providerStatus,
+    });
+    if (!result) {
+      // Duplicate delivery of an already-resolved transaction, or a
+      // provider-reported failure — either way, nothing further to publish.
+      return;
+    }
+
+    const user = await this.usersService.findById(result.userId);
+    await this.eventBus.publish<string, FundingCompletedEventPayload>({
+      name: FUNDING_COMPLETED_EVENT,
+      payload: {
+        userId: result.userId,
+        email: user.email,
+        amount: result.netAmount.toDecimalString(),
+        currency: result.netAmount.currency,
+      },
+      occurredAt: new Date(),
+    });
   }
 }
 

@@ -2,6 +2,7 @@ import {
   PostgreSqlContainer,
   StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
+import { GenericContainer, StartedTestContainer } from 'testcontainers';
 import {
   DynamicModule,
   INestApplication,
@@ -11,6 +12,7 @@ import {
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { App } from 'supertest/types';
+import { json, Request, urlencoded } from 'express';
 import { DataSource, Repository } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../../src/config';
 import { buildDataSourceOptions } from '../../../src/database/data-source.options';
@@ -24,6 +26,7 @@ import { CreateCredentials1784707276062 } from '../../../src/database/migrations
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
 import { Account } from '../../../src/modules/ledger/entities/account.entity';
+import { LedgerEntry } from '../../../src/modules/ledger/entities/ledger-entry.entity';
 import { Transaction } from '../../../src/modules/ledger/entities/transaction.entity';
 import { User } from '../../../src/modules/users/entities/user.entity';
 import { UsersModule } from '../../../src/modules/users/users.module';
@@ -31,6 +34,9 @@ import { UsersService } from '../../../src/modules/users/users.service';
 import { PaymentsModule } from '../../../src/modules/payments/payments.module';
 import { PAYMENT_PROVIDER_ADAPTER } from '../../../src/modules/payments/adapters/payment-provider.interface';
 import { FakeAdapter } from '../../../src/modules/payments/adapters/fake.adapter';
+import { NotificationsModule } from '../../../src/modules/notifications/notifications.module';
+import { EMAIL_SENDER } from '../../../src/modules/notifications/channels/email/email-sender.interface';
+import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/email/fake-email.adapter';
 
 @Module({})
 class TestConfigModule {}
@@ -46,6 +52,7 @@ function buildTestConfigModule(config: AppConfig): DynamicModule {
 
 export interface PaymentsTestContext {
   postgres: StartedPostgreSqlContainer;
+  redis: StartedTestContainer;
   app: INestApplication<App>;
   usersService: UsersService;
   ledgerService: LedgerService;
@@ -53,19 +60,24 @@ export interface PaymentsTestContext {
   userRepo: Repository<User>;
   accountRepo: Repository<Account>;
   transactionRepo: Repository<Transaction>;
+  ledgerEntryRepo: Repository<LedgerEntry>;
   fakeAdapter: FakeAdapter;
+  emailAdapter: FakeEmailAdapter;
 }
 
-// Real Postgres via Testcontainers, proving idempotent-retry behavior
-// against the actual `UQ_transactions_reference` constraint, not a mock.
-// No Redis/AuthModule/NotificationsModule here — PaymentsModule doesn't
-// depend on the event bus or notifications (no domain event is published,
-// no email sent, in this issue's scope), so this context stays lighter than
-// auth-test-context.ts. Users are seeded directly via UsersService +
-// LedgerService rather than through the real register() flow, since
-// exercising registration itself isn't what these tests are about.
+// Real Postgres and a real Redis via Testcontainers — PaymentsModule now
+// imports EventBusModule (issue #13's funding_completed publish after a
+// webhook completes funding), so Redis and NotificationsModule are wired in
+// the same way auth-test-context.ts does it, to assert delivery rather than
+// just that EventBusService was called. Users are seeded directly via
+// UsersService + LedgerService rather than through the real register()
+// flow, since exercising registration itself isn't what these tests are
+// about.
 export async function createPaymentsTestContext(): Promise<PaymentsTestContext> {
   const postgres = await new PostgreSqlContainer('postgres:16-alpine').start();
+  const redis = await new GenericContainer('redis:7-alpine')
+    .withExposedPorts(6379)
+    .start();
 
   const setupDataSource = new DataSource({
     type: 'postgres',
@@ -93,7 +105,9 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
       passwordResetUrl: 'http://localhost:3000/reset-password',
     },
     database: { url: postgres.getConnectionUri() },
-    redis: { url: 'redis://unused:6379' },
+    redis: {
+      url: `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`,
+    },
     sentry: { dsn: undefined },
     rateLimit: { ttlMs: 60_000, limit: 100 },
     jwt: { secret: 'test-jwt-secret-at-least-32-characters-long' },
@@ -130,10 +144,27 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
       UsersModule,
       LedgerModule,
       PaymentsModule,
+      NotificationsModule,
     ],
   }).compile();
 
-  const app = moduleRef.createNestApplication<INestApplication<App>>();
+  // bodyParser: false + a manual json() with a `verify` callback — matches
+  // main.ts exactly, so the webhook route's `req.rawBody` is populated here
+  // the same way it is in the real app. Nest's default built-in body parser
+  // has no `verify` hook, so leaving it enabled would silently leave
+  // `req.rawBody` undefined.
+  const app = moduleRef.createNestApplication<INestApplication<App>>({
+    bodyParser: false,
+  });
+  app.use(
+    json({
+      limit: '1mb',
+      verify: (req, _res, buf) => {
+        (req as Request).rawBody = Buffer.from(buf);
+      },
+    }),
+  );
+  app.use(urlencoded({ limit: '1mb', extended: true }));
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -147,6 +178,7 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
 
   return {
     postgres,
+    redis,
     app,
     usersService: moduleRef.get(UsersService),
     ledgerService: moduleRef.get(LedgerService),
@@ -154,7 +186,9 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
     userRepo: dataSource.getRepository(User),
     accountRepo: dataSource.getRepository(Account),
     transactionRepo: dataSource.getRepository(Transaction),
+    ledgerEntryRepo: dataSource.getRepository(LedgerEntry),
     fakeAdapter: moduleRef.get(PAYMENT_PROVIDER_ADAPTER),
+    emailAdapter: moduleRef.get(EMAIL_SENDER),
   };
 }
 
@@ -163,6 +197,7 @@ export async function destroyPaymentsTestContext(
 ): Promise<void> {
   await ctx.app?.close();
   await ctx.postgres?.stop();
+  await ctx.redis?.stop();
 }
 
 // Directly creates a User + user_wallet Account, bypassing the full

@@ -1,5 +1,16 @@
-import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Headers,
+  HttpCode,
+  Post,
+  Req,
+  UseGuards,
+  Version,
+  VERSION_NEUTRAL,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Request } from 'express';
 import {
   AuthenticatedRequest,
   JwtAuthGuard,
@@ -17,11 +28,11 @@ import { FundWalletResponseDto } from './dto/fund-wallet-response.dto';
 @ApiTags('Wallet')
 @ApiBearerAuth()
 @Controller('wallet')
-@UseGuards(JwtAuthGuard)
 export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 
   @Post('fund')
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary: "Start funding the current user's wallet, returns a checkout URL",
   })
@@ -30,5 +41,19 @@ export class PaymentsController {
     @Body() dto: FundWalletDto,
   ): Promise<FundWalletResponseDto> {
     return this.paymentsService.fundWallet(req.user.userId, dto);
+  }
+
+  @Post('webhook/kora')
+  @Version(VERSION_NEUTRAL)
+  @HttpCode(200)
+  @ApiOperation({ summary: "Kora's funding webhook receiver" })
+  handleKoraWebhook(
+    @Req() req: Request,
+    @Headers('x-korapay-signature') signature: string | undefined,
+  ): Promise<void> {
+    return this.paymentsService.handleFundingWebhook(
+      req.rawBody ?? Buffer.alloc(0),
+      signature,
+    );
   }
 }
