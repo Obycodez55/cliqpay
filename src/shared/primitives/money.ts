@@ -20,6 +20,30 @@ export class Money {
     return new Money(0n, currency);
   }
 
+  /**
+   * Inverse of toDecimalString — parses a decimal major-unit string (e.g. a
+   * provider's "1000.00") into minor units. String input, not a JS number,
+   * so a provider's decimal never round-trips through float precision.
+   */
+  static fromDecimalString(value: string, currency: string): Money {
+    const exponent = minorUnitExponent(currency);
+    const negative = value.startsWith('-');
+    const unsigned = negative ? value.slice(1) : value;
+    const [wholePart, fractionPart = ''] = unsigned.split('.');
+    if (!/^\d+$/.test(wholePart) || !/^\d*$/.test(fractionPart)) {
+      throw new Error(`Money.fromDecimalString: invalid decimal "${value}"`);
+    }
+    if (fractionPart.length > exponent) {
+      throw new Error(
+        `Money.fromDecimalString: "${value}" has more than ${exponent} fractional digits for ${currency}`,
+      );
+    }
+    const minorUnits =
+      BigInt(wholePart) * 10n ** BigInt(exponent) +
+      BigInt(fractionPart.padEnd(exponent, '0') || '0');
+    return new Money(negative ? -minorUnits : minorUnits, currency);
+  }
+
   get amount(): bigint {
     return this.minorUnits;
   }
