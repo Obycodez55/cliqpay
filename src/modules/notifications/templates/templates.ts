@@ -1,5 +1,6 @@
 import {
   EmailVerificationOtpPayload,
+  FundingCompletedPayload,
   MfaChallengeOtpPayload,
   NotificationPayloadMap,
   PasswordResetOtpPayload,
@@ -49,6 +50,10 @@ export const emailTemplates: {
   security_alert: (payload: SecurityAlertPayload) => ({
     subject: 'Security alert on your Cliqpay account',
     ...renderEmail('security_alert', payload),
+  }),
+  funding_completed: (payload: FundingCompletedPayload) => ({
+    subject: 'Your Cliqpay wallet has been funded',
+    ...renderEmail('funding_completed', payload),
   }),
 };
 

@@ -60,3 +60,12 @@ export interface PasswordResetOtpEventPayload {
   resetUrl: string;
   expiresInMinutes: number;
 }
+
+export const FUNDING_COMPLETED_EVENT = 'funding_completed';
+
+export interface FundingCompletedEventPayload {
+  userId: string;
+  email: string;
+  amount: string; // decimal display string (Money.toDecimalString()), not minor units
+  currency: string;
+}
