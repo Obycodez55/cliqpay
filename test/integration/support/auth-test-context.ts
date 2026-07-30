@@ -152,6 +152,10 @@ export async function createAuthTestContext(): Promise<AuthTestContext> {
         privateKey: undefined,
       },
     },
+    payments: {
+      provider: 'fake',
+      kora: { secretKey: undefined },
+    },
   };
 
   const moduleRef = await Test.createTestingModule({

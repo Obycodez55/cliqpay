@@ -122,6 +122,10 @@ describe('Notifications module — end-to-end dispatch', () => {
           privateKey: undefined,
         },
       },
+      payments: {
+        provider: 'fake',
+        kora: { secretKey: undefined },
+      },
     };
 
     const moduleRef = await Test.createTestingModule({
