@@ -64,6 +64,12 @@ const envSchema = z
     FIREBASE_PROJECT_ID: z.string().optional(),
     FIREBASE_CLIENT_EMAIL: z.string().optional(),
     FIREBASE_PRIVATE_KEY: z.string().optional(),
+
+    // Same real/fake-as-just-another-provider pattern as the notification
+    // channels above — 'fake' (the default) runs FakeAdapter, no network,
+    // no Kora credentials required.
+    PAYMENT_PROVIDER: z.enum(['kora', 'fake']).default('fake'),
+    KORA_SECRET_KEY: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     // A provider's own credentials are only required when it's the one
@@ -97,6 +103,9 @@ const envSchema = z
       { path: 'FIREBASE_PROJECT_ID', value: env.FIREBASE_PROJECT_ID },
       { path: 'FIREBASE_CLIENT_EMAIL', value: env.FIREBASE_CLIENT_EMAIL },
       { path: 'FIREBASE_PRIVATE_KEY', value: env.FIREBASE_PRIVATE_KEY },
+    ]);
+    requireWhen(env.PAYMENT_PROVIDER === 'kora', [
+      { path: 'KORA_SECRET_KEY', value: env.KORA_SECRET_KEY },
     ]);
   });
 
@@ -149,6 +158,12 @@ function buildConfig(env: Env) {
         projectId: env.FIREBASE_PROJECT_ID,
         clientEmail: env.FIREBASE_CLIENT_EMAIL,
         privateKey: env.FIREBASE_PRIVATE_KEY,
+      },
+    },
+    payments: {
+      provider: env.PAYMENT_PROVIDER,
+      kora: {
+        secretKey: env.KORA_SECRET_KEY,
       },
     },
   };

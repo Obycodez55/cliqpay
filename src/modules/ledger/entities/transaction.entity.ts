@@ -1,0 +1,95 @@
+import {
+  Column,
+  CreateDateColumn,
+  Entity,
+  Index,
+  JoinColumn,
+  ManyToOne,
+  PrimaryGeneratedColumn,
+  UpdateDateColumn,
+} from 'typeorm';
+import { Account } from './account.entity';
+
+export type TransactionProvider = 'kora';
+export type TransactionType =
+  | 'funding'
+  | 'p2p_transfer'
+  | 'withdrawal'
+  | 'chargeback'
+  | 'profit_withdrawal'
+  | 'bill_split'
+  | 'scheduled';
+export type TransactionStatus =
+  | 'pending'
+  | 'completed'
+  | 'failed'
+  | 'reversed'
+  | 'disputed';
+
+const bigintTransformer = {
+  to: (v: bigint) => v,
+  from: (v: string) => BigInt(v),
+};
+
+/**
+ * See docs/architecture.md §5. `sender_wallet_id`/`recipient_wallet_id` are
+ * a denormalized convenience, not the source of truth for participants
+ * (that's `ledger_entries` joined to `accounts`) — see the schema note.
+ */
+@Entity('transactions')
+export class Transaction {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ type: 'varchar', unique: true })
+  reference: string;
+
+  @Column({ type: 'varchar', nullable: true })
+  provider: TransactionProvider | null;
+
+  @Index()
+  @Column({ type: 'varchar', nullable: true })
+  providerReference: string | null;
+
+  @Column('varchar')
+  type: TransactionType;
+
+  @Column('varchar')
+  status: TransactionStatus;
+
+  @Column({ type: 'uuid', nullable: true })
+  reversesTransactionId: string | null;
+
+  @ManyToOne(() => Transaction, { nullable: true })
+  @JoinColumn({ name: 'reverses_transaction_id' })
+  reversesTransaction: Transaction | null;
+
+  @Column({ type: 'bigint', transformer: bigintTransformer })
+  amount: bigint;
+
+  @Column('varchar')
+  currency: string;
+
+  @Column({ type: 'uuid', nullable: true })
+  senderWalletId: string | null;
+
+  @ManyToOne(() => Account, { nullable: true })
+  @JoinColumn({ name: 'sender_wallet_id' })
+  senderWallet: Account | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  recipientWalletId: string | null;
+
+  @ManyToOne(() => Account, { nullable: true })
+  @JoinColumn({ name: 'recipient_wallet_id' })
+  recipientWallet: Account | null;
+
+  @Column({ type: 'jsonb', default: {} })
+  metadata: Record<string, unknown>;
+
+  @CreateDateColumn({ type: 'timestamptz' })
+  createdAt: Date;
+
+  @UpdateDateColumn({ type: 'timestamptz' })
+  updatedAt: Date;
+}
