@@ -31,6 +31,21 @@ const bigintTransformer = {
   from: (v: string) => BigInt(v),
 };
 
+export interface FundingTransactionMetadata {
+  // The provider's hosted checkout page for this attempt. Kept so a retry
+  // carrying an already-seen `reference` can return the same URL without a
+  // second call out to the provider (see PaymentsService.fundWallet).
+  checkoutUrl: string;
+}
+
+/**
+ * Metadata is shaped per transaction type, not a free-form bag — `payments`
+ * writing an untyped field here and casting it back on read is exactly the
+ * leak ADR-0008 rules out. Only `funding` exists so far; each further type
+ * adds its own shape (making this a union) when that type is built.
+ */
+export type TransactionMetadata = FundingTransactionMetadata;
+
 /**
  * See docs/architecture.md §5. `sender_wallet_id`/`recipient_wallet_id` are
  * a denormalized convenience, not the source of truth for participants
@@ -85,7 +100,7 @@ export class Transaction {
   recipientWallet: Account | null;
 
   @Column({ type: 'jsonb', default: {} })
-  metadata: Record<string, unknown>;
+  metadata: TransactionMetadata;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;

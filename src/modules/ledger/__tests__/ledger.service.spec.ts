@@ -1,6 +1,8 @@
 import { DataSource, EntityManager } from 'typeorm';
 import { LedgerService } from '../ledger.service';
 import { Account } from '../entities/account.entity';
+import { Money } from '../../../shared/primitives/money';
+import { Transaction } from '../entities/transaction.entity';
 
 // TypeORM's real Repository.create/save are heavily overloaded (single vs
 // array args) — jest.Mocked<Pick<Repository<T>, ...>> can't satisfy every
@@ -10,6 +12,12 @@ interface FakeAccountRepo {
   create: jest.Mock<Account, [Partial<Account>]>;
   save: jest.Mock<Promise<Account>, [Account]>;
   findOneByOrFail: jest.Mock<Promise<Account>, [Partial<Account>]>;
+}
+
+interface FakeTransactionRepo {
+  create: jest.Mock<Transaction, [Partial<Transaction>]>;
+  save: jest.Mock<Promise<Transaction>, [Transaction]>;
+  findOneBy: jest.Mock<Promise<Transaction | null>, [Partial<Transaction>]>;
 }
 
 describe('LedgerService', () => {
@@ -86,5 +94,79 @@ describe('LedgerService', () => {
       role: 'user_wallet',
     });
     expect(wallet).toBe(account);
+  });
+
+  describe('funding transactions', () => {
+    let transactionRepo: FakeTransactionRepo;
+
+    beforeEach(() => {
+      transactionRepo = {
+        create: jest.fn((data: Partial<Transaction>) => data as Transaction),
+        save: jest.fn((entity: Transaction) =>
+          Promise.resolve({ ...entity, id: 'txn-1' }),
+        ),
+        findOneBy: jest.fn<
+          Promise<Transaction | null>,
+          [Partial<Transaction>]
+        >(),
+      };
+      const dataSource = {
+        getRepository: jest.fn((entity: unknown) =>
+          entity === Transaction ? transactionRepo : repo,
+        ),
+      } as unknown as DataSource;
+      service = new LedgerService(dataSource);
+    });
+
+    it('looks up a transaction by its reference', async () => {
+      const transaction = { id: 'txn-1', reference: 'ref-1' } as Transaction;
+      transactionRepo.findOneBy.mockResolvedValue(transaction);
+
+      const found = await service.findTransactionByReference('ref-1');
+
+      expect(transactionRepo.findOneBy).toHaveBeenCalledWith({
+        reference: 'ref-1',
+      });
+      expect(found).toBe(transaction);
+    });
+
+    it('returns null when no transaction matches the reference', async () => {
+      transactionRepo.findOneBy.mockResolvedValue(null);
+
+      const found = await service.findTransactionByReference('missing-ref');
+
+      expect(found).toBeNull();
+    });
+
+    it('creates a pending funding transaction with provider_reference mirroring reference', async () => {
+      const transaction = await service.createPendingFundingTransaction({
+        reference: 'cliqpay-ref-1',
+        provider: 'kora',
+        providerReference: 'cliqpay-ref-1',
+        amount: Money.of(500000n, 'NGN'),
+        recipientWalletId: 'wallet-1',
+        metadata: { checkoutUrl: 'https://example.com/pay' },
+      });
+
+      expect(transactionRepo.create).toHaveBeenCalledWith({
+        reference: 'cliqpay-ref-1',
+        provider: 'kora',
+        providerReference: 'cliqpay-ref-1',
+        type: 'funding',
+        status: 'pending',
+        reversesTransactionId: null,
+        amount: 500000n,
+        currency: 'NGN',
+        senderWalletId: null,
+        recipientWalletId: 'wallet-1',
+        metadata: { checkoutUrl: 'https://example.com/pay' },
+      });
+      expect(transactionRepo.save).toHaveBeenCalled();
+      expect(transaction).toMatchObject({
+        type: 'funding',
+        status: 'pending',
+        amount: 500000n,
+      });
+    });
   });
 });
