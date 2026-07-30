@@ -32,6 +32,7 @@ import { User } from '../../../src/modules/users/entities/user.entity';
 import { UsersModule } from '../../../src/modules/users/users.module';
 import { UsersService } from '../../../src/modules/users/users.service';
 import { PaymentsModule } from '../../../src/modules/payments/payments.module';
+import { PaymentsService } from '../../../src/modules/payments/payments.service';
 import { PAYMENT_PROVIDER_ADAPTER } from '../../../src/modules/payments/adapters/payment-provider.interface';
 import { FakeAdapter } from '../../../src/modules/payments/adapters/fake.adapter';
 import { NotificationsModule } from '../../../src/modules/notifications/notifications.module';
@@ -56,6 +57,7 @@ export interface PaymentsTestContext {
   app: INestApplication<App>;
   usersService: UsersService;
   ledgerService: LedgerService;
+  paymentsService: PaymentsService;
   dataSource: DataSource;
   userRepo: Repository<User>;
   accountRepo: Repository<Account>;
@@ -182,6 +184,7 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
     app,
     usersService: moduleRef.get(UsersService),
     ledgerService: moduleRef.get(LedgerService),
+    paymentsService: moduleRef.get(PaymentsService),
     dataSource,
     userRepo: dataSource.getRepository(User),
     accountRepo: dataSource.getRepository(Account),
