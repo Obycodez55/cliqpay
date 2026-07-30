@@ -4,6 +4,7 @@ import {
   InitiatePaymentParams,
   InitiatePaymentResult,
   PaymentProviderAdapter,
+  VerifyChargeResult,
 } from './payment-provider.interface';
 import { maybeThrowFakePaymentFailure } from '../internal/errors';
 import { extractTopLevelJsonField } from '../internal/raw-json';
@@ -17,6 +18,7 @@ const FAKE_SECRET_KEY = 'fake-kora-secret-key';
 @Injectable()
 export class FakeAdapter implements PaymentProviderAdapter {
   readonly initiated: InitiatePaymentParams[] = [];
+  private readonly verifyChargeResults = new Map<string, VerifyChargeResult>();
 
   // async with nothing to await, deliberately: the sentinel throw below has
   // to reach a caller doing `.catch()` without `await` as a rejection, which
@@ -41,5 +43,17 @@ export class FakeAdapter implements PaymentProviderAdapter {
       .update(rawData)
       .digest('hex');
     return expected === signature;
+  }
+
+  // Test-only configuration for the poll path (issue #14) — a reference
+  // with no configured result defaults to `pending`, the safe default: an
+  // un-configured stale transaction is left alone rather than force-resolved.
+  setVerifyChargeResult(reference: string, result: VerifyChargeResult): void {
+    this.verifyChargeResults.set(reference, result);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async verifyCharge(reference: string): Promise<VerifyChargeResult> {
+    return this.verifyChargeResults.get(reference) ?? { status: 'pending' };
   }
 }

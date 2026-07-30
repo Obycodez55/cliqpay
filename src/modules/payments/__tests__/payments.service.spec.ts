@@ -7,6 +7,14 @@ import { Money } from '../../../shared/primitives/money';
 import { PaymentProviderAdapter } from '../adapters/payment-provider.interface';
 import { FUNDING_COMPLETED_EVENT } from '../../../shared/events/domain-events';
 
+function mockAdapter(): jest.Mocked<PaymentProviderAdapter> {
+  return {
+    initiatePayment: jest.fn(),
+    verifyWebhookSignature: jest.fn().mockReturnValue(true),
+    verifyCharge: jest.fn(),
+  };
+}
+
 function webhookBody(overrides: Partial<Record<string, unknown>> = {}) {
   return Buffer.from(
     JSON.stringify({
@@ -44,10 +52,7 @@ describe('PaymentsService.handleFundingWebhook', () => {
     };
     usersService = { findById: jest.fn() };
     eventBus = { publish: jest.fn() };
-    adapter = {
-      initiatePayment: jest.fn(),
-      verifyWebhookSignature: jest.fn().mockReturnValue(true),
-    };
+    adapter = mockAdapter();
     service = new PaymentsService(
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
@@ -134,5 +139,136 @@ describe('PaymentsService.handleFundingWebhook', () => {
     ).resolves.toBeUndefined();
 
     expect(eventBus.publish).not.toHaveBeenCalled();
+  });
+});
+
+describe('PaymentsService.pollStaleFundingTransactions', () => {
+  let ledgerService: jest.Mocked<
+    Pick<LedgerService, 'postFunding' | 'findStaleFundingTransactions'>
+  >;
+  let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
+  let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
+  let adapter: jest.Mocked<PaymentProviderAdapter>;
+  let service: PaymentsService;
+
+  const staleTransaction = { reference: 'cliqpay-ref-1', currency: 'NGN' };
+  const postFundingResult: PostFundingResult = {
+    userId: 'user-1',
+    netAmount: Money.of(500_000n, 'NGN'),
+  };
+
+  beforeEach(() => {
+    ledgerService = {
+      postFunding: jest.fn(),
+      findStaleFundingTransactions: jest.fn().mockResolvedValue([]),
+    };
+    usersService = { findById: jest.fn() };
+    eventBus = { publish: jest.fn() };
+    adapter = mockAdapter();
+    service = new PaymentsService(
+      ledgerService as unknown as LedgerService,
+      usersService as unknown as UsersService,
+      eventBus as unknown as EventBusService,
+      adapter,
+    );
+  });
+
+  it('does nothing when there are no stale transactions', async () => {
+    await service.pollStaleFundingTransactions();
+
+    expect(adapter.verifyCharge.mock.calls).toHaveLength(0);
+    expect(ledgerService.postFunding).not.toHaveBeenCalled();
+  });
+
+  it('posts through postFunding and publishes when Kora reports success', async () => {
+    ledgerService.findStaleFundingTransactions.mockResolvedValue([
+      staleTransaction,
+    ]);
+    adapter.verifyCharge.mockResolvedValue({
+      status: 'success',
+      netAmount: Money.of(500_000n, 'NGN'),
+      providerFee: Money.of(5_000n, 'NGN'),
+    });
+    ledgerService.postFunding.mockResolvedValue(postFundingResult);
+    usersService.findById.mockResolvedValue({
+      email: 'user@example.com',
+    } as Awaited<ReturnType<UsersService['findById']>>);
+
+    await service.pollStaleFundingTransactions();
+
+    expect(ledgerService.postFunding).toHaveBeenCalledWith({
+      reference: 'cliqpay-ref-1',
+      netAmount: Money.of(500_000n, 'NGN'),
+      providerFee: Money.of(5_000n, 'NGN'),
+      providerStatus: 'success',
+    });
+    expect(eventBus.publish).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the transaction failed via postFunding when Kora reports failed', async () => {
+    ledgerService.findStaleFundingTransactions.mockResolvedValue([
+      staleTransaction,
+    ]);
+    adapter.verifyCharge.mockResolvedValue({ status: 'failed' });
+    ledgerService.postFunding.mockResolvedValue(null);
+
+    await service.pollStaleFundingTransactions();
+
+    expect(ledgerService.postFunding).toHaveBeenCalledWith({
+      reference: 'cliqpay-ref-1',
+      netAmount: Money.zero('NGN'),
+      providerFee: Money.zero('NGN'),
+      providerStatus: 'failed',
+    });
+    expect(eventBus.publish).not.toHaveBeenCalled();
+  });
+
+  it('leaves the transaction pending when Kora reports still-unresolved', async () => {
+    ledgerService.findStaleFundingTransactions.mockResolvedValue([
+      staleTransaction,
+    ]);
+    adapter.verifyCharge.mockResolvedValue({ status: 'pending' });
+
+    await service.pollStaleFundingTransactions();
+
+    expect(ledgerService.postFunding).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when postFunding reports the transaction was already resolved (race with the webhook)', async () => {
+    ledgerService.findStaleFundingTransactions.mockResolvedValue([
+      staleTransaction,
+    ]);
+    adapter.verifyCharge.mockResolvedValue({
+      status: 'success',
+      netAmount: Money.of(500_000n, 'NGN'),
+      providerFee: Money.of(5_000n, 'NGN'),
+    });
+    ledgerService.postFunding.mockResolvedValue(null);
+
+    await service.pollStaleFundingTransactions();
+
+    expect(usersService.findById).not.toHaveBeenCalled();
+    expect(eventBus.publish).not.toHaveBeenCalled();
+  });
+
+  it('does not let one failing verifyCharge call stop the rest of the batch', async () => {
+    ledgerService.findStaleFundingTransactions.mockResolvedValue([
+      staleTransaction,
+      { reference: 'cliqpay-ref-2', currency: 'NGN' },
+    ]);
+    adapter.verifyCharge.mockRejectedValueOnce(new Error('network blip'));
+    adapter.verifyCharge.mockResolvedValueOnce({
+      status: 'success',
+      netAmount: Money.of(100_000n, 'NGN'),
+      providerFee: Money.of(1_000n, 'NGN'),
+    });
+    ledgerService.postFunding.mockResolvedValue(postFundingResult);
+    usersService.findById.mockResolvedValue({
+      email: 'user@example.com',
+    } as Awaited<ReturnType<UsersService['findById']>>);
+
+    await service.pollStaleFundingTransactions();
+
+    expect(ledgerService.postFunding).toHaveBeenCalledTimes(1);
   });
 });

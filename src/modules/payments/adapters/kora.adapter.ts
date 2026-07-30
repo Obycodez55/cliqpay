@@ -1,20 +1,20 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { APP_CONFIG, AppConfig } from '../../../config';
+import { Money } from '../../../shared/primitives/money';
 import {
   InitiatePaymentParams,
   InitiatePaymentResult,
   PaymentProviderAdapter,
+  VerifyChargeResult,
 } from './payment-provider.interface';
 import { extractTopLevelJsonField } from '../internal/raw-json';
 
 const KORA_BASE_URL = 'https://api.korapay.com/merchant/api/v1';
 
 // Without this, a hung Kora connection hangs the request handling it
-// indefinitely — there's no other timeout upstream that's guaranteed to
-// apply. 15s is generous for an initialize call (nothing here waits on the
-// customer completing checkout, just on Kora accepting the charge).
-const INITIATE_PAYMENT_TIMEOUT_MS = 15_000;
+
+const KORA_TIMEOUT_MS = 15_000;
 
 interface KoraInitializeResponse {
   status: boolean;
@@ -22,6 +22,18 @@ interface KoraInitializeResponse {
   data?: {
     reference: string;
     checkout_url: string;
+  };
+}
+
+interface KoraVerifyChargeResponse {
+  status: boolean;
+  message: string;
+  data?: {
+    reference: string;
+    status: string;
+    amount: string;
+    fee: number;
+    currency: string;
   };
 }
 
@@ -60,7 +72,7 @@ export class KoraAdapter implements PaymentProviderAdapter {
           reference: params.reference,
           customer: { email: params.customerEmail },
         }),
-        signal: AbortSignal.timeout(INITIATE_PAYMENT_TIMEOUT_MS),
+        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
       });
     } catch (error) {
       throw new Error(
@@ -76,6 +88,49 @@ export class KoraAdapter implements PaymentProviderAdapter {
     }
 
     return { checkoutUrl: body.data.checkout_url };
+  }
+
+  // The self-verify poll path (issue #14) — called only for transactions
+  // whose webhook never arrived within the normal window, so this doesn't
+  // run per-request.
+  async verifyCharge(reference: string): Promise<VerifyChargeResult> {
+    let response: Response;
+    try {
+      response = await fetch(`${KORA_BASE_URL}/charges/${reference}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${this.secretKey}` },
+        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
+      });
+    } catch (error) {
+      throw new Error(
+        `KoraAdapter: network error (${(error as Error).message})`,
+      );
+    }
+
+    const body = (await response.json()) as KoraVerifyChargeResponse;
+    if (!response.ok || !body.status || !body.data) {
+      throw new Error(
+        `KoraAdapter: ${response.status} ${body.message ?? 'unknown error'}`,
+      );
+    }
+
+    if (body.data.status === 'success') {
+      return {
+        status: 'success',
+        netAmount: Money.fromDecimalString(
+          body.data.amount,
+          body.data.currency,
+        ),
+        providerFee: Money.fromDecimalString(
+          String(body.data.fee),
+          body.data.currency,
+        ),
+      };
+    }
+    if (body.data.status === 'failed') {
+      return { status: 'failed' };
+    }
+    return { status: 'pending' };
   }
 
   verifyWebhookSignature(rawBody: Buffer, signature: string): boolean {

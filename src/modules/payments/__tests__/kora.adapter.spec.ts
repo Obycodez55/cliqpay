@@ -185,4 +185,93 @@ describe('KoraAdapter', () => {
       expect(adapter.verifyWebhookSignature(prettyBody, signature)).toBe(true);
     });
   });
+
+  describe('verifyCharge', () => {
+    it('maps a "success" verify response to netAmount/providerFee', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(200, {
+          status: true,
+          message: 'ok',
+          data: {
+            reference: 'cliqpay-ref-1',
+            status: 'success',
+            amount: '5000.00',
+            fee: 50,
+            currency: 'NGN',
+          },
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      const result = await adapter.verifyCharge('cliqpay-ref-1');
+
+      expect(result).toEqual({
+        status: 'success',
+        netAmount: Money.of(500000n, 'NGN'),
+        providerFee: Money.of(5000n, 'NGN'),
+      });
+    });
+
+    it('maps a "failed" verify response to a failed outcome', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(200, {
+          status: true,
+          message: 'ok',
+          data: {
+            reference: 'cliqpay-ref-1',
+            status: 'failed',
+            amount: '5000.00',
+            fee: 0,
+            currency: 'NGN',
+          },
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.verifyCharge('cliqpay-ref-1')).resolves.toEqual({
+        status: 'failed',
+      });
+    });
+
+    it('maps Kora\'s "processing" status to a pending outcome', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(200, {
+          status: true,
+          message: 'ok',
+          data: {
+            reference: 'cliqpay-ref-1',
+            status: 'processing',
+            amount: '5000.00',
+            fee: 0,
+            currency: 'NGN',
+          },
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.verifyCharge('cliqpay-ref-1')).resolves.toEqual({
+        status: 'pending',
+      });
+    });
+
+    it('throws on a non-ok response', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(404, { status: false, message: 'not found' }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.verifyCharge('cliqpay-ref-1')).rejects.toThrow(
+        /not found/,
+      );
+    });
+
+    it('throws a descriptive error on a network failure', async () => {
+      fetchMock.mockRejectedValue(new Error('ECONNRESET'));
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.verifyCharge('cliqpay-ref-1')).rejects.toThrow(
+        /ECONNRESET/,
+      );
+    });
+  });
 });

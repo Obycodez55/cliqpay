@@ -76,4 +76,29 @@ describe('FakeAdapter', () => {
       ).toBe(false);
     });
   });
+
+  describe('verifyCharge', () => {
+    it('defaults to pending for a reference with no configured result', async () => {
+      const adapter = new FakeAdapter();
+
+      await expect(adapter.verifyCharge('cliqpay-ref-1')).resolves.toEqual({
+        status: 'pending',
+      });
+    });
+
+    it('returns whatever result was configured for that reference', async () => {
+      const adapter = new FakeAdapter();
+      adapter.setVerifyChargeResult('cliqpay-ref-1', {
+        status: 'success',
+        netAmount: Money.of(500000n, 'NGN'),
+        providerFee: Money.of(5000n, 'NGN'),
+      });
+
+      await expect(adapter.verifyCharge('cliqpay-ref-1')).resolves.toEqual({
+        status: 'success',
+        netAmount: Money.of(500000n, 'NGN'),
+        providerFee: Money.of(5000n, 'NGN'),
+      });
+    });
+  });
 });
