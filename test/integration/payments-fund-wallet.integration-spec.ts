@@ -111,7 +111,7 @@ describe('POST /wallet/fund', () => {
       .expect(401);
   });
 
-  it('propagates a provider failure without creating a transaction row', async () => {
+  it('marks the transaction failed (not deleted) on a provider failure', async () => {
     const { userId } = await seedUserWithWallet(ctx, {
       email: 'fund-fail@example.com',
       phone: '+2348011110004',
@@ -124,9 +124,47 @@ describe('POST /wallet/fund', () => {
       .send({ amount: 250000, reference: 'cliqpay-fund-fail-ref' })
       .expect(500);
 
-    const transaction = await ctx.transactionRepo.findOneBy({
+    const transaction = await ctx.transactionRepo.findOneByOrFail({
       reference: 'cliqpay-fund-fail-ref',
     });
-    expect(transaction).toBeNull();
+    expect(transaction.status).toBe('failed');
+    expect(transaction.metadata).toEqual({ checkoutUrl: null });
+  });
+
+  it('rejects a request racing an in-flight funding attempt for the same reference, without calling the provider again', async () => {
+    const { userId, walletId } = await seedUserWithWallet(ctx, {
+      email: 'fund-inflight@example.com',
+      phone: '+2348011110005',
+      username: 'fund_inflight_user',
+    });
+    // Simulates the window between the pending row being inserted and the
+    // provider call it gated actually returning — exactly what the insert-
+    // before-call ordering in PaymentsService.fundWallet exists to protect,
+    // reproduced deterministically instead of racing real concurrent
+    // requests against Postgres.
+    await ctx.transactionRepo.save(
+      ctx.transactionRepo.create({
+        reference: 'cliqpay-fund-inflight-1',
+        provider: 'kora',
+        providerReference: 'cliqpay-fund-inflight-1',
+        type: 'funding',
+        status: 'pending',
+        reversesTransactionId: null,
+        amount: 250000n,
+        currency: 'NGN',
+        senderWalletId: null,
+        recipientWalletId: walletId,
+        metadata: { checkoutUrl: null },
+      }),
+    );
+    const initiatedBefore = ctx.fakeAdapter.initiated.length;
+
+    await request(ctx.app.getHttpServer())
+      .post('/wallet/fund')
+      .set('Authorization', `Bearer ${tokenFor(userId)}`)
+      .send({ amount: 250000, reference: 'cliqpay-fund-inflight-1' })
+      .expect(409);
+
+    expect(ctx.fakeAdapter.initiated).toHaveLength(initiatedBefore);
   });
 });

@@ -18,6 +18,10 @@ interface FakeTransactionRepo {
   create: jest.Mock<Transaction, [Partial<Transaction>]>;
   save: jest.Mock<Promise<Transaction>, [Transaction]>;
   findOneBy: jest.Mock<Promise<Transaction | null>, [Partial<Transaction>]>;
+  update: jest.Mock<
+    Promise<unknown>,
+    [Partial<Transaction>, Partial<Transaction>]
+  >;
 }
 
 describe('LedgerService', () => {
@@ -109,6 +113,9 @@ describe('LedgerService', () => {
           Promise<Transaction | null>,
           [Partial<Transaction>]
         >(),
+        update: jest
+          .fn<Promise<unknown>, [Partial<Transaction>, Partial<Transaction>]>()
+          .mockResolvedValue(undefined),
       };
       const dataSource = {
         getRepository: jest.fn((entity: unknown) =>
@@ -167,6 +174,27 @@ describe('LedgerService', () => {
         status: 'pending',
         amount: 500000n,
       });
+    });
+
+    it('sets the checkout URL on the transaction matching the reference', async () => {
+      await service.setFundingCheckoutUrl(
+        'cliqpay-ref-1',
+        'https://checkout.korapay.com/abc',
+      );
+
+      expect(transactionRepo.update).toHaveBeenCalledWith(
+        { reference: 'cliqpay-ref-1' },
+        { metadata: { checkoutUrl: 'https://checkout.korapay.com/abc' } },
+      );
+    });
+
+    it('marks the transaction matching the reference as failed', async () => {
+      await service.markFundingTransactionFailed('cliqpay-ref-1');
+
+      expect(transactionRepo.update).toHaveBeenCalledWith(
+        { reference: 'cliqpay-ref-1' },
+        { status: 'failed' },
+      );
     });
   });
 });

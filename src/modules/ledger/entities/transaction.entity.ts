@@ -34,8 +34,12 @@ const bigintTransformer = {
 export interface FundingTransactionMetadata {
   // The provider's hosted checkout page for this attempt. Kept so a retry
   // carrying an already-seen `reference` can return the same URL without a
-  // second call out to the provider (see PaymentsService.fundWallet).
-  checkoutUrl: string;
+  // second call out to the provider (see PaymentsService.fundWallet). Null
+  // between the row being inserted and the provider call actually
+  // returning — the row is created first specifically so the unique
+  // constraint on `reference` gates the provider call itself, not just our
+  // own bookkeeping (see PaymentsService.fundWallet).
+  checkoutUrl: string | null;
 }
 
 /**

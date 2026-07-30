@@ -95,4 +95,28 @@ export class LedgerService {
     });
     return repo.save(transaction);
   }
+
+  // Called once the provider call `createPendingFundingTransaction` gated
+  // has actually returned — see PaymentsService.fundWallet. Narrowly typed
+  // to funding's one metadata field rather than a generic metadata patch,
+  // since that's the only write this shape needs today.
+  async setFundingCheckoutUrl(
+    reference: string,
+    checkoutUrl: string,
+  ): Promise<void> {
+    await this.dataSource
+      .getRepository(Transaction)
+      .update({ reference }, { metadata: { checkoutUrl } });
+  }
+
+  // The provider call failed after the pending row was already inserted
+  // (see PaymentsService.fundWallet) — marked `failed` rather than deleted,
+  // consistent with transactions being a record of what was attempted, not
+  // just what succeeded (unlike `ledger_entries`, nothing here has posted
+  // yet, so this isn't a mutation of settled history).
+  async markFundingTransactionFailed(reference: string): Promise<void> {
+    await this.dataSource
+      .getRepository(Transaction)
+      .update({ reference }, { status: 'failed' });
+  }
 }

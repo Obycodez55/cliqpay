@@ -9,6 +9,12 @@ import {
 
 const KORA_BASE_URL = 'https://api.korapay.com/merchant/api/v1';
 
+// Without this, a hung Kora connection hangs the request handling it
+// indefinitely — there's no other timeout upstream that's guaranteed to
+// apply. 15s is generous for an initialize call (nothing here waits on the
+// customer completing checkout, just on Kora accepting the charge).
+const INITIATE_PAYMENT_TIMEOUT_MS = 15_000;
+
 interface KoraInitializeResponse {
   status: boolean;
   message: string;
@@ -53,6 +59,7 @@ export class KoraAdapter implements PaymentProviderAdapter {
           reference: params.reference,
           customer: { email: params.customerEmail },
         }),
+        signal: AbortSignal.timeout(INITIATE_PAYMENT_TIMEOUT_MS),
       });
     } catch (error) {
       throw new Error(

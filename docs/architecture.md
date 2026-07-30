@@ -576,6 +576,15 @@ CREDIT fx_spread_income_usd   spread
 
 ---
 
+### Not yet phased — candidate future features
+
+Raised during Phase 2 design, deliberately not scoped into any phase above yet — noted here so they aren't forgotten, not so they get built ahead of need:
+
+- **Saved payment methods (card-on-file, recurring charge without redirect).** Checked directly against Kora's documentation (checkout, direct-API, and flexible/pre-auth card flows) — none of them return a reusable token, authorization code, or any other card-on-file identifier; Kora's card flow is single-use only as currently documented. Paystack's charge API is understood to return a reusable `authorization_code` for this purpose, so the likely shape is Kora for regular funding/withdrawal, Paystack as a second, narrowly-scoped provider used only for saved-card charges — the provider-scoped account design (§4.1) already anticipates a second active provider for NGN, so this fits without a schema change. Not yet verified against a real Paystack sandbox the way Kora's shape was confirmed (§3.6) — do that before designing it for real. Also note: "tokenize and charge a saved card" isn't a capability `PaymentProviderAdapter` (§3.6) models at all — it needs its own interface, not a second implementation of the existing one.
+- **Card issuing.** Confirmed via Kora's docs — they offer virtual USD Visa/Mastercard issuing (fund a card, let the user spend from it, suspend/terminate, webhooks on card transactions); no physical card product. Unscoped: no phase above accounts for issuing balance, card lifecycle state, or USD as a currency users hold cards in (Phase 10's multi-currency work doesn't currently include USD). Worth its own phase-sizing pass if pursued rather than folding into an existing phase.
+
+---
+
 ## 7. Production Considerations
 
 These are non-negotiable standards applied across all phases, not deferred to a "hardening" phase.
