@@ -22,6 +22,7 @@ interface FakeTransactionRepo {
     Promise<unknown>,
     [Partial<Transaction>, Partial<Transaction>]
   >;
+  find: jest.Mock<Promise<Transaction[]>, [unknown]>;
 }
 
 describe('LedgerService', () => {
@@ -116,6 +117,9 @@ describe('LedgerService', () => {
         update: jest
           .fn<Promise<unknown>, [Partial<Transaction>, Partial<Transaction>]>()
           .mockResolvedValue(undefined),
+        find: jest
+          .fn<Promise<Transaction[]>, [unknown]>()
+          .mockResolvedValue([]),
       };
       const dataSource = {
         getRepository: jest.fn((entity: unknown) =>
@@ -195,6 +199,31 @@ describe('LedgerService', () => {
         { reference: 'cliqpay-ref-1' },
         { status: 'failed' },
       );
+    });
+
+    it('finds stale pending kora funding transactions older than the given date, narrowed to reference/currency', async () => {
+      const olderThan = new Date('2026-01-01T00:00:00Z');
+      transactionRepo.find.mockResolvedValue([
+        {
+          reference: 'cliqpay-ref-1',
+          currency: 'NGN',
+          status: 'pending',
+        } as Transaction,
+      ]);
+
+      const stale = await service.findStaleFundingTransactions(olderThan);
+
+      expect(transactionRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            status: 'pending',
+            provider: 'kora',
+            type: 'funding',
+          }) as unknown,
+          select: { reference: true, currency: true },
+        }),
+      );
+      expect(stale).toEqual([{ reference: 'cliqpay-ref-1', currency: 'NGN' }]);
     });
   });
 });

@@ -19,10 +19,14 @@ import {
   InitiatePaymentResult,
   PAYMENT_PROVIDER_ADAPTER,
   PaymentProviderAdapter,
+  VerifyChargeResult,
 } from './adapters/payment-provider.interface';
 import { isUniqueViolation } from './internal/errors';
+import { PostFundingFacts, PostFundingResult } from '../ledger/ledger.service';
 
 const NGN = 'NGN'; // Funding is NGN-only for now — see issue #12.
+
+const STALE_FUNDING_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 
 // Ground truth: docs/adr/0007 — a real sandbox charge-verify response has
 // this shape for the `data` field, and per Kora's docs the webhook payload
@@ -158,6 +162,71 @@ export class PaymentsService {
       return;
     }
 
+    await this.publishFundingCompletedEvent(result);
+  }
+
+  async pollStaleFundingTransactions(): Promise<void> {
+    const staleTransactions =
+      await this.ledgerService.findStaleFundingTransactions(
+        new Date(Date.now() - STALE_FUNDING_THRESHOLD_MS),
+      );
+
+    for (const transaction of staleTransactions) {
+      await this.pollFundingTransaction(transaction);
+    }
+  }
+
+  private async pollFundingTransaction(transaction: {
+    reference: string;
+    currency: string;
+  }): Promise<void> {
+    let verifyResult: VerifyChargeResult;
+    try {
+      verifyResult = await this.adapter.verifyCharge(transaction.reference);
+    } catch (error) {
+      this.logger.error(
+        `pollStaleFundingTransactions: verifyCharge failed for reference "${transaction.reference}" (${(error as Error).message}) — will retry on the next poll run`,
+      );
+      return;
+    }
+
+    if (verifyResult.status === 'pending') {
+      // Still awaiting checkout completion — leave it pending for a later
+      // poll run rather than force-resolving it.
+      return;
+    }
+
+    const facts: PostFundingFacts =
+      verifyResult.status === 'success'
+        ? {
+            reference: transaction.reference,
+            netAmount: verifyResult.netAmount,
+            providerFee: verifyResult.providerFee,
+            providerStatus: 'success',
+          }
+        : {
+            reference: transaction.reference,
+            // Unused by postFunding for a `failed` outcome — see
+            // LedgerService.postFunding's early return before any entries
+            // are posted.
+            netAmount: Money.zero(transaction.currency),
+            providerFee: Money.zero(transaction.currency),
+            providerStatus: 'failed',
+          };
+
+    const result = await this.ledgerService.postFunding(facts);
+    if (!result) {
+      // The webhook (or an earlier poll tick) already resolved this —
+      // no-op, not a duplicate posting.
+      return;
+    }
+
+    await this.publishFundingCompletedEvent(result);
+  }
+
+  private async publishFundingCompletedEvent(
+    result: PostFundingResult,
+  ): Promise<void> {
     try {
       const user = await this.usersService.findById(result.userId);
       await this.eventBus.publish<string, FundingCompletedEventPayload>({
@@ -172,27 +241,15 @@ export class PaymentsService {
       });
     } catch (error) {
       this.logger.error(
-        `handleFundingWebhook: funding for reference "${data.reference}" posted successfully, but publishing the completion notification failed (${(error as Error).message}) — this will not be retried`,
+        `publishFundingCompletedEvent: funding posted successfully for user "${result.userId}", but publishing the completion notification failed (${(error as Error).message}) — this will not be retried`,
       );
     }
   }
 }
 
-// Structurally typed rather than importing ledger's `Transaction` entity —
-// payments reaches ledger only through LedgerService's exported methods,
-// never its internals (docs/architecture.md §10, ADR-0008), and this is all
-// the shape this function actually needs.
-interface FundingLookupResult {
+function toFundWalletResponse(transaction: {
   metadata: { checkoutUrl: string | null };
-}
-
-// A transaction found by reference (the fast pre-check, or the race-loser
-// re-fetch) has a checkout URL once the request that created it has
-// actually heard back from the provider — until then, this reports the
-// honest "still in progress" state instead of fabricating a URL.
-function toFundWalletResponse(
-  transaction: FundingLookupResult,
-): FundWalletResponseDto {
+}): FundWalletResponseDto {
   if (!transaction.metadata.checkoutUrl) {
     throw new ConflictException(
       'A funding request for this reference is already being processed — retry shortly.',

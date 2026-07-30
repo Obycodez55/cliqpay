@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { Brackets, DataSource, EntityManager } from 'typeorm';
+import { Brackets, DataSource, EntityManager, LessThan } from 'typeorm';
 import { runInTransaction } from '../../database/transaction.util';
 import { Money } from '../../shared/primitives/money';
 import { Account } from './entities/account.entity';
@@ -30,6 +30,14 @@ export interface PostFundingFacts {
 export interface PostFundingResult {
   userId: string;
   netAmount: Money;
+}
+
+// Structurally narrow rather than the full `Transaction` entity — `payments`
+// (the only caller) needs the reference to poll on and the currency to
+// build zero-amount facts for a `failed` outcome, nothing else (ADR-0008).
+export interface StaleFundingTransaction {
+  reference: string;
+  currency: string;
 }
 
 /**
@@ -134,6 +142,28 @@ export class LedgerService {
     await this.dataSource
       .getRepository(Transaction)
       .update({ reference }, { status: 'failed' });
+  }
+
+  // Feeds the self-verify poll job (issue #14) — `payments` decides the
+  // staleness threshold and passes it in as `olderThan`; this is a plain
+  // read of `transactions`, still ledger's table, so the query lives here
+  // rather than being raw-queried from `payments`.
+  async findStaleFundingTransactions(
+    olderThan: Date,
+  ): Promise<StaleFundingTransaction[]> {
+    const transactions = await this.dataSource.getRepository(Transaction).find({
+      where: {
+        status: 'pending',
+        provider: 'kora',
+        type: 'funding',
+        createdAt: LessThan(olderThan),
+      },
+      select: { reference: true, currency: true },
+    });
+    return transactions.map((transaction) => ({
+      reference: transaction.reference,
+      currency: transaction.currency,
+    }));
   }
 
   /**
