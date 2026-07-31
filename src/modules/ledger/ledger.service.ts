@@ -170,10 +170,8 @@ export class LedgerService {
     return repo.save(transaction);
   }
 
-  // Called once the provider call `createPendingFundingTransaction` gated
-  // has actually returned — see PaymentsService.fundWallet. Narrowly typed
-  // to funding's one metadata field rather than a generic metadata patch,
-  // since that's the only write this shape needs today.
+  // Narrowly typed to funding's one metadata field rather than a generic
+  // metadata patch, since that's the only write this shape needs today.
   async setFundingCheckoutUrl(
     reference: string,
     checkoutUrl: string,
@@ -285,8 +283,6 @@ export class LedgerService {
       .where('entry.accountId = :walletId', { walletId })
       .orderBy('entry.createdAt', 'DESC')
       .addOrderBy('entry.id', 'DESC')
-      // One extra row fetched to know whether a next page exists, without a
-      // separate count query.
       .take(pagination.limit + 1);
 
     if (cursor) {
