@@ -5,12 +5,15 @@ import {
   Logger,
   UnauthorizedException,
 } from '@nestjs/common';
+import { APP_CONFIG, AppConfig } from '../../config';
 import { LedgerService } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
 import { Money } from '../../shared/primitives/money';
 import {
   FUNDING_COMPLETED_EVENT,
   FundingCompletedEventPayload,
+  RECONCILIATION_MISMATCH_EVENT,
+  ReconciliationMismatchEventPayload,
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
 import { FundWalletDto } from './dto/fund-wallet.dto';
@@ -23,6 +26,10 @@ import {
 } from './adapters/payment-provider.interface';
 import { isUniqueViolation } from './internal/errors';
 import { PostFundingFacts, PostFundingResult } from '../ledger/ledger.service';
+import {
+  ACTIVE_RECONCILIATION_PAIRS,
+  ActiveReconciliationPair,
+} from './internal/active-reconciliation-pairs';
 
 const NGN = 'NGN'; // Funding is NGN-only for now — see issue #12.
 
@@ -50,6 +57,7 @@ interface KoraChargeWebhookPayload {
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
+  private readonly reconciliationAlertEmail: string;
 
   constructor(
     private readonly ledgerService: LedgerService,
@@ -57,7 +65,10 @@ export class PaymentsService {
     private readonly eventBus: EventBusService,
     @Inject(PAYMENT_PROVIDER_ADAPTER)
     private readonly adapter: PaymentProviderAdapter,
-  ) {}
+    @Inject(APP_CONFIG) config: AppConfig,
+  ) {
+    this.reconciliationAlertEmail = config.payments.reconciliation.alertEmail;
+  }
 
   // Idempotent on `reference` (§3.4). The `transactions` row is inserted
   // *before* calling the provider, not after — the unique constraint on
@@ -222,6 +233,63 @@ export class PaymentsService {
     }
 
     await this.publishFundingCompletedEvent(result);
+  }
+
+  // The external reconciliation job (issue #15, docs/architecture.md §4.4)
+  // — iterates every active (provider, currency) pair independently, so one
+  // pair's failure doesn't stop the rest of the batch (same shape as
+  // pollStaleFundingTransactions above).
+  async reconcileFloatBalances(): Promise<void> {
+    for (const pair of ACTIVE_RECONCILIATION_PAIRS) {
+      try {
+        await this.reconcilePair(pair);
+      } catch (error) {
+        this.logger.error(
+          `reconcileFloatBalances: failed to reconcile ${pair.provider}/${pair.currency} (${(error as Error).message}) — will retry on the next run`,
+        );
+      }
+    }
+  }
+
+  // Read-and-compare only — never writes to the ledger. A mismatch is
+  // logged and alerted; a human investigates and corrects via a compensating
+  // transaction, never this job (CLAUDE.md, "corrections are compensating
+  // transactions, never mutations of history").
+  private async reconcilePair(pair: ActiveReconciliationPair): Promise<void> {
+    const [ledgerBalance, providerBalance] = await Promise.all([
+      this.ledgerService.getFloatBalance(pair.provider, pair.currency),
+      this.adapter.getBalance(pair.currency),
+    ]);
+
+    // Every run's result is logged, match or mismatch — §4.4's
+    // "logged and reviewable" requirement.
+    this.logger.debug(
+      `reconcileFloatBalances: ${pair.provider}/${pair.currency} ledger=${ledgerBalance.toDecimalString()} provider=${providerBalance.toDecimalString()}`,
+    );
+
+    if (ledgerBalance.equals(providerBalance)) {
+      return;
+    }
+
+    const delta = ledgerBalance.subtract(providerBalance);
+    const occurredAt = new Date();
+    this.logger.error(
+      `reconcileFloatBalances: mismatch for ${pair.provider}/${pair.currency} — ledger=${ledgerBalance.toDecimalString()} provider=${providerBalance.toDecimalString()} delta=${delta.toDecimalString()}`,
+    );
+
+    await this.eventBus.publish<string, ReconciliationMismatchEventPayload>({
+      name: RECONCILIATION_MISMATCH_EVENT,
+      payload: {
+        email: this.reconciliationAlertEmail,
+        provider: pair.provider,
+        currency: pair.currency,
+        ledgerBalance: ledgerBalance.toDecimalString(),
+        providerBalance: providerBalance.toDecimalString(),
+        delta: delta.toDecimalString(),
+        occurredAt: occurredAt.toISOString(),
+      },
+      occurredAt,
+    });
   }
 
   private async publishFundingCompletedEvent(
