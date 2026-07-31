@@ -37,6 +37,12 @@ export interface PaymentProviderAdapter {
   // The self-verify poll path (issue #14) — called for `transactions` rows
   // whose webhook never arrived within the normal window.
   verifyCharge(reference: string): Promise<VerifyChargeResult>;
+
+  // The external reconciliation path (issue #15) — the provider's own
+  // reported balance for a currency, to compare against float_<ccy>'s
+  // ledger-derived balance. Read-only, no posting knowledge here or in any
+  // caller (ADR-0008).
+  getBalance(currency: string): Promise<Money>;
 }
 
 export const PAYMENT_PROVIDER_ADAPTER = Symbol('PAYMENT_PROVIDER_ADAPTER');

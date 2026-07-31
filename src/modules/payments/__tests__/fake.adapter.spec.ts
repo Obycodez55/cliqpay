@@ -101,4 +101,23 @@ describe('FakeAdapter', () => {
       });
     });
   });
+
+  describe('getBalance', () => {
+    it('defaults to zero for a currency with no configured balance', async () => {
+      const adapter = new FakeAdapter();
+
+      await expect(adapter.getBalance('NGN')).resolves.toEqual(
+        Money.zero('NGN'),
+      );
+    });
+
+    it('returns whatever balance was configured for that currency', async () => {
+      const adapter = new FakeAdapter();
+      adapter.setBalance('NGN', Money.of(500_000n, 'NGN'));
+
+      await expect(adapter.getBalance('NGN')).resolves.toEqual(
+        Money.of(500_000n, 'NGN'),
+      );
+    });
+  });
 });

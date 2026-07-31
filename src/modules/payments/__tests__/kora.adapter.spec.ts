@@ -274,4 +274,53 @@ describe('KoraAdapter', () => {
       );
     });
   });
+
+  describe('getBalance', () => {
+    it('maps available_balance for the requested currency, ignoring pending_balance', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(200, {
+          status: true,
+          message: 'success',
+          data: {
+            NGN: { pending_balance: 10_000, available_balance: 5_001_000 },
+            USD: { pending_balance: 0, available_balance: 200 },
+          },
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      const result = await adapter.getBalance('NGN');
+
+      expect(result).toEqual(Money.fromDecimalString('5001000', 'NGN'));
+    });
+
+    it('throws when the response has no data for the requested currency', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(200, {
+          status: true,
+          message: 'success',
+          data: { USD: { pending_balance: 0, available_balance: 200 } },
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.getBalance('NGN')).rejects.toThrow(/NGN/);
+    });
+
+    it('throws on a non-ok response', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(401, { status: false, message: 'unauthorized' }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.getBalance('NGN')).rejects.toThrow(/unauthorized/);
+    });
+
+    it('throws a descriptive error on a network failure', async () => {
+      fetchMock.mockRejectedValue(new Error('ECONNRESET'));
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.getBalance('NGN')).rejects.toThrow(/ECONNRESET/);
+    });
+  });
 });

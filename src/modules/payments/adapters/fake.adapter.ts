@@ -1,5 +1,6 @@
 import { createHmac } from 'crypto';
 import { Injectable } from '@nestjs/common';
+import { Money } from '../../../shared/primitives/money';
 import {
   InitiatePaymentParams,
   InitiatePaymentResult,
@@ -19,6 +20,7 @@ const FAKE_SECRET_KEY = 'fake-kora-secret-key';
 export class FakeAdapter implements PaymentProviderAdapter {
   readonly initiated: InitiatePaymentParams[] = [];
   private readonly verifyChargeResults = new Map<string, VerifyChargeResult>();
+  private readonly balances = new Map<string, Money>();
 
   // async with nothing to await, deliberately: the sentinel throw below has
   // to reach a caller doing `.catch()` without `await` as a rejection, which
@@ -55,5 +57,14 @@ export class FakeAdapter implements PaymentProviderAdapter {
   // eslint-disable-next-line @typescript-eslint/require-await
   async verifyCharge(reference: string): Promise<VerifyChargeResult> {
     return this.verifyChargeResults.get(reference) ?? { status: 'pending' };
+  }
+
+  setBalance(currency: string, balance: Money): void {
+    this.balances.set(currency, balance);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async getBalance(currency: string): Promise<Money> {
+    return this.balances.get(currency) ?? Money.zero(currency);
   }
 }

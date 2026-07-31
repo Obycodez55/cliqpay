@@ -38,6 +38,16 @@ interface KoraVerifyChargeResponse {
   };
 }
 
+// Ground truth for GET /balances confirmed against the real sandbox during
+// #15's design (not guessed from docs) — one call returns every currency the
+// merchant holds, keyed by currency code, in major units like the charge
+// endpoints.
+interface KoraBalancesResponse {
+  status: boolean;
+  message: string;
+  data?: Record<string, { pending_balance: number; available_balance: number }>;
+}
+
 // Ground truth for the request/response shapes below: docs/adr/0007, backed
 // by a real sandbox charge (POST /charges/initialize, then GET
 // /charges/{reference}) run during design — not guessed from Kora's docs.
@@ -132,6 +142,43 @@ export class KoraAdapter implements PaymentProviderAdapter {
       return { status: 'failed' };
     }
     return { status: 'pending' };
+  }
+
+  // The external reconciliation path (issue #15). Uses `available_balance`
+  // only — `pending_balance` is money Kora hasn't settled to the merchant
+  // yet, so it isn't part of what float_ngn should reflect (§4.2).
+  async getBalance(currency: string): Promise<Money> {
+    let response: Response;
+    try {
+      response = await fetch(`${KORA_BASE_URL}/balances`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${this.secretKey}` },
+        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
+      });
+    } catch (error) {
+      throw new Error(
+        `KoraAdapter: network error (${(error as Error).message})`,
+      );
+    }
+
+    const body = (await response.json()) as KoraBalancesResponse;
+    if (!response.ok || !body.status || !body.data) {
+      throw new Error(
+        `KoraAdapter: ${response.status} ${body.message ?? 'unknown error'}`,
+      );
+    }
+
+    const currencyBalance = body.data[currency];
+    if (!currencyBalance) {
+      throw new Error(
+        `KoraAdapter: no balance reported for currency "${currency}"`,
+      );
+    }
+
+    return Money.fromDecimalString(
+      String(currencyBalance.available_balance),
+      currency,
+    );
   }
 
   verifyWebhookSignature(rawBody: Buffer, signature: string): boolean {

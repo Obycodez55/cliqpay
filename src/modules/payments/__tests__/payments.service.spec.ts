@@ -1,19 +1,29 @@
 import { UnauthorizedException } from '@nestjs/common';
+import { AppConfig } from '../../../config';
 import { PaymentsService } from '../payments.service';
 import { LedgerService, PostFundingResult } from '../../ledger/ledger.service';
 import { UsersService } from '../../users/users.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { Money } from '../../../shared/primitives/money';
 import { PaymentProviderAdapter } from '../adapters/payment-provider.interface';
-import { FUNDING_COMPLETED_EVENT } from '../../../shared/events/domain-events';
+import { FakeAdapter } from '../adapters/fake.adapter';
+import {
+  FUNDING_COMPLETED_EVENT,
+  RECONCILIATION_MISMATCH_EVENT,
+} from '../../../shared/events/domain-events';
 
 function mockAdapter(): jest.Mocked<PaymentProviderAdapter> {
   return {
     initiatePayment: jest.fn(),
     verifyWebhookSignature: jest.fn().mockReturnValue(true),
     verifyCharge: jest.fn(),
+    getBalance: jest.fn(),
   };
 }
+
+const testConfig = {
+  payments: { reconciliation: { alertEmail: 'ops@cliqpay.test' } },
+} as AppConfig;
 
 function webhookBody(overrides: Partial<Record<string, unknown>> = {}) {
   return Buffer.from(
@@ -58,6 +68,7 @@ describe('PaymentsService.handleFundingWebhook', () => {
       usersService as unknown as UsersService,
       eventBus as unknown as EventBusService,
       adapter,
+      testConfig,
     );
   });
 
@@ -170,6 +181,7 @@ describe('PaymentsService.pollStaleFundingTransactions', () => {
       usersService as unknown as UsersService,
       eventBus as unknown as EventBusService,
       adapter,
+      testConfig,
     );
   });
 
@@ -270,5 +282,66 @@ describe('PaymentsService.pollStaleFundingTransactions', () => {
     await service.pollStaleFundingTransactions();
 
     expect(ledgerService.postFunding).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('PaymentsService.reconcileFloatBalances', () => {
+  let ledgerService: jest.Mocked<Pick<LedgerService, 'getFloatBalance'>>;
+  let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
+  let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
+  let adapter: FakeAdapter;
+  let service: PaymentsService;
+
+  beforeEach(() => {
+    ledgerService = { getFloatBalance: jest.fn() };
+    usersService = { findById: jest.fn() };
+    eventBus = { publish: jest.fn() };
+    adapter = new FakeAdapter();
+    service = new PaymentsService(
+      ledgerService as unknown as LedgerService,
+      usersService as unknown as UsersService,
+      eventBus as unknown as EventBusService,
+      adapter,
+      testConfig,
+    );
+  });
+
+  it('does not publish when the ledger and provider balances match', async () => {
+    ledgerService.getFloatBalance.mockResolvedValue(Money.of(500_000n, 'NGN'));
+    adapter.setBalance('NGN', Money.of(500_000n, 'NGN'));
+
+    await service.reconcileFloatBalances();
+
+    expect(eventBus.publish).not.toHaveBeenCalled();
+  });
+
+  it('publishes reconciliation_mismatch with both values and the delta when they diverge', async () => {
+    ledgerService.getFloatBalance.mockResolvedValue(Money.of(500_000n, 'NGN'));
+    adapter.setBalance('NGN', Money.of(480_000n, 'NGN'));
+
+    await service.reconcileFloatBalances();
+
+    expect(eventBus.publish).toHaveBeenCalledTimes(1);
+    const published = eventBus.publish.mock.calls[0][0] as {
+      name: string;
+      payload: Record<string, unknown>;
+    };
+    expect(published.name).toBe(RECONCILIATION_MISMATCH_EVENT);
+    expect(published.payload).toMatchObject({
+      email: 'ops@cliqpay.test',
+      provider: 'kora',
+      currency: 'NGN',
+      ledgerBalance: '5000.00',
+      providerBalance: '4800.00',
+      delta: '200.00',
+    });
+    expect(typeof published.payload.occurredAt).toBe('string');
+  });
+
+  it('does not let one pair failing to reconcile stop the rest of the batch', async () => {
+    ledgerService.getFloatBalance.mockRejectedValueOnce(new Error('db blip'));
+
+    await expect(service.reconcileFloatBalances()).resolves.toBeUndefined();
+    expect(eventBus.publish).not.toHaveBeenCalled();
   });
 });
