@@ -133,6 +133,7 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
     payments: {
       provider: 'fake',
       kora: { secretKey: undefined },
+      reconciliation: { alertEmail: 'ops@cliqpay.test' },
     },
   };
 
