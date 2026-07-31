@@ -15,6 +15,12 @@ export type LedgerEntryDirection = 'debit' | 'credit';
 /**
  * Append-only — see docs/architecture.md §5, §7 Data Integrity. No
  * `updated_at`: a row here is never updated or deleted, only ever inserted.
+ * DB-enforced, not just application convention: a trigger
+ * (`trg_ledger_entries_append_only`, see
+ * `EnforceLedgerEntriesAppendOnly1785491930164`) rejects any UPDATE or
+ * DELETE against this table outright, regardless of which code path (or
+ * lack of one) issues it — TypeORM has no decorator for a trigger, so this
+ * comment is the entity-level record of it.
  *
  * `IDX_ledger_entries_account_id_created_at_id` (below) backs
  * LedgerService.getTransactionHistory's cursor query. Declared here for

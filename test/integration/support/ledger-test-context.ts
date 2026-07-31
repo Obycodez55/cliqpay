@@ -21,6 +21,7 @@ import { AddPendingEmailToUsers1784707276064 } from '../../../src/database/migra
 import { AddPendingPhoneToUsers1784707276065 } from '../../../src/database/migrations/1784707276065-AddPendingPhoneToUsers';
 import { CreateTransactionsAndLedgerEntries1784707276066 } from '../../../src/database/migrations/1784707276066-CreateTransactionsAndLedgerEntries';
 import { AddFundingQueryIndexes1785488695081 } from '../../../src/database/migrations/1785488695081-AddFundingQueryIndexes';
+import { EnforceLedgerEntriesAppendOnly1785491930164 } from '../../../src/database/migrations/1785491930164-EnforceLedgerEntriesAppendOnly';
 import { CreateCredentials1784707276062 } from '../../../src/database/migrations/1784707276062-CreateCredentials';
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
@@ -78,6 +79,7 @@ export async function createLedgerTestContext(): Promise<LedgerTestContext> {
   await new AddPendingPhoneToUsers1784707276065().up(queryRunner);
   await new CreateTransactionsAndLedgerEntries1784707276066().up(queryRunner);
   await new AddFundingQueryIndexes1785488695081().up(queryRunner);
+  await new EnforceLedgerEntriesAppendOnly1785491930164().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 

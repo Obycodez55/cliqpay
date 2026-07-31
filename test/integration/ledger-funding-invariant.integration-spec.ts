@@ -199,4 +199,52 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
 
     await assertInvariantHolds(ctx);
   });
+
+  it('rejects UPDATE and DELETE against ledger_entries at the database level, not just by application convention', async () => {
+    // L2 — CLAUDE.md calls ledger_entries append-only "non-negotiable," but
+    // until the EnforceLedgerEntriesAppendOnly migration, nothing actually
+    // stopped a raw UPDATE/DELETE from succeeding; only every code path
+    // happening to never issue one. This proves the DB itself refuses,
+    // independent of application code.
+    const { walletId } = await seedUserWithWallet(ctx, {
+      email: 'append-only@example.com',
+      phone: '+2348022220099',
+      username: 'append_only_user',
+    });
+    const reference = 'cliqpay-append-only-1';
+    await ctx.ledgerService.createPendingFundingTransaction({
+      reference,
+      provider: 'kora',
+      providerReference: reference,
+      amount: Money.of(100_000n, 'NGN'),
+      recipientWalletId: walletId,
+      metadata: { checkoutUrl: null, grossAmount: null },
+    });
+    await ctx.ledgerService.postFunding({
+      reference,
+      netAmount: Money.of(100_000n, 'NGN'),
+      providerFee: Money.zero('NGN'),
+      providerStatus: 'success',
+    });
+    const entry = await ctx.ledgerEntryRepo.findOneByOrFail({
+      accountId: walletId,
+    });
+
+    await expect(
+      ctx.dataSource.query(
+        `UPDATE ledger_entries SET amount = amount + 1 WHERE id = $1`,
+        [entry.id],
+      ),
+    ).rejects.toThrow(/append-only/);
+    await expect(
+      ctx.dataSource.query(`DELETE FROM ledger_entries WHERE id = $1`, [
+        entry.id,
+      ]),
+    ).rejects.toThrow(/append-only/);
+
+    const unchanged = await ctx.ledgerEntryRepo.findOneByOrFail({
+      id: entry.id,
+    });
+    expect(unchanged.amount).toBe(entry.amount);
+  });
 });
