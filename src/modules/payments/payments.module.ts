@@ -17,6 +17,10 @@ import {
   FUNDING_POLL_QUEUE,
   FundingPollProcessor,
 } from './internal/funding-poll.processor';
+import {
+  RECONCILIATION_QUEUE,
+  ReconciliationProcessor,
+} from './internal/reconciliation.processor';
 
 // Same one-entry-per-provider pattern as NotificationsModule's channel
 // adapters (see that module's own comment) — `fake` is just another entry,
@@ -47,11 +51,21 @@ const PAYMENT_ADAPTERS = {
         removeOnFail: { age: 86_400, count: 500 },
       },
     }),
+    BullModule.registerQueue({
+      name: RECONCILIATION_QUEUE,
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5_000 },
+        removeOnComplete: { age: 3_600, count: 100 },
+        removeOnFail: { age: 86_400, count: 500 },
+      },
+    }),
   ],
   controllers: [PaymentsController],
   providers: [
     PaymentsService,
     FundingPollProcessor,
+    ReconciliationProcessor,
     {
       provide: PAYMENT_PROVIDER_ADAPTER,
       inject: [APP_CONFIG],
