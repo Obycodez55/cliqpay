@@ -5,6 +5,7 @@ import {
   NotificationPayloadMap,
   PasswordResetOtpPayload,
   PhoneVerificationOtpPayload,
+  ReconciliationMismatchPayload,
   SecurityAlertPayload,
 } from '../notification-catalog';
 import { renderEmail } from './render-email';
@@ -54,6 +55,10 @@ export const emailTemplates: {
   funding_completed: (payload: FundingCompletedPayload) => ({
     subject: 'Your Cliqpay wallet has been funded',
     ...renderEmail('funding_completed', payload),
+  }),
+  reconciliation_mismatch: (payload: ReconciliationMismatchPayload) => ({
+    subject: `Reconciliation mismatch: ${payload.provider}/${payload.currency}`,
+    ...renderEmail('reconciliation_mismatch', payload),
   }),
 };
 

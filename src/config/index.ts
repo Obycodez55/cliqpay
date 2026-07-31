@@ -70,6 +70,8 @@ const envSchema = z
     // no Kora credentials required.
     PAYMENT_PROVIDER: z.enum(['kora', 'fake']).default('fake'),
     KORA_SECRET_KEY: z.string().optional(),
+
+    RECONCILIATION_ALERT_EMAIL: z.email().default('ops@cliqpay.obycodez.com'),
   })
   .superRefine((env, ctx) => {
     // A provider's own credentials are only required when it's the one
@@ -164,6 +166,9 @@ function buildConfig(env: Env) {
       provider: env.PAYMENT_PROVIDER,
       kora: {
         secretKey: env.KORA_SECRET_KEY,
+      },
+      reconciliation: {
+        alertEmail: env.RECONCILIATION_ALERT_EMAIL,
       },
     },
   };
