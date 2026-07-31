@@ -8,10 +8,12 @@ import { DataSource, EntityManager } from 'typeorm';
  * already has (constructor-injected via @InjectDataSource() or plain
  * DataSource, since TypeOrmCoreModule is global) — no DI wiring of its own.
  *
- * Multi-row locking helpers (e.g. the account_id-ascending lock ordering
- * required for concurrent wallet updates — see CLAUDE.md) belong here too,
- * added once the first module that needs them (ledger/P2P transfers)
- * exists — not ahead of that, per CLAUDE.md's "build incrementally" rule.
+ * The account_id-ascending lock ordering CLAUDE.md requires for concurrent
+ * wallet updates lives inline where it's used (LedgerService.postFunding),
+ * not as a shared helper here — the query shape (which roles/accounts get
+ * locked) is specific to each posting method, so there wasn't a common
+ * helper to extract yet. Revisit if a second locking call site (P2P
+ * transfers) turns out to share enough shape with this one to be worth it.
  */
 export function runInTransaction<T>(
   dataSource: DataSource,

@@ -103,6 +103,13 @@ describe('LedgerService', () => {
 
   describe('funding transactions', () => {
     let transactionRepo: FakeTransactionRepo;
+    let queryBuilder: {
+      update: jest.Mock;
+      set: jest.Mock<unknown, [{ metadata: () => string }]>;
+      where: jest.Mock;
+      setParameter: jest.Mock;
+      execute: jest.Mock;
+    };
 
     beforeEach(() => {
       transactionRepo = {
@@ -121,10 +128,26 @@ describe('LedgerService', () => {
           .fn<Promise<Transaction[]>, [unknown]>()
           .mockResolvedValue([]),
       };
+      // Chained builder for LedgerService's private mergeTransactionMetadata
+      // (setFundingCheckoutUrl's real implementation) — a real jsonb `||`
+      // merge, not a plain repo.update(), so it goes through
+      // dataSource.createQueryBuilder() instead.
+      queryBuilder = {
+        update: jest.fn(),
+        set: jest.fn<unknown, [{ metadata: () => string }]>(),
+        where: jest.fn(),
+        setParameter: jest.fn(),
+        execute: jest.fn().mockResolvedValue(undefined),
+      };
+      queryBuilder.update.mockReturnValue(queryBuilder);
+      queryBuilder.set.mockReturnValue(queryBuilder);
+      queryBuilder.where.mockReturnValue(queryBuilder);
+      queryBuilder.setParameter.mockReturnValue(queryBuilder);
       const dataSource = {
         getRepository: jest.fn((entity: unknown) =>
           entity === Transaction ? transactionRepo : repo,
         ),
+        createQueryBuilder: jest.fn(() => queryBuilder),
       } as unknown as DataSource;
       service = new LedgerService(dataSource);
     });
@@ -156,7 +179,7 @@ describe('LedgerService', () => {
         providerReference: 'cliqpay-ref-1',
         amount: Money.of(500000n, 'NGN'),
         recipientWalletId: 'wallet-1',
-        metadata: { checkoutUrl: 'https://example.com/pay' },
+        metadata: { checkoutUrl: 'https://example.com/pay', grossAmount: null },
       });
 
       expect(transactionRepo.create).toHaveBeenCalledWith({
@@ -170,7 +193,7 @@ describe('LedgerService', () => {
         currency: 'NGN',
         senderWalletId: null,
         recipientWalletId: 'wallet-1',
-        metadata: { checkoutUrl: 'https://example.com/pay' },
+        metadata: { checkoutUrl: 'https://example.com/pay', grossAmount: null },
       });
       expect(transactionRepo.save).toHaveBeenCalled();
       expect(transaction).toMatchObject({
@@ -180,16 +203,27 @@ describe('LedgerService', () => {
       });
     });
 
-    it('sets the checkout URL on the transaction matching the reference', async () => {
+    it('sets the checkout URL on the transaction matching the reference via a jsonb merge, not an overwrite', async () => {
       await service.setFundingCheckoutUrl(
         'cliqpay-ref-1',
         'https://checkout.korapay.com/abc',
       );
 
-      expect(transactionRepo.update).toHaveBeenCalledWith(
+      expect(queryBuilder.update).toHaveBeenCalledWith(Transaction);
+      expect(queryBuilder.set).toHaveBeenCalledWith({
+        metadata: expect.any(Function) as unknown,
+      });
+      const setArg = queryBuilder.set.mock.calls[0][0];
+      expect(setArg.metadata()).toBe('metadata || :patch::jsonb');
+      expect(queryBuilder.where).toHaveBeenCalledWith(
+        'reference = :reference',
         { reference: 'cliqpay-ref-1' },
-        { metadata: { checkoutUrl: 'https://checkout.korapay.com/abc' } },
       );
+      expect(queryBuilder.setParameter).toHaveBeenCalledWith(
+        'patch',
+        JSON.stringify({ checkoutUrl: 'https://checkout.korapay.com/abc' }),
+      );
+      expect(queryBuilder.execute).toHaveBeenCalled();
     });
 
     it('marks the transaction matching the reference as failed', async () => {

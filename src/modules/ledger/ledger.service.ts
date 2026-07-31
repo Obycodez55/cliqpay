@@ -93,10 +93,8 @@ function decodeHistoryCursor(raw: string): TransactionHistoryCursor {
 }
 
 /**
- * The one exported surface of the ledger module — see
- * docs/architecture.md §10. `createUserWallet` and `getUserWallet` exist for
- * now; ledger-entry posting logic arrives with issue #13 — this module only
- * creates the `transactions` row for a funding attempt so far.
+ * The one exported surface of the ledger module — see docs/architecture.md
+ * §10.
  */
 @Injectable()
 export class LedgerService {
@@ -180,9 +178,29 @@ export class LedgerService {
     reference: string,
     checkoutUrl: string,
   ): Promise<void> {
-    await this.dataSource
-      .getRepository(Transaction)
-      .update({ reference }, { metadata: { checkoutUrl } });
+    await this.mergeTransactionMetadata(reference, { checkoutUrl });
+  }
+
+  // A plain `.update({ metadata: patch })` overwrites the whole jsonb
+  // column — harmless while `checkoutUrl` was the only field, a real
+  // data-loss risk now that `grossAmount` (set later, at completion) also
+  // lives there: whichever write lands second would erase the first.
+  // Postgres's `||` does an actual merge instead. Accepts an
+  // EntityManager so a caller already inside a DB transaction (e.g.
+  // postFundingEntries) can include this write in it, rather than
+  // defaulting to a separate implicit transaction via `this.dataSource`.
+  private async mergeTransactionMetadata(
+    reference: string,
+    patch: Record<string, unknown>,
+    manager: EntityManager | DataSource = this.dataSource,
+  ): Promise<void> {
+    await manager
+      .createQueryBuilder()
+      .update(Transaction)
+      .set({ metadata: () => `metadata || :patch::jsonb` })
+      .where('reference = :reference', { reference })
+      .setParameter('patch', JSON.stringify(patch))
+      .execute();
   }
 
   // The provider call failed after the pending row was already inserted
@@ -255,6 +273,15 @@ export class LedgerService {
       .getRepository(LedgerEntry)
       .createQueryBuilder('entry')
       .innerJoinAndSelect('entry.transaction', 'transaction')
+      // Postgres's own text form of the timestamp, not the JS `Date` the
+      // entity gets mapped to — `Date` only holds millisecond precision, so
+      // round-tripping the cursor through `.toISOString()` silently drops
+      // rows whose createdAt shares a millisecond with the page boundary
+      // (routine here: postFundingEntries batch-inserts 4 entries in one
+      // statement, so they often land at the same or an adjacent
+      // microsecond). Comparing on Postgres's own text preserves full
+      // precision on both sides of the cursor round trip.
+      .addSelect('"entry"."created_at"::text', 'raw_created_at')
       .where('entry.accountId = :walletId', { walletId })
       .orderBy('entry.createdAt', 'DESC')
       .addOrderBy('entry.id', 'DESC')
@@ -269,19 +296,22 @@ export class LedgerService {
       );
     }
 
-    const rows = await query.getMany();
-    const hasMore = rows.length > pagination.limit;
-    const page = hasMore ? rows.slice(0, pagination.limit) : rows;
-    const last = page[page.length - 1];
+    const { entities, raw } = await query.getRawAndEntities<{
+      raw_created_at: string;
+    }>();
+    const hasMore = entities.length > pagination.limit;
+    const page = hasMore ? entities.slice(0, pagination.limit) : entities;
+    const lastRaw = hasMore ? raw[pagination.limit - 1] : raw[raw.length - 1];
 
     return {
       items: page.map(toTransactionHistoryItem),
-      nextCursor: hasMore
-        ? encodeHistoryCursor({
-            createdAt: last.createdAt.toISOString(),
-            id: last.id,
-          })
-        : null,
+      nextCursor:
+        hasMore && lastRaw
+          ? encodeHistoryCursor({
+              createdAt: lastRaw.raw_created_at,
+              id: page[page.length - 1].id,
+            })
+          : null,
     };
   }
 
@@ -298,8 +328,38 @@ export class LedgerService {
     facts: PostFundingFacts,
   ): Promise<PostFundingResult | null> {
     return runInTransaction(this.dataSource, async (manager) => {
+      // `amount` is immutable after creation (only `status`/`metadata`
+      // change post-creation — see createPendingFundingTransaction and the
+      // methods around it), so reading it here ahead of the guarded UPDATE
+      // below is safe: it can't race a concurrent writer.
+      const transaction = await manager
+        .getRepository(Transaction)
+        .findOneBy({ reference: facts.reference });
+      if (!transaction) {
+        this.logger.error(
+          `postFunding: no transaction found for reference "${facts.reference}"`,
+        );
+        return null;
+      }
+
+      // The provider's reported amount must match what was actually
+      // requested at initiation — crediting whatever a webhook/poll result
+      // claims, with no cross-check against our own record, means a
+      // manipulated or buggy provider response can credit an arbitrary
+      // amount. A mismatch fails the transaction rather than posting an
+      // unverified one.
+      const amountMismatch =
+        facts.providerStatus === 'success' &&
+        facts.netAmount.amount !== transaction.amount;
+      if (amountMismatch) {
+        this.logger.error(
+          `postFunding: provider-reported amount (${facts.netAmount.toDecimalString()}) does not match the requested amount (${Money.of(transaction.amount, transaction.currency).toDecimalString()}) for reference "${facts.reference}" — marking failed instead of crediting an unverified amount`,
+        );
+      }
       const nextStatus =
-        facts.providerStatus === 'success' ? 'completed' : 'failed';
+        facts.providerStatus === 'success' && !amountMismatch
+          ? 'completed'
+          : 'failed';
 
       const updateResult = await manager
         .createQueryBuilder()
@@ -314,10 +374,6 @@ export class LedgerService {
         );
         return null;
       }
-
-      const transaction = await manager
-        .getRepository(Transaction)
-        .findOneByOrFail({ reference: facts.reference });
 
       if (nextStatus !== 'completed') {
         return null;
@@ -448,6 +504,16 @@ export class LedgerService {
         runningBalance: newFeeRecoveryBalance.amount,
       }),
     ]);
+
+    // §4.2: funding metadata records the gross amount (what the customer
+    // paid — net + provider fee), since `transactions.amount`/
+    // `ledger_entries` only carry the net (credited) side. Same DB
+    // transaction as the entries above, not a separate write.
+    await this.mergeTransactionMetadata(
+      transaction.reference,
+      { grossAmount: facts.netAmount.add(facts.providerFee).toJSON() },
+      manager,
+    );
 
     return { userId: wallet.userId!, netAmount: facts.netAmount };
   }

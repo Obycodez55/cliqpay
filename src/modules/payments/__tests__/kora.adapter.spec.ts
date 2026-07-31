@@ -5,7 +5,14 @@ import { Money } from '../../../shared/primitives/money';
 
 function buildConfig(): AppConfig {
   return {
-    payments: { provider: 'kora', kora: { secretKey: 'sk_test_secret' } },
+    payments: {
+      provider: 'kora',
+      kora: {
+        secretKey: 'sk_test_secret',
+        webhookUrl: 'https://api.cliqpay.test/wallet/webhook/kora',
+        redirectUrl: 'https://app.cliqpay.test/wallet/funding-complete',
+      },
+    },
   } as AppConfig;
 }
 
@@ -72,12 +79,18 @@ describe('KoraAdapter', () => {
         currency: string;
         reference: string;
         customer: { email: string };
+        notification_url: string;
+        redirect_url: string;
       };
       expect(sentBody).toEqual({
         amount: '5000.00',
         currency: 'NGN',
         reference: 'cliqpay-ref-2',
         customer: { email: 'jane@example.com' },
+        // Sent explicitly rather than relying on Kora dashboard config —
+        // Phase 2 audit, M2.
+        notification_url: 'https://api.cliqpay.test/wallet/webhook/kora',
+        redirect_url: 'https://app.cliqpay.test/wallet/funding-complete',
       });
     });
 
@@ -276,7 +289,11 @@ describe('KoraAdapter', () => {
   });
 
   describe('getBalance', () => {
-    it('maps available_balance for the requested currency, ignoring pending_balance', async () => {
+    it('sums available_balance and pending_balance for the requested currency', async () => {
+      // float_ngn is credited the moment a charge succeeds, not once Kora
+      // settles it — pending_balance is still money Kora owes us, so it
+      // has to count too (see the method's own comment for why an earlier
+      // available-only version was wrong).
       fetchMock.mockResolvedValue(
         jsonResponse(200, {
           status: true,
@@ -291,7 +308,7 @@ describe('KoraAdapter', () => {
 
       const result = await adapter.getBalance('NGN');
 
-      expect(result).toEqual(Money.fromDecimalString('5001000', 'NGN'));
+      expect(result).toEqual(Money.fromDecimalString('5011000', 'NGN'));
     });
 
     it('throws when the response has no data for the requested currency', async () => {

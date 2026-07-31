@@ -154,7 +154,11 @@ export async function createAuthTestContext(): Promise<AuthTestContext> {
     },
     payments: {
       provider: 'fake',
-      kora: { secretKey: undefined },
+      kora: {
+        secretKey: undefined,
+        webhookUrl: undefined,
+        redirectUrl: undefined,
+      },
       reconciliation: { alertEmail: 'ops@cliqpay.test' },
     },
   };

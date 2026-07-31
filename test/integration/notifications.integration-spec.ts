@@ -124,7 +124,11 @@ describe('Notifications module — end-to-end dispatch', () => {
       },
       payments: {
         provider: 'fake',
-        kora: { secretKey: undefined },
+        kora: {
+          secretKey: undefined,
+          webhookUrl: undefined,
+          redirectUrl: undefined,
+        },
         reconciliation: { alertEmail: 'ops@cliqpay.test' },
       },
     };

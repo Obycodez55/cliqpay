@@ -146,6 +146,15 @@ describe('POST /wallet/webhook/kora', () => {
       reference: 'cliqpay-webhook-happy-1',
     });
     expect(transaction.status).toBe('completed');
+    // grossAmount (net + provider fee, §4.2) is merged into metadata at
+    // completion via a real jsonb `||`, not an overwrite — checkoutUrl
+    // (set at initiation) must still be there alongside it.
+    expect(transaction.metadata).toEqual({
+      checkoutUrl: expect.stringContaining(
+        'https://fake-checkout.cliqpay.test/',
+      ) as unknown,
+      grossAmount: { amount: '505000', currency: 'NGN' },
+    });
 
     const walletAfter = await ctx.accountRepo.findOneByOrFail({
       id: walletId,
@@ -276,5 +285,166 @@ describe('POST /wallet/webhook/kora', () => {
     expect(entries).toHaveLength(4);
 
     await assertInvariantHolds(ctx);
+  });
+
+  it('acts on the same "data" it verified the signature against, not a duplicate top-level "data" key', async () => {
+    // Regression: extractTopLevelJsonField (used for signature verification)
+    // resolves the *first* top-level "data" key; native JSON.parse resolves
+    // the *last*. A body carrying two "data" keys used to let the signature
+    // verify against one while the handler acted on the other — a captured
+    // valid (data, signature) pair plus an appended second "data" key was
+    // enough to redirect what got posted. Verified and acted-on data now
+    // both come from the same extraction, so this must be a no-op: the
+    // legit reference resolves normally, the injected one is never touched.
+    const { walletId } = await seedPendingFunding(
+      'webhook-dualdata@example.com',
+      '+2348022220099',
+      'webhook_dualdata_user',
+      'cliqpay-webhook-dualdata-legit',
+      100_000,
+    );
+
+    const legitData = {
+      reference: 'cliqpay-webhook-dualdata-legit',
+      status: 'success',
+      amount: '1000.00',
+      fee: 10,
+    };
+    const injectedData = {
+      reference: 'cliqpay-webhook-dualdata-nonexistent',
+      status: 'success',
+      amount: '999999.00',
+      fee: 0,
+    };
+    const legitDataJson = JSON.stringify(legitData);
+    const body = `{"event":"charge.success","data":${legitDataJson},"data":${JSON.stringify(injectedData)}}`;
+    const signature = createHmac('sha256', FAKE_SECRET_KEY)
+      .update(legitDataJson)
+      .digest('hex');
+
+    await request(ctx.app.getHttpServer())
+      .post('/wallet/webhook/kora')
+      .set('Content-Type', 'application/json')
+      .set('x-korapay-signature', signature)
+      .send(body)
+      .expect(200);
+
+    const transaction = await ctx.transactionRepo.findOneByOrFail({
+      reference: 'cliqpay-webhook-dualdata-legit',
+    });
+    expect(transaction.status).toBe('completed');
+
+    const injected = await ctx.transactionRepo.findOneBy({
+      reference: 'cliqpay-webhook-dualdata-nonexistent',
+    });
+    expect(injected).toBeNull();
+
+    const wallet = await ctx.accountRepo.findOneByOrFail({ id: walletId });
+    expect(wallet.balance).toBe(100_000n);
+
+    await assertInvariantHolds(ctx);
+  });
+
+  it('leaves a transaction pending on a non-terminal status instead of permanently failing it', async () => {
+    // Regression: collapsing anything-not-"success" into "failed" would
+    // permanently kill a transaction Kora later reports as successful,
+    // since the poll job only revisits `status = 'pending'` rows. Kora's
+    // real charge-verify status set includes "processing" for a charge
+    // still in flight (see KoraAdapter.verifyCharge) — the webhook must
+    // treat that the same way: leave it alone.
+    const { walletId } = await seedPendingFunding(
+      'webhook-nonterminal@example.com',
+      '+2348022220098',
+      'webhook_nonterminal_user',
+      'cliqpay-webhook-nonterminal-1',
+      300_000,
+    );
+
+    const { body, signature } = signedWebhookBody({
+      reference: 'cliqpay-webhook-nonterminal-1',
+      status: 'processing',
+      amount: '3000.00',
+      fee: 30,
+    });
+
+    await request(ctx.app.getHttpServer())
+      .post('/wallet/webhook/kora')
+      .set('Content-Type', 'application/json')
+      .set('x-korapay-signature', signature)
+      .send(body)
+      .expect(200);
+
+    const afterProcessing = await ctx.transactionRepo.findOneByOrFail({
+      reference: 'cliqpay-webhook-nonterminal-1',
+    });
+    expect(afterProcessing.status).toBe('pending');
+    const entriesAfterProcessing = await ctx.ledgerEntryRepo.findBy({
+      transactionId: afterProcessing.id,
+    });
+    expect(entriesAfterProcessing).toHaveLength(0);
+
+    // A later terminal delivery still completes it normally.
+    const success = signedWebhookBody({
+      reference: 'cliqpay-webhook-nonterminal-1',
+      status: 'success',
+      amount: '3000.00',
+      fee: 30,
+    });
+    await request(ctx.app.getHttpServer())
+      .post('/wallet/webhook/kora')
+      .set('Content-Type', 'application/json')
+      .set('x-korapay-signature', success.signature)
+      .send(success.body)
+      .expect(200);
+
+    const transaction = await ctx.transactionRepo.findOneByOrFail({
+      reference: 'cliqpay-webhook-nonterminal-1',
+    });
+    expect(transaction.status).toBe('completed');
+    const wallet = await ctx.accountRepo.findOneByOrFail({ id: walletId });
+    expect(wallet.balance).toBe(300_000n);
+
+    await assertInvariantHolds(ctx);
+  });
+
+  it('rejects a malformed payload with 400, not an uncaught 500', async () => {
+    // A valid signature only proves who sent the bytes, not that "data" is
+    // shaped like a charge event — validateWebhookData exists so a wrong
+    // shape can't reach Money/DB calls as an uncaught TypeError.
+    const malformed = JSON.stringify({
+      event: 'charge.success',
+      data: { reference: 'cliqpay-webhook-malformed-1', status: 'success' }, // amount/fee missing
+    });
+    const signature = createHmac('sha256', FAKE_SECRET_KEY)
+      .update(
+        JSON.stringify({
+          reference: 'cliqpay-webhook-malformed-1',
+          status: 'success',
+        }),
+      )
+      .digest('hex');
+
+    await request(ctx.app.getHttpServer())
+      .post('/wallet/webhook/kora')
+      .set('Content-Type', 'application/json')
+      .set('x-korapay-signature', signature)
+      .send(malformed)
+      .expect(400);
+  });
+
+  it('rejects a non-decimal amount with 400, not an uncaught 500', async () => {
+    const { body, signature } = signedWebhookBody({
+      reference: 'cliqpay-webhook-malformed-2',
+      status: 'success',
+      amount: 'not-a-number',
+      fee: 30,
+    });
+
+    await request(ctx.app.getHttpServer())
+      .post('/wallet/webhook/kora')
+      .set('Content-Type', 'application/json')
+      .set('x-korapay-signature', signature)
+      .send(body)
+      .expect(400);
   });
 });

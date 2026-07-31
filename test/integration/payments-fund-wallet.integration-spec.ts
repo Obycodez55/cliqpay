@@ -56,7 +56,10 @@ describe('POST /wallet/fund', () => {
     expect(transaction.providerReference).toBe('cliqpay-fund-basic-1');
     expect(transaction.amount).toBe(500000n);
     expect(transaction.currency).toBe('NGN');
-    expect(transaction.metadata).toEqual({ checkoutUrl: body.checkoutUrl });
+    expect(transaction.metadata).toEqual({
+      checkoutUrl: body.checkoutUrl,
+      grossAmount: null,
+    });
 
     expect(ctx.fakeAdapter.initiated).toHaveLength(1);
   });
@@ -128,7 +131,10 @@ describe('POST /wallet/fund', () => {
       reference: 'cliqpay-fund-fail-ref',
     });
     expect(transaction.status).toBe('failed');
-    expect(transaction.metadata).toEqual({ checkoutUrl: null });
+    expect(transaction.metadata).toEqual({
+      checkoutUrl: null,
+      grossAmount: null,
+    });
   });
 
   it('rejects a request racing an in-flight funding attempt for the same reference, without calling the provider again', async () => {

@@ -51,15 +51,21 @@ interface KoraBalancesResponse {
 // Ground truth for the request/response shapes below: docs/adr/0007, backed
 // by a real sandbox charge (POST /charges/initialize, then GET
 // /charges/{reference}) run during design — not guessed from Kora's docs.
-// `notification_url` is deliberately omitted: it's optional (confirmed via
-// the same sandbox check), and the webhook receiver it would point at isn't
-// built until a later issue.
+// `notification_url`/`redirect_url` are both optional per that sandbox
+// check, but sending them explicitly pins this backend's webhook and the
+// customer's post-checkout destination in code (reviewable, per-environment
+// config) instead of depending entirely on whatever's set in Kora's
+// dashboard, which nothing in this repo could confirm (Phase 2 audit, M2).
 @Injectable()
 export class KoraAdapter implements PaymentProviderAdapter {
   private readonly secretKey: string;
+  private readonly webhookUrl: string;
+  private readonly redirectUrl: string;
 
   constructor(@Inject(APP_CONFIG) config: AppConfig) {
     this.secretKey = config.payments.kora.secretKey!;
+    this.webhookUrl = config.payments.kora.webhookUrl!;
+    this.redirectUrl = config.payments.kora.redirectUrl!;
   }
 
   async initiatePayment(
@@ -82,6 +88,8 @@ export class KoraAdapter implements PaymentProviderAdapter {
           currency: params.amount.currency,
           reference: params.reference,
           customer: { email: params.customerEmail },
+          notification_url: this.webhookUrl,
+          redirect_url: this.redirectUrl,
         }),
         signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
       });
@@ -144,9 +152,15 @@ export class KoraAdapter implements PaymentProviderAdapter {
     return { status: 'pending' };
   }
 
-  // The external reconciliation path (issue #15). Uses `available_balance`
-  // only — `pending_balance` is money Kora hasn't settled to the merchant
-  // yet, so it isn't part of what float_ngn should reflect (§4.2).
+  // The external reconciliation path (issue #15). Sums `available_balance`
+  // AND `pending_balance` — `float_ngn` is credited the moment a charge
+  // succeeds (postFunding runs off the webhook/poll result, not off Kora's
+  // own settlement), so it reflects money Kora owes us regardless of
+  // whether Kora has settled it yet. Comparing against `available_balance`
+  // alone (an earlier version of this method did) undercounts by whatever's
+  // still mid-settlement (T+1 in Nigeria) and produces a mismatch alert on
+  // every successful funding until it settles — a false positive by
+  // construction, not a real drift.
   async getBalance(currency: string): Promise<Money> {
     let response: Response;
     try {
@@ -175,10 +189,15 @@ export class KoraAdapter implements PaymentProviderAdapter {
       );
     }
 
-    return Money.fromDecimalString(
+    const available = Money.fromDecimalString(
       String(currencyBalance.available_balance),
       currency,
     );
+    const pending = Money.fromDecimalString(
+      String(currencyBalance.pending_balance),
+      currency,
+    );
+    return available.add(pending);
   }
 
   verifyWebhookSignature(rawBody: Buffer, signature: string): boolean {

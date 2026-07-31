@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Inject,
   Injectable,
@@ -25,6 +26,7 @@ import {
   VerifyChargeResult,
 } from './adapters/payment-provider.interface';
 import { isUniqueViolation } from './internal/errors';
+import { extractTopLevelJsonField } from './internal/raw-json';
 import { PostFundingFacts, PostFundingResult } from '../ledger/ledger.service';
 import {
   ACTIVE_RECONCILIATION_PAIRS,
@@ -37,22 +39,44 @@ const STALE_FUNDING_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 
 // Ground truth: docs/adr/0007 — a real sandbox charge-verify response has
 // this shape for the `data` field, and per Kora's docs the webhook payload
-// mirrors it. Only the fields this handler actually reads.
-interface KoraChargeWebhookPayload {
-  event: string;
-  data: {
-    reference: string;
-    status: string;
-    amount: string;
-    fee: number;
-  };
+// mirrors it. Only the fields this handler actually reads. `amount`/`fee`
+// are normalized to strings here (Kora sends `fee` as a JSON number) so
+// nothing downstream needs its own String() wrapping.
+interface KoraChargeWebhookData {
+  reference: string;
+  status: string;
+  amount: string;
+  fee: string;
+}
+
+// A valid signature only proves Kora (or whoever holds the key) sent the
+// bytes — it says nothing about whether "data" is shaped like a charge
+// event. A malformed shape is a bad request (400), not a server bug (500);
+// letting `data.reference`/`.status`/`.amount` reach a Money/DB call
+// untyped risks an uncaught TypeError instead (see the Phase 2 audit, L4).
+function validateWebhookData(parsed: unknown): KoraChargeWebhookData {
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new BadRequestException('Malformed webhook payload');
+  }
+  const { reference, status, amount, fee } = parsed as Record<string, unknown>;
+  if (
+    typeof reference !== 'string' ||
+    reference.length === 0 ||
+    typeof status !== 'string' ||
+    status.length === 0 ||
+    (typeof amount !== 'string' && typeof amount !== 'number') ||
+    (typeof fee !== 'string' && typeof fee !== 'number')
+  ) {
+    throw new BadRequestException('Malformed webhook payload');
+  }
+  return { reference, status, amount: String(amount), fee: String(fee) };
 }
 
 /**
  * The one exported surface of the payments module — see
- * docs/architecture.md §10. No ledger entries are posted here — that's
- * issue #13, once a webhook actually confirms something succeeded. This
- * only gets as far as a `pending` `transactions` row and a checkout URL.
+ * docs/architecture.md §10. Never posts ledger entries directly — hands
+ * provider facts to LedgerService.postFunding and lets ledger decide what
+ * they post to (ADR-0008).
  */
 @Injectable()
 export class PaymentsService {
@@ -102,7 +126,7 @@ export class PaymentsService {
         providerReference: dto.reference,
         amount,
         recipientWalletId: wallet.id,
-        metadata: { checkoutUrl: null },
+        metadata: { checkoutUrl: null, grossAmount: null },
       });
     } catch (error) {
       if (isUniqueViolation(error, 'UQ_transactions_reference')) {
@@ -152,14 +176,60 @@ export class PaymentsService {
       throw new UnauthorizedException('Invalid webhook signature');
     }
 
-    const payload = JSON.parse(
-      rawBody.toString('utf8'),
-    ) as KoraChargeWebhookPayload;
-    const { data } = payload;
+    // Parsed from the *same* extracted "data" slice the signature was
+    // computed over (KoraAdapter.verifyWebhookSignature uses the identical
+    // extractTopLevelJsonField call internally) — not a fresh
+    // JSON.parse(rawBody). A body with two top-level "data" keys would
+    // otherwise let the signature verify against one and this act on the
+    // other: extractTopLevelJsonField always resolves the first match,
+    // native JSON.parse always keeps the last, and those two disagreeing is
+    // exactly the gap that let a signature validate one payload while a
+    // different one got posted.
+    const rawData = extractTopLevelJsonField(rawBody, 'data');
+    if (!rawData) {
+      throw new UnauthorizedException('Invalid webhook signature');
+    }
+    // A signature can be valid over a "data" object shaped nothing like
+    // what's expected (or invalid JSON entirely) — that's a malformed
+    // request (400), not a server bug (500), and must not throw an
+    // uncaught TypeError partway through processing.
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawData.toString('utf8'));
+    } catch {
+      throw new BadRequestException('Malformed webhook payload');
+    }
+    const data = validateWebhookData(parsed);
 
-    const netAmount = Money.fromDecimalString(data.amount, NGN);
-    const providerFee = Money.fromDecimalString(String(data.fee), NGN);
-    const providerStatus = data.status === 'success' ? 'success' : 'failed';
+    // Matches KoraAdapter.verifyCharge's three-way mapping exactly: only
+    // "success"/"failed" are terminal. Anything else (e.g. "processing") is
+    // a charge still in flight — collapsing that into "failed" here would
+    // permanently kill a transaction Kora later reports as successful,
+    // since findStaleFundingTransactions only polls `status = 'pending'`
+    // rows. Leave it pending; the poll job (#14) resolves it once Kora
+    // reports a terminal outcome.
+    if (data.status !== 'success' && data.status !== 'failed') {
+      this.logger.debug(
+        `handleFundingWebhook: non-terminal status "${data.status}" for reference "${data.reference}" — leaving pending`,
+      );
+      return;
+    }
+    const providerStatus = data.status;
+    // Unused by postFunding for a `failed` outcome — see
+    // LedgerService.postFunding's early return before any entries are
+    // posted (same reasoning as PaymentsService.pollFundingTransaction).
+    let netAmount = Money.zero(NGN);
+    let providerFee = Money.zero(NGN);
+    if (providerStatus === 'success') {
+      try {
+        netAmount = Money.fromDecimalString(data.amount, NGN);
+        providerFee = Money.fromDecimalString(data.fee, NGN);
+      } catch (error) {
+        throw new BadRequestException(
+          `Malformed webhook payload: ${(error as Error).message}`,
+        );
+      }
+    }
 
     const result = await this.ledgerService.postFunding({
       reference: data.reference,
@@ -316,12 +386,23 @@ export class PaymentsService {
 }
 
 function toFundWalletResponse(transaction: {
+  status: string;
   metadata: { checkoutUrl: string | null };
 }): FundWalletResponseDto {
-  if (!transaction.metadata.checkoutUrl) {
+  if (transaction.metadata.checkoutUrl) {
+    return { checkoutUrl: transaction.metadata.checkoutUrl };
+  }
+  if (transaction.status === 'failed') {
+    // markFundingTransactionFailed set this before a checkout URL ever
+    // existed — the request never reached the provider, so "retry
+    // shortly" would be a lie told forever (the row is terminal by
+    // design — that's what the reference's uniqueness means). The client
+    // needs a new reference to make a new attempt.
     throw new ConflictException(
-      'A funding request for this reference is already being processed — retry shortly.',
+      'This funding reference already failed to initiate and will not be retried — use a new reference to start a new attempt.',
     );
   }
-  return { checkoutUrl: transaction.metadata.checkoutUrl };
+  throw new ConflictException(
+    'A funding request for this reference is already being processed — retry shortly.',
+  );
 }

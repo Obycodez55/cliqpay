@@ -1,5 +1,12 @@
 import { Controller, Get, Query, Req, UseGuards } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiExtraModels,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+  getSchemaPath,
+} from '@nestjs/swagger';
 import {
   AuthenticatedRequest,
   JwtAuthGuard,
@@ -31,6 +38,18 @@ export class WalletController {
 
   @Get('transactions')
   @ApiOperation({ summary: "Get the current user's transaction history" })
+  @ApiExtraModels(TransactionHistoryItemDto)
+  @ApiOkResponse({
+    schema: {
+      properties: {
+        items: {
+          type: 'array',
+          items: { $ref: getSchemaPath(TransactionHistoryItemDto) },
+        },
+        nextCursor: { type: 'string', nullable: true },
+      },
+    },
+  })
   async getTransactions(
     @Req() req: AuthenticatedRequest,
     @Query() query: CursorPaginationQueryDto,

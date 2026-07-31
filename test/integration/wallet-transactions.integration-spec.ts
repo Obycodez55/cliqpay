@@ -143,4 +143,62 @@ describe('GET /wallet/transactions', () => {
     });
     expect(new Set(seenIds)).toEqual(new Set(entries.map((e) => e.id)));
   });
+
+  it('does not drop rows sharing a millisecond across a page boundary', async () => {
+    // Regression for the cursor truncating createdAt to millisecond
+    // precision (JS `Date` ceiling) while Postgres stores microseconds —
+    // realistic because postFundingEntries batch-inserts entries in one
+    // statement, so distinct fundings can land in the same millisecond.
+    // Forced explicitly here rather than relying on incidental timing.
+    const { userId, walletId } = await seedUserWithWallet(ctx, {
+      email: 'history-collision@example.com',
+      phone: '+2348022220005',
+      username: 'history_collision_user',
+    });
+
+    const rowCount = 6;
+    for (let i = 0; i < rowCount; i++) {
+      await seedCompletedFunding(ctx, {
+        walletId,
+        reference: `cliqpay-history-collision-${i}`,
+        netAmountMinor: BigInt(2000 + i),
+      });
+    }
+    const entries = await ctx.ledgerEntryRepo.find({
+      where: { accountId: walletId },
+    });
+    expect(entries).toHaveLength(rowCount);
+    // Same millisecond, distinct microseconds — the exact shape that broke
+    // the truncated cursor.
+    const sameMillisecond = new Date('2026-01-01T00:00:00.500Z');
+    await Promise.all(
+      entries.map((entry, i) =>
+        ctx.dataSource.query(
+          `UPDATE ledger_entries SET created_at = $1::timestamptz + ($2 || ' microseconds')::interval WHERE id = $3`,
+          [sameMillisecond.toISOString(), i, entry.id],
+        ),
+      ),
+    );
+
+    const limit = 2;
+    const seenIds: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+
+    do {
+      const res = await request(ctx.app.getHttpServer())
+        .get('/wallet/transactions')
+        .query(cursor ? { limit, cursor } : { limit })
+        .set('Authorization', `Bearer ${tokenFor(userId)}`)
+        .expect(200);
+      const body = res.body as HistoryResponse;
+
+      seenIds.push(...body.items.map((i) => i.id));
+      cursor = body.nextCursor ?? undefined;
+      pages += 1;
+      expect(pages).toBeLessThanOrEqual(rowCount);
+    } while (cursor);
+
+    expect(new Set(seenIds)).toEqual(new Set(entries.map((e) => e.id)));
+  });
 });

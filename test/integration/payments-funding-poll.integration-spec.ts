@@ -49,7 +49,10 @@ describe('funding self-verify poll job', () => {
       providerReference: reference,
       amount: Money.of(500_000n, 'NGN'),
       recipientWalletId: seeded.walletId,
-      metadata: { checkoutUrl: 'https://fake-checkout.cliqpay.test/x' },
+      metadata: {
+        checkoutUrl: 'https://fake-checkout.cliqpay.test/x',
+        grossAmount: null,
+      },
     });
     await ctx.transactionRepo.update(
       { reference },

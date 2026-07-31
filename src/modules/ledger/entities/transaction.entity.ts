@@ -40,6 +40,12 @@ export interface FundingTransactionMetadata {
   // constraint on `reference` gates the provider call itself, not just our
   // own bookkeeping (see PaymentsService.fundWallet).
   checkoutUrl: string | null;
+  // What the customer actually paid (net + provider fee) — §4.2 specifies
+  // this as part of funding metadata; `amount`/`ledger_entries` only carry
+  // the net (credited) side, so without this nothing records the gross
+  // figure. Set once, at completion (LedgerService.postFunding) — null
+  // until then, same as checkoutUrl before initiation returns.
+  grossAmount: { amount: string; currency: string } | null;
 }
 
 /**
@@ -54,8 +60,20 @@ export type TransactionMetadata = FundingTransactionMetadata;
  * See docs/architecture.md §5. `sender_wallet_id`/`recipient_wallet_id` are
  * a denormalized convenience, not the source of truth for participants
  * (that's `ledger_entries` joined to `accounts`) — see the schema note.
+ *
+ * `IDX_transactions_stale_funding_poll` (below) backs
+ * LedgerService.findStaleFundingTransactions, which runs every 5 minutes
+ * (the poll job, issue #14) — without it, that query seq-scans this table,
+ * the one guaranteed to grow without bound. See
+ * `AddFundingQueryIndexes1785488695081` for the real definition.
  */
 @Entity('transactions')
+@Index('IDX_transactions_stale_funding_poll', [
+  'status',
+  'provider',
+  'type',
+  'createdAt',
+])
 export class Transaction {
   @PrimaryGeneratedColumn('uuid')
   id: string;

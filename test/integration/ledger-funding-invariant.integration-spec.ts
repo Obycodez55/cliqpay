@@ -91,15 +91,20 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
             const reference = `cliqpay-invariant-${randomUUID()}`;
             const netAmount = Money.of(op.netAmountMinor, 'NGN');
             const providerFee = Money.of(op.feeMinor, 'NGN');
-            const grossAmount = netAmount.add(providerFee);
 
+            // `amount` mirrors what PaymentsService.fundWallet actually sets
+            // it to at initiation — the net amount the client requested, the
+            // same value postFunding is later called with — not net+fee.
+            // postFunding now rejects a mismatch (H3 fix), so this has to
+            // stay in sync with real usage, not just "some deterministic
+            // number".
             await ctx.ledgerService.createPendingFundingTransaction({
               reference,
               provider: 'kora',
               providerReference: reference,
-              amount: grossAmount,
+              amount: netAmount,
               recipientWalletId: walletId,
-              metadata: { checkoutUrl: null },
+              metadata: { checkoutUrl: null, grossAmount: null },
             });
 
             const result = await ctx.ledgerService.postFunding({
@@ -126,15 +131,14 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
         const reference = `cliqpay-invariant-dup-${randomUUID()}`;
         const netAmount = Money.of(op.netAmountMinor, 'NGN');
         const providerFee = Money.of(op.feeMinor, 'NGN');
-        const grossAmount = netAmount.add(providerFee);
 
         await ctx.ledgerService.createPendingFundingTransaction({
           reference,
           provider: 'kora',
           providerReference: reference,
-          amount: grossAmount,
+          amount: netAmount,
           recipientWalletId: walletId,
-          metadata: { checkoutUrl: null },
+          metadata: { checkoutUrl: null, grossAmount: null },
         });
 
         const facts = {
@@ -152,5 +156,47 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
       }),
       { numRuns },
     );
+  });
+
+  it('fails a transaction rather than crediting a provider-reported amount that does not match what was requested', async () => {
+    const identity = nextIdentity();
+    const { walletId } = await seedUserWithWallet(ctx, identity);
+    const reference = `cliqpay-invariant-mismatch-${randomUUID()}`;
+    const requestedAmount = Money.of(100_000n, 'NGN');
+
+    await ctx.ledgerService.createPendingFundingTransaction({
+      reference,
+      provider: 'kora',
+      providerReference: reference,
+      amount: requestedAmount,
+      recipientWalletId: walletId,
+      metadata: { checkoutUrl: null, grossAmount: null },
+    });
+
+    // A provider report claiming a wildly different amount than what was
+    // actually requested at initiation — the H3 regression.
+    const result = await ctx.ledgerService.postFunding({
+      reference,
+      netAmount: Money.of(99_999_900n, 'NGN'),
+      providerFee: Money.zero('NGN'),
+      providerStatus: 'success',
+    });
+
+    expect(result).toBeNull();
+
+    const transaction = await ctx.transactionRepo.findOneByOrFail({
+      reference,
+    });
+    expect(transaction.status).toBe('failed');
+
+    const entries = await ctx.ledgerEntryRepo.findBy({
+      transactionId: transaction.id,
+    });
+    expect(entries).toHaveLength(0);
+
+    const wallet = await ctx.accountRepo.findOneByOrFail({ id: walletId });
+    expect(wallet.balance).toBe(0n);
+
+    await assertInvariantHolds(ctx);
   });
 });

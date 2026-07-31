@@ -20,6 +20,7 @@ import { AddUsernameChangedAtToUsers1784707276061 } from '../../../src/database/
 import { AddPendingEmailToUsers1784707276064 } from '../../../src/database/migrations/1784707276064-AddPendingEmailToUsers';
 import { AddPendingPhoneToUsers1784707276065 } from '../../../src/database/migrations/1784707276065-AddPendingPhoneToUsers';
 import { CreateTransactionsAndLedgerEntries1784707276066 } from '../../../src/database/migrations/1784707276066-CreateTransactionsAndLedgerEntries';
+import { AddFundingQueryIndexes1785488695081 } from '../../../src/database/migrations/1785488695081-AddFundingQueryIndexes';
 import { CreateCredentials1784707276062 } from '../../../src/database/migrations/1784707276062-CreateCredentials';
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
@@ -76,6 +77,7 @@ export async function createLedgerTestContext(): Promise<LedgerTestContext> {
   await new AddPendingEmailToUsers1784707276064().up(queryRunner);
   await new AddPendingPhoneToUsers1784707276065().up(queryRunner);
   await new CreateTransactionsAndLedgerEntries1784707276066().up(queryRunner);
+  await new AddFundingQueryIndexes1785488695081().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 
@@ -111,7 +113,11 @@ export async function createLedgerTestContext(): Promise<LedgerTestContext> {
     },
     payments: {
       provider: 'fake',
-      kora: { secretKey: undefined },
+      kora: {
+        secretKey: undefined,
+        webhookUrl: undefined,
+        redirectUrl: undefined,
+      },
       reconciliation: { alertEmail: 'ops@cliqpay.test' },
     },
   };
@@ -198,7 +204,7 @@ export async function seedCompletedFunding(
     providerReference: args.reference,
     amount: Money.of(args.netAmountMinor, 'NGN'),
     recipientWalletId: args.walletId,
-    metadata: { checkoutUrl: null },
+    metadata: { checkoutUrl: null, grossAmount: null },
   });
   const result = await ctx.ledgerService.postFunding({
     reference: args.reference,
