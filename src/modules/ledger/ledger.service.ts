@@ -1,8 +1,13 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { Brackets, DataSource, EntityManager, LessThan } from 'typeorm';
 import { runInTransaction } from '../../database/transaction.util';
 import { Money } from '../../shared/primitives/money';
+import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
+import {
+  TransactionHistoryItemDto,
+  toTransactionHistoryItem,
+} from './dto/transaction-history-item.dto';
 import { Account } from './entities/account.entity';
 import { LedgerEntry } from './entities/ledger-entry.entity';
 import {
@@ -43,6 +48,48 @@ export interface PostFundingResult {
 export interface StaleFundingTransaction {
   reference: string;
   currency: string;
+}
+
+export interface TransactionHistoryPagination {
+  cursor?: string;
+  limit: number;
+}
+
+// Opaque to the client per docs/conventions.md — encodes the last returned
+// row's (createdAt, id) tie-break key, nothing else.
+interface TransactionHistoryCursor {
+  createdAt: string;
+  id: string;
+}
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function encodeHistoryCursor(cursor: TransactionHistoryCursor): string {
+  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
+}
+
+// A corrupted/forged cursor must 400, not reach the DB query — see
+// getTransactionHistory.
+function decodeHistoryCursor(raw: string): TransactionHistoryCursor {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
+  } catch {
+    throw new BadRequestException('Invalid cursor');
+  }
+  const candidate = parsed as Partial<TransactionHistoryCursor> | null;
+  if (
+    typeof candidate !== 'object' ||
+    candidate === null ||
+    typeof candidate.createdAt !== 'string' ||
+    typeof candidate.id !== 'string' ||
+    Number.isNaN(Date.parse(candidate.createdAt)) ||
+    !UUID_RE.test(candidate.id)
+  ) {
+    throw new BadRequestException('Invalid cursor');
+  }
+  return { createdAt: candidate.createdAt, id: candidate.id };
 }
 
 /**
@@ -188,6 +235,54 @@ export class LedgerService {
         currency,
       });
     return Money.of(account.balance, account.currency);
+  }
+
+  // Serves GET /wallet/transactions (issue #16). Reads ledger_entries joined
+  // to transactions — per §5, ledger_entries is the source of truth for who
+  // was involved, not transactions' denormalized sender/recipient columns —
+  // filtered to the caller's own account. Newest-first, paginated on
+  // (createdAt, id) rather than OFFSET since this table is append-only and
+  // high-write (docs/conventions.md).
+  async getTransactionHistory(
+    walletId: string,
+    pagination: TransactionHistoryPagination,
+  ): Promise<PaginatedResult<TransactionHistoryItemDto>> {
+    const cursor = pagination.cursor
+      ? decodeHistoryCursor(pagination.cursor)
+      : null;
+
+    const query = this.dataSource
+      .getRepository(LedgerEntry)
+      .createQueryBuilder('entry')
+      .innerJoinAndSelect('entry.transaction', 'transaction')
+      .where('entry.accountId = :walletId', { walletId })
+      .orderBy('entry.createdAt', 'DESC')
+      .addOrderBy('entry.id', 'DESC')
+      // One extra row fetched to know whether a next page exists, without a
+      // separate count query.
+      .take(pagination.limit + 1);
+
+    if (cursor) {
+      query.andWhere(
+        '(entry.createdAt, entry.id) < (:cursorCreatedAt::timestamptz, :cursorId::uuid)',
+        { cursorCreatedAt: cursor.createdAt, cursorId: cursor.id },
+      );
+    }
+
+    const rows = await query.getMany();
+    const hasMore = rows.length > pagination.limit;
+    const page = hasMore ? rows.slice(0, pagination.limit) : rows;
+    const last = page[page.length - 1];
+
+    return {
+      items: page.map(toTransactionHistoryItem),
+      nextCursor: hasMore
+        ? encodeHistoryCursor({
+            createdAt: last.createdAt.toISOString(),
+            id: last.id,
+          })
+        : null,
+    };
   }
 
   /**

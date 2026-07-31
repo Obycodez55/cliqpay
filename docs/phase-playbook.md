@@ -18,11 +18,12 @@ Use `/to-issues` to turn the grilled design into GitHub issues. Insist on vertic
 
 For each issue: use `spawn_task` (not the `Agent` tool) to hand it to its own session. `spawn_task` produces a chip the user clicks to actually start the session — it's for delegating real implementation work the user wants to review as a distinct unit, not for research or sub-queries the Agent tool already covers.
 
-Once a task reports back, review the diff rigorously — read the actual code, not just the session's summary of what it did — before merging. Move to the next issue only after the current one is merged.
+Once a task reports back, review the diff rigorously — read the actual code, not just the session's summary of what it did — before merging. Once that review is complete and the user has approved it, close the corresponding GitHub issue with a short comment noting what shipped (and any fixes made during review) — an approved issue shouldn't sit open. Move to the next issue only after the current one is merged.
 
 **Take note of:**
 - Never commit without the user reviewing the diff first, every time — not just once per session (see `CLAUDE.md`). If you find yourself running `git add` in anticipation of a commit that hasn't been explicitly greenlit yet, stop and unstage.
 - A session's own summary of its changes is not verification. Read the diff.
+- Closing the issue is not the same as committing — it's tracked-work bookkeeping, not a code change, and follows once the user has actually approved the review (don't close preemptively while fixes are still pending).
 
 ## 4. Watch for architectural smells mid-phase — don't push through them
 
@@ -49,8 +50,9 @@ Critical findings (security gaps, correctness bugs) get fixed first, hands-on, w
 
 Two categories of debt tend to accumulate silently across a many-issue phase and are worth checking for explicitly, with real numbers rather than a gut feeling:
 
-- **Comment noise.** Count comments that just restate the code or point at an issue/ADR/doc-section instead of stating the *why* inline. If a comment's only content is "see issue #N" or "per ADR-000X", either inline the actual one-sentence reason or delete it — a reader shouldn't have to open another document to find out why a line exists.
+- **Comment noise.** Count comments that just restate the code or point at an issue/ADR/doc-section instead of stating the *why* inline. If a comment's only content is "see issue #N" or "per ADR-000X", either inline the actual one-sentence reason or delete it — a reader shouldn't have to open another document to find out why a line exists. This isn't only about bad comments — it's about volume: if most methods in a reviewed file have one, that's the bar set too low, not unusually subtle code. Delete on sight any comment whose reasoning a reader wouldn't miss.
 - **Integration test file size.** A single spec file that grows one `describe` block per issue becomes unreviewable and slow to run as a unit. Split by feature area (not by line count) once a file covers several unrelated flows, with the expensive setup (app bootstrap, Testcontainers, shared request helpers) factored into a shared test-support module the split files import — never duplicated per file.
+- **Documentation drift.** Check whether real decisions made during the phase — a schema shape, a module boundary, a naming convention discovered/settled mid-implementation — actually landed in `docs/` (architecture.md, conventions.md, an ADR) rather than living only in a code comment, a closed issue's body, or this session's own memory. A decision that only exists in a merged PR is invisible to the next phase's design pass.
 
 Verify a split preserves every test (run the full suite before and after, compare counts — don't just count `it()` blocks in the diff) before merging it.
 
@@ -70,9 +72,9 @@ Before considering the phase done, run every scenario as a real client would —
 
 1. `/grill-me` the phase design against `docs/architecture.md` → pin down concrete numbers, write ADRs for real decisions.
 2. `/to-issues` → vertical slices, confirm the breakdown before publishing.
-3. Per issue: `spawn_task` → review the actual diff → merge → next issue. Never commit without the user's explicit go-ahead on that diff.
+3. Per issue: `spawn_task` → review the actual diff → merge → close the issue once approved → next issue. Never commit without the user's explicit go-ahead on that diff.
 4. Mid-phase architectural smell? Stop, think through real alternatives, ADR the decision, fold the refactor into in-flight work.
 5. End of phase: independent fresh-eyes audit via `spawn_task`, verify every finding yourself.
 6. Fix real findings, Critical first, with test coverage.
-7. Housekeeping pass: comment noise, test file size — with real before/after numbers.
+7. Housekeeping pass: comment noise, test file size, documentation drift — with real before/after numbers.
 8. `/e2e-test-local` against a fresh environment, fake providers unless real ones already work, report as an artifact with explicit skips and environment findings called out.
