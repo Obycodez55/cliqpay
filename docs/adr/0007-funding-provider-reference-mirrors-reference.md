@@ -30,11 +30,26 @@ this before building the funding flow against it
 
 The only field present is `reference` — exactly what we sent, echoed back.
 There is no separate Kora-generated transaction ID anywhere in this
-response, and per Kora's docs the webhook payload for a charge event has
-the same shape. The one distinct Kora-generated token observed anywhere in
+response, and a real webhook received during the Phase 2 e2e pass (a live
+charge, delivered by Kora itself over a public tunnel, not simulated)
+confirms the webhook payload carries the same fields — no distinct ID
+there either. The one distinct Kora-generated token observed anywhere in
 the flow is embedded in the `checkout_url` returned at initialization
 (e.g. `.../KPY-PI-2026072907183FId0U33643/pay`) — not returned as a
 correlatable field on either the verify endpoint or the webhook payload.
+
+**[Correction, Phase 2 e2e pass]** The webhook payload's `amount`/`fee`
+fields are **not** decimal strings like the verify endpoint's — the real
+webhook delivered `"amount": 2500, "fee": 34.94` as raw JSON numbers, not
+`"amount": "2500.00"`. This ADR originally claimed the webhook "has the
+same shape" as the verify response above; that held for field presence
+(no distinct ID either way) but not for these two fields' types.
+`validateWebhookData` (`payments.service.ts`) already accepts either
+`string` or `number` for both and coerces via `String()`, so this caused
+no incident — it was caught only because a real webhook was captured and
+compared, not because anything broke. Worth remembering: Kora's docs and
+even a real *verify* call are not a substitute for observing the real
+*webhook* payload directly when the two diverge.
 
 This differs from withdrawals (Phase 4), where Kora's payout API does
 return a distinct provider-side reference — so this deviation is specific

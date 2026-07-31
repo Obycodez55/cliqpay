@@ -37,11 +37,12 @@ const NGN = 'NGN'; // Funding is NGN-only for now — see issue #12.
 
 const STALE_FUNDING_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 
-// Ground truth: docs/adr/0007 — a real sandbox charge-verify response has
-// this shape for the `data` field, and per Kora's docs the webhook payload
-// mirrors it. Only the fields this handler actually reads. `amount`/`fee`
-// are normalized to strings here (Kora sends `fee` as a JSON number) so
-// nothing downstream needs its own String() wrapping.
+// Ground truth: docs/adr/0007 — confirmed against a real webhook Kora
+// delivered during the Phase 2 e2e pass, not just docs. Only the fields
+// this handler actually reads. `amount`/`fee` are normalized to strings
+// here — Kora sends both as raw JSON numbers (not the decimal strings the
+// verify endpoint uses), so nothing downstream needs its own String()
+// wrapping or needs to know the type differs by endpoint.
 interface KoraChargeWebhookData {
   reference: string;
   status: string;
