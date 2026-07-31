@@ -19,6 +19,8 @@ const bodies = {
   password_reset_otp: compile('password-reset-otp.hbs'),
   mfa_challenge_otp: compile('mfa-challenge-otp.hbs'),
   security_alert: compile('security-alert.hbs'),
+  funding_completed: compile('funding-completed.hbs'),
+  reconciliation_mismatch: compile('reconciliation-mismatch.hbs'),
 };
 
 // The plain-text part is a low-fidelity fallback almost no mail client

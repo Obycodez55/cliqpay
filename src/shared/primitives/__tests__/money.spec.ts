@@ -64,6 +64,33 @@ describe('Money', () => {
     );
   });
 
+  it('parses a decimal string into minor units', () => {
+    expect(Money.fromDecimalString('1500.00', 'NGN').amount).toBe(150_000n);
+    expect(Money.fromDecimalString('0.05', 'NGN').amount).toBe(5n);
+    expect(Money.fromDecimalString('-0.05', 'NGN').amount).toBe(-5n);
+    expect(Money.fromDecimalString('13.9', 'NGN').amount).toBe(1390n);
+    expect(Money.fromDecimalString('13', 'NGN').amount).toBe(1300n);
+  });
+
+  it('round-trips through toDecimalString/fromDecimalString', () => {
+    const money = Money.of(150_000n, 'NGN');
+    expect(Money.fromDecimalString(money.toDecimalString(), 'NGN').amount).toBe(
+      money.amount,
+    );
+  });
+
+  it('rejects a decimal string with too many fractional digits', () => {
+    expect(() => Money.fromDecimalString('1.005', 'NGN')).toThrow(
+      /more than 2 fractional digits/,
+    );
+  });
+
+  it('rejects a malformed decimal string', () => {
+    expect(() => Money.fromDecimalString('abc', 'NGN')).toThrow(
+      /invalid decimal/,
+    );
+  });
+
   it('serializes losslessly to JSON as a string, not a float', () => {
     const money = Money.of(9_007_199_254_740_993n, 'NGN');
     expect(JSON.stringify(money)).toBe(

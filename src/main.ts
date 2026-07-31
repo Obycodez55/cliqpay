@@ -6,7 +6,7 @@ import {
 import { NestFactory } from '@nestjs/core';
 import { Logger, LoggerErrorInterceptor } from 'nestjs-pino';
 import helmet from 'helmet';
-import { json, urlencoded } from 'express';
+import { json, Request, urlencoded } from 'express';
 import { AppModule } from './app.module';
 import { APP_CONFIG, AppConfig } from './config';
 import { setupApiDocs } from './docs/setup-api-docs';
@@ -60,7 +60,14 @@ async function bootstrap() {
   app.useLogger(logger);
   setupGracefulShutdown(app, logger);
   app.use(helmet());
-  app.use(json({ limit: '1mb' }));
+  app.use(
+    json({
+      limit: '1mb',
+      verify: (req, _res, buf) => {
+        (req as Request).rawBody = Buffer.from(buf);
+      },
+    }),
+  );
   app.use(urlencoded({ limit: '1mb', extended: true }));
   app.useGlobalInterceptors(new LoggerErrorInterceptor());
   app.useGlobalPipes(

@@ -12,41 +12,34 @@ import {
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { App } from 'supertest/types';
+import { json, Request, urlencoded } from 'express';
 import { DataSource, Repository } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../../src/config';
 import { buildDataSourceOptions } from '../../../src/database/data-source.options';
 import { CreateUsersAndAccounts1784628665852 } from '../../../src/database/migrations/1784628665852-CreateUsersAndAccounts';
-import { CreateSessions1784642459395 } from '../../../src/database/migrations/1784642459395-CreateSessions';
-import { CreatePushTokens1784616220824 } from '../../../src/database/migrations/1784616220824-CreatePushTokens';
-import { CreateMfaAndTrustedDevices1784652789887 } from '../../../src/database/migrations/1784652789887-CreateMfaAndTrustedDevices';
-import { CreateVerificationCodes1784672011426 } from '../../../src/database/migrations/1784672011426-CreateVerificationCodes';
 import { ConvertUsersAndAccountsTimestamps1784707276057 } from '../../../src/database/migrations/1784707276057-ConvertUsersAndAccountsTimestamps';
-import { ConvertSessionsTimestamps1784707276058 } from '../../../src/database/migrations/1784707276058-ConvertSessionsTimestamps';
-import { ConvertPushTokensTimestamps1784707276059 } from '../../../src/database/migrations/1784707276059-ConvertPushTokensTimestamps';
-import { ConvertMfaAndTrustedDevicesTimestamps1784707276060 } from '../../../src/database/migrations/1784707276060-ConvertMfaAndTrustedDevicesTimestamps';
 import { AddUsernameChangedAtToUsers1784707276061 } from '../../../src/database/migrations/1784707276061-AddUsernameChangedAtToUsers';
-import { CreateCredentials1784707276062 } from '../../../src/database/migrations/1784707276062-CreateCredentials';
-import { DropUserForeignKeys1784707276063 } from '../../../src/database/migrations/1784707276063-DropUserForeignKeys';
 import { AddPendingEmailToUsers1784707276064 } from '../../../src/database/migrations/1784707276064-AddPendingEmailToUsers';
 import { AddPendingPhoneToUsers1784707276065 } from '../../../src/database/migrations/1784707276065-AddPendingPhoneToUsers';
-import { AuthModule } from '../../../src/modules/auth/auth.module';
-import { AuthService } from '../../../src/modules/auth/auth.service';
-import { Credential } from '../../../src/modules/auth/entities/credential.entity';
-import { MfaChallenge } from '../../../src/modules/auth/entities/mfa-challenge.entity';
-import { MfaMethod } from '../../../src/modules/auth/entities/mfa-method.entity';
-import { Session } from '../../../src/modules/auth/entities/session.entity';
-import { TrustedDevice } from '../../../src/modules/auth/entities/trusted-device.entity';
-import { VerificationCode } from '../../../src/modules/auth/entities/verification-code.entity';
-import { MfaService } from '../../../src/modules/auth/mfa.service';
-import { Account } from '../../../src/modules/ledger/entities/account.entity';
+import { CreateTransactionsAndLedgerEntries1784707276066 } from '../../../src/database/migrations/1784707276066-CreateTransactionsAndLedgerEntries';
+import { AddFundingQueryIndexes1785488695081 } from '../../../src/database/migrations/1785488695081-AddFundingQueryIndexes';
+import { EnforceLedgerEntriesAppendOnly1785491930164 } from '../../../src/database/migrations/1785491930164-EnforceLedgerEntriesAppendOnly';
+import { CreateCredentials1784707276062 } from '../../../src/database/migrations/1784707276062-CreateCredentials';
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
+import { LedgerService } from '../../../src/modules/ledger/ledger.service';
+import { Account } from '../../../src/modules/ledger/entities/account.entity';
+import { LedgerEntry } from '../../../src/modules/ledger/entities/ledger-entry.entity';
+import { Transaction } from '../../../src/modules/ledger/entities/transaction.entity';
 import { User } from '../../../src/modules/users/entities/user.entity';
 import { UsersModule } from '../../../src/modules/users/users.module';
+import { UsersService } from '../../../src/modules/users/users.service';
+import { PaymentsModule } from '../../../src/modules/payments/payments.module';
+import { PaymentsService } from '../../../src/modules/payments/payments.service';
+import { PAYMENT_PROVIDER_ADAPTER } from '../../../src/modules/payments/adapters/payment-provider.interface';
+import { FakeAdapter } from '../../../src/modules/payments/adapters/fake.adapter';
 import { NotificationsModule } from '../../../src/modules/notifications/notifications.module';
 import { EMAIL_SENDER } from '../../../src/modules/notifications/channels/email/email-sender.interface';
 import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/email/fake-email.adapter';
-import { SMS_SENDER } from '../../../src/modules/notifications/channels/sms/sms-sender.interface';
-import { FakeSmsAdapter } from '../../../src/modules/notifications/channels/sms/fake-sms.adapter';
 
 @Module({})
 class TestConfigModule {}
@@ -60,33 +53,31 @@ function buildTestConfigModule(config: AppConfig): DynamicModule {
   };
 }
 
-export interface AuthTestContext {
+export interface PaymentsTestContext {
   postgres: StartedPostgreSqlContainer;
   redis: StartedTestContainer;
   app: INestApplication<App>;
-  authService: AuthService;
-  mfaService: MfaService;
+  usersService: UsersService;
+  ledgerService: LedgerService;
+  paymentsService: PaymentsService;
   dataSource: DataSource;
   userRepo: Repository<User>;
-  credentialRepo: Repository<Credential>;
   accountRepo: Repository<Account>;
-  sessionRepo: Repository<Session>;
-  mfaMethodRepo: Repository<MfaMethod>;
-  mfaChallengeRepo: Repository<MfaChallenge>;
-  trustedDeviceRepo: Repository<TrustedDevice>;
-  verificationCodeRepo: Repository<VerificationCode>;
+  transactionRepo: Repository<Transaction>;
+  ledgerEntryRepo: Repository<LedgerEntry>;
+  fakeAdapter: FakeAdapter;
   emailAdapter: FakeEmailAdapter;
-  smsAdapter: FakeSmsAdapter;
 }
 
-// Real Postgres and a real Redis via Testcontainers — proves
-// register()/login()/refresh()/logout() and the MFA/trusted-device flow
-// against the actual migrations' schema and constraints, not mocks. Redis is
-// needed because AuthModule imports EventBusModule — both the refresh()
-// reuse-detection alert and the MFA challenge email dispatch go through it;
-// NotificationsModule is wired in alongside it so delivery can be asserted,
-// not just that EventBusService was called.
-export async function createAuthTestContext(): Promise<AuthTestContext> {
+// Real Postgres and a real Redis via Testcontainers — PaymentsModule now
+// imports EventBusModule (issue #13's funding_completed publish after a
+// webhook completes funding), so Redis and NotificationsModule are wired in
+// the same way auth-test-context.ts does it, to assert delivery rather than
+// just that EventBusService was called. Users are seeded directly via
+// UsersService + LedgerService rather than through the real register()
+// flow, since exercising registration itself isn't what these tests are
+// about.
+export async function createPaymentsTestContext(): Promise<PaymentsTestContext> {
   const postgres = await new PostgreSqlContainer('postgres:16-alpine').start();
   const redis = await new GenericContainer('redis:7-alpine')
     .withExposedPorts(6379)
@@ -100,21 +91,14 @@ export async function createAuthTestContext(): Promise<AuthTestContext> {
   await setupDataSource.initialize();
   const queryRunner = setupDataSource.createQueryRunner();
   await new CreateUsersAndAccounts1784628665852().up(queryRunner);
-  await new CreateSessions1784642459395().up(queryRunner);
-  await new CreatePushTokens1784616220824().up(queryRunner);
-  await new CreateMfaAndTrustedDevices1784652789887().up(queryRunner);
-  await new CreateVerificationCodes1784672011426().up(queryRunner);
   await new ConvertUsersAndAccountsTimestamps1784707276057().up(queryRunner);
-  await new ConvertSessionsTimestamps1784707276058().up(queryRunner);
-  await new ConvertPushTokensTimestamps1784707276059().up(queryRunner);
-  await new ConvertMfaAndTrustedDevicesTimestamps1784707276060().up(
-    queryRunner,
-  );
   await new AddUsernameChangedAtToUsers1784707276061().up(queryRunner);
   await new CreateCredentials1784707276062().up(queryRunner);
-  await new DropUserForeignKeys1784707276063().up(queryRunner);
   await new AddPendingEmailToUsers1784707276064().up(queryRunner);
   await new AddPendingPhoneToUsers1784707276065().up(queryRunner);
+  await new CreateTransactionsAndLedgerEntries1784707276066().up(queryRunner);
+  await new AddFundingQueryIndexes1785488695081().up(queryRunner);
+  await new EnforceLedgerEntriesAppendOnly1785491930164().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 
@@ -133,9 +117,7 @@ export async function createAuthTestContext(): Promise<AuthTestContext> {
     sentry: { dsn: undefined },
     rateLimit: { ttlMs: 60_000, limit: 100 },
     jwt: { secret: 'test-jwt-secret-at-least-32-characters-long' },
-    encryption: {
-      key: 'a'.repeat(64),
-    },
+    encryption: { key: 'a'.repeat(64) },
     notifications: {
       emailProvider: 'fake',
       smsProvider: 'fake',
@@ -172,14 +154,28 @@ export async function createAuthTestContext(): Promise<AuthTestContext> {
       }),
       UsersModule,
       LedgerModule,
-      AuthModule,
+      PaymentsModule,
       NotificationsModule,
     ],
   }).compile();
 
-  const app = moduleRef.createNestApplication<INestApplication<App>>();
-  // Matches main.ts's global pipe — without it, DTO validation (e.g.
-  // CompletePasswordResetDto's required revokeOtherSessions) never runs.
+  // bodyParser: false + a manual json() with a `verify` callback — matches
+  // main.ts exactly, so the webhook route's `req.rawBody` is populated here
+  // the same way it is in the real app. Nest's default built-in body parser
+  // has no `verify` hook, so leaving it enabled would silently leave
+  // `req.rawBody` undefined.
+  const app = moduleRef.createNestApplication<INestApplication<App>>({
+    bodyParser: false,
+  });
+  app.use(
+    json({
+      limit: '1mb',
+      verify: (req, _res, buf) => {
+        (req as Request).rawBody = Buffer.from(buf);
+      },
+    }),
+  );
+  app.use(urlencoded({ limit: '1mb', extended: true }));
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -195,26 +191,48 @@ export async function createAuthTestContext(): Promise<AuthTestContext> {
     postgres,
     redis,
     app,
-    authService: moduleRef.get(AuthService),
-    mfaService: moduleRef.get(MfaService),
+    usersService: moduleRef.get(UsersService),
+    ledgerService: moduleRef.get(LedgerService),
+    paymentsService: moduleRef.get(PaymentsService),
     dataSource,
     userRepo: dataSource.getRepository(User),
-    credentialRepo: dataSource.getRepository(Credential),
     accountRepo: dataSource.getRepository(Account),
-    sessionRepo: dataSource.getRepository(Session),
-    mfaMethodRepo: dataSource.getRepository(MfaMethod),
-    mfaChallengeRepo: dataSource.getRepository(MfaChallenge),
-    trustedDeviceRepo: dataSource.getRepository(TrustedDevice),
-    verificationCodeRepo: dataSource.getRepository(VerificationCode),
+    transactionRepo: dataSource.getRepository(Transaction),
+    ledgerEntryRepo: dataSource.getRepository(LedgerEntry),
+    fakeAdapter: moduleRef.get(PAYMENT_PROVIDER_ADAPTER),
     emailAdapter: moduleRef.get(EMAIL_SENDER),
-    smsAdapter: moduleRef.get(SMS_SENDER),
   };
 }
 
-export async function destroyAuthTestContext(
-  ctx: Partial<AuthTestContext>,
+export async function destroyPaymentsTestContext(
+  ctx: Partial<PaymentsTestContext>,
 ): Promise<void> {
   await ctx.app?.close();
   await ctx.postgres?.stop();
   await ctx.redis?.stop();
+}
+
+// Directly creates a User + user_wallet Account, bypassing the full
+// register() flow (auth module isn't loaded in this context) — matches how
+// LedgerService.createUserWallet/UsersService.createUser are meant to be
+// composed atomically (see auth.service.ts's own registration flow).
+export async function seedUserWithWallet(
+  ctx: PaymentsTestContext,
+  overrides: { email: string; phone: string; username: string },
+): Promise<{ userId: string; walletId: string }> {
+  return ctx.dataSource.transaction(async (manager) => {
+    const user = await ctx.usersService.createUser(manager, {
+      email: overrides.email,
+      phone: overrides.phone,
+      username: overrides.username,
+      firstName: 'Ada',
+      lastName: 'Lovelace',
+    });
+    const wallet = await ctx.ledgerService.createUserWallet(
+      manager,
+      user.id,
+      'NGN',
+    );
+    return { userId: user.id, walletId: wallet.id };
+  });
 }

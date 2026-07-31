@@ -39,12 +39,31 @@ export interface SecurityAlertPayload {
   message: string;
 }
 
+export interface FundingCompletedPayload {
+  userId: string;
+  email: string;
+  amount: string;
+  currency: string;
+}
+
+export interface ReconciliationMismatchPayload {
+  email: string;
+  provider: string;
+  currency: string;
+  ledgerBalance: string;
+  providerBalance: string;
+  delta: string;
+  occurredAt: string;
+}
+
 export interface NotificationPayloadMap {
   email_verification_otp: EmailVerificationOtpPayload;
   phone_verification_otp: PhoneVerificationOtpPayload;
   password_reset_otp: PasswordResetOtpPayload;
   mfa_challenge_otp: MfaChallengeOtpPayload;
   security_alert: SecurityAlertPayload;
+  funding_completed: FundingCompletedPayload;
+  reconciliation_mismatch: ReconciliationMismatchPayload;
 }
 
 // Notification type -> channel(s). Dispatch mechanism (fire-and-forget vs
@@ -56,6 +75,8 @@ export const NOTIFICATION_CATALOG = {
   password_reset_otp: { channels: ['email'] },
   mfa_challenge_otp: { channels: ['email'] },
   security_alert: { channels: ['email', 'push'] },
+  funding_completed: { channels: ['email'] },
+  reconciliation_mismatch: { channels: ['email'] },
 } as const satisfies Record<
   keyof NotificationPayloadMap,
   { channels: readonly NotificationChannel[] }

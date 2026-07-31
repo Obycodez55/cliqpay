@@ -122,6 +122,15 @@ describe('Notifications module — end-to-end dispatch', () => {
           privateKey: undefined,
         },
       },
+      payments: {
+        provider: 'fake',
+        kora: {
+          secretKey: undefined,
+          webhookUrl: undefined,
+          redirectUrl: undefined,
+        },
+        reconciliation: { alertEmail: 'ops@cliqpay.test' },
+      },
     };
 
     const moduleRef = await Test.createTestingModule({
@@ -168,6 +177,26 @@ describe('Notifications module — end-to-end dispatch', () => {
     expect(emailAdapter.sent.at(-1)).toMatchObject({
       to: 'user-1@example.com',
     });
+  });
+
+  it('dispatches reconciliation_mismatch to the configured ops recipient, not any user', async () => {
+    const before = emailAdapter.sent.length;
+    await eventBus.publish({
+      name: 'reconciliation_mismatch',
+      payload: {
+        email: 'ops@cliqpay.test',
+        provider: 'kora',
+        currency: 'NGN',
+        ledgerBalance: '5000.00',
+        providerBalance: '4800.00',
+        delta: '200.00',
+        occurredAt: new Date().toISOString(),
+      },
+      occurredAt: new Date(),
+    });
+
+    await waitFor(() => emailAdapter.sent.length > before);
+    expect(emailAdapter.sent.at(-1)).toMatchObject({ to: 'ops@cliqpay.test' });
   });
 
   it('awaits an OTP send through the synchronous priority-queue path', async () => {

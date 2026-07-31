@@ -64,6 +64,29 @@ const envSchema = z
     FIREBASE_PROJECT_ID: z.string().optional(),
     FIREBASE_CLIENT_EMAIL: z.string().optional(),
     FIREBASE_PRIVATE_KEY: z.string().optional(),
+
+    // Same real/fake-as-just-another-provider pattern as the notification
+    // channels above — 'fake' (the default) runs FakeAdapter, no network,
+    // no Kora credentials required.
+    PAYMENT_PROVIDER: z.enum(['kora', 'fake']).default('fake'),
+    KORA_SECRET_KEY: z.string().optional(),
+
+    // Sent as `notification_url` on every charge — this backend's own
+    // webhook receiver, not a frontend page. Optional/undocumented until
+    // now (Phase 2 audit, M2): without it, the webhook path depended
+    // entirely on whatever's configured in Kora's dashboard, which nothing
+    // in this repo could confirm or review.
+    KORA_WEBHOOK_URL: z.url().optional(),
+    // Sent as `redirect_url` — where Kora's hosted checkout sends the
+    // customer back to after paying. No frontend exists yet
+    // (docs/architecture.md §9), so this is a placeholder until one does,
+    // same reasoning as EMAIL_VERIFICATION_URL/PASSWORD_RESET_URL above.
+    // The webhook, not this redirect, is what actually completes the
+    // funding transaction (§4.2) — this only affects where the customer's
+    // browser ends up.
+    PAYMENT_REDIRECT_URL: z.url().optional(),
+
+    RECONCILIATION_ALERT_EMAIL: z.email(),
   })
   .superRefine((env, ctx) => {
     // A provider's own credentials are only required when it's the one
@@ -98,6 +121,23 @@ const envSchema = z
       { path: 'FIREBASE_CLIENT_EMAIL', value: env.FIREBASE_CLIENT_EMAIL },
       { path: 'FIREBASE_PRIVATE_KEY', value: env.FIREBASE_PRIVATE_KEY },
     ]);
+    requireWhen(env.PAYMENT_PROVIDER === 'kora', [
+      { path: 'KORA_SECRET_KEY', value: env.KORA_SECRET_KEY },
+      { path: 'KORA_WEBHOOK_URL', value: env.KORA_WEBHOOK_URL },
+      { path: 'PAYMENT_REDIRECT_URL', value: env.PAYMENT_REDIRECT_URL },
+    ]);
+
+    // FakeAdapter validates webhook signatures against a hardcoded key
+    // committed to the repo (see fake.adapter.ts) — a production deploy
+    // that fell through to this default would let anyone forge a funding
+    // webhook. Fail at boot, not silently.
+    if (env.NODE_ENV === 'production' && env.PAYMENT_PROVIDER === 'fake') {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['PAYMENT_PROVIDER'],
+        message: 'PAYMENT_PROVIDER must not be "fake" in production',
+      });
+    }
   });
 
 type Env = z.infer<typeof envSchema>;
@@ -149,6 +189,17 @@ function buildConfig(env: Env) {
         projectId: env.FIREBASE_PROJECT_ID,
         clientEmail: env.FIREBASE_CLIENT_EMAIL,
         privateKey: env.FIREBASE_PRIVATE_KEY,
+      },
+    },
+    payments: {
+      provider: env.PAYMENT_PROVIDER,
+      kora: {
+        secretKey: env.KORA_SECRET_KEY,
+        webhookUrl: env.KORA_WEBHOOK_URL,
+        redirectUrl: env.PAYMENT_REDIRECT_URL,
+      },
+      reconciliation: {
+        alertEmail: env.RECONCILIATION_ALERT_EMAIL,
       },
     },
   };

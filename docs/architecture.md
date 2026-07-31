@@ -576,6 +576,15 @@ CREDIT fx_spread_income_usd   spread
 
 ---
 
+### Not yet phased — candidate future features
+
+Raised during Phase 2 design, deliberately not scoped into any phase above yet — noted here so they aren't forgotten, not so they get built ahead of need:
+
+- **Saved payment methods (card-on-file, recurring charge without redirect).** Checked directly against Kora's documentation (checkout, direct-API, and flexible/pre-auth card flows) — none of them return a reusable token, authorization code, or any other card-on-file identifier; Kora's card flow is single-use only as currently documented. Paystack's charge API is understood to return a reusable `authorization_code` for this purpose, so the likely shape is Kora for regular funding/withdrawal, Paystack as a second, narrowly-scoped provider used only for saved-card charges — the provider-scoped account design (§4.1) already anticipates a second active provider for NGN, so this fits without a schema change. Not yet verified against a real Paystack sandbox the way Kora's shape was confirmed (§3.6) — do that before designing it for real. Also note: "tokenize and charge a saved card" isn't a capability `PaymentProviderAdapter` (§3.6) models at all — it needs its own interface, not a second implementation of the existing one.
+- **Card issuing.** Confirmed via Kora's docs — they offer virtual USD Visa/Mastercard issuing (fund a card, let the user spend from it, suspend/terminate, webhooks on card transactions); no physical card product. Unscoped: no phase above accounts for issuing balance, card lifecycle state, or USD as a currency users hold cards in (Phase 10's multi-currency work doesn't currently include USD). Worth its own phase-sizing pass if pursued rather than folding into an existing phase.
+
+---
+
 ## 7. Production Considerations
 
 These are non-negotiable standards applied across all phases, not deferred to a "hardening" phase.
@@ -587,15 +596,16 @@ These are non-negotiable standards applied across all phases, not deferred to a 
 - Passwords hashed with bcrypt, never stored or logged in plaintext
 - Sensitive fields (bank account numbers, BVN) encrypted at rest
 - Rate limiting on auth, payment initiation, and KYC endpoints
-- No financial amounts accepted from the client for webhook-confirmed transactions — always derive from the provider's payload
+- No financial amounts accepted from the client for webhook-confirmed transactions — always derive from the provider's payload. **[v8]** "Derive from the payload" doesn't mean "trust it blindly": the provider-reported amount is cross-checked against what was actually requested at initiation (`transactions.amount`) before posting — a mismatch fails the transaction rather than crediting an unverified figure. Found during Phase 2's audit (H3): nothing enforced this until then, so a manipulated or buggy provider response could otherwise credit an arbitrary amount.
 - **[v7]** Encryption keys (for BVN, bank account fields) and provider API credentials live in environment-injected secrets, never committed to the repo — `.env` + `.gitignore` is a reasonable placeholder now; a dedicated secrets manager (AWS Secrets Manager, Doppler, etc.) is worth adopting once there's a real deployment target, not before
+- **[v8]** A provider's `fake` adapter (or any `*_PROVIDER=fake` setting) is rejected at boot when `NODE_ENV=production` — `FakeAdapter.verifyWebhookSignature` validates against a key committed to the repo, so a production deploy that fell through to the default would let anyone forge a funding webhook. Found during Phase 2's audit (C1); enforced in `src/config/index.ts`'s `superRefine`.
 
 ### Data Integrity
 
 - All money movements wrapped in database transactions — partial writes never committed
 - Pessimistic locking on wallet rows during concurrent balance updates, **[v2] always acquired in a consistent global order (**`account_id` **ascending) to prevent deadlocks**
 - Idempotency keys on all payment operations — **[v2] client-supplied for client-initiated actions, provider-supplied reference for webhooks** — safe to retry without side effects
-- Ledger entries are append-only — never updated or deleted; reversals are compensating transactions, never mutations
+- Ledger entries are append-only — never updated or deleted; reversals are compensating transactions, never mutations. **[v8]** DB-enforced, not just application convention: a trigger rejects any `UPDATE`/`DELETE` against `ledger_entries` outright, regardless of which code path issues it — added during Phase 2's audit (L2) after finding this held only because every code path happened to never violate it, not because anything stopped one from doing so.
 - **[v7]** This extends to migrations: no migration ever `UPDATE`s or `DELETE`s a row in `ledger_entries` or a historical `transactions` row, including "just this once" bug fixes — a correction is always a new compensating transaction, never a migration touching old data
 - **[v7]** Database backups with point-in-time recovery enabled from day one — usually a checkbox on managed Postgres, not custom work, and the one thing that actually protects against losing the ledger outright
 - Internal invariant (§4.3) reconciliation runnable on demand and schedulable as a background job
@@ -660,7 +670,7 @@ Planned clients: **React Native** for the mobile app, **React/Next.js** for an i
 - **CORS and API surface split.** Next.js admin runs on its own origin — needs an explicit allowlisted origin, and probably its own route namespace (`/v1/admin/`*) with its own guards, rather than sharing endpoints with the consumer-facing API.
 - **Push notifications, not just email.** A mobile app implies device push (APNs/FCM) alongside the existing email notifications — needs a `push_tokens` table (userId, platform, token) and a `NotificationChannel` interface, mirroring the `PaymentProviderAdapter`/`KycProvider` adapter pattern already in use, rather than hardcoding Brevo calls everywhere.
 - **Token storage is a client-side security decision, but it's the one that can quietly undo all the session-security work already done.** Access/refresh tokens must live in iOS Keychain / Android Keystore-backed secure storage (e.g. `react-native-keychain`), never in plain `AsyncStorage` — a revocable, replay-detecting session design (§3.7) doesn't help if the token itself sits in plaintext on the device.
-- **Deep linking for the Kora payment redirect.** Funding currently opens a hosted payment page; on mobile that means a WebView/system browser plus a registered URL scheme to return to the app. Important: the **webhook stays the source of truth**, same as today — the deep link is only what brings the user back into the UI, it never triggers the ledger write itself.
+- **Deep linking for the Kora payment redirect.** Funding currently opens a hosted payment page; on mobile that means a WebView/system browser plus a registered URL scheme to return to the app. Important: the **webhook stays the source of truth**, same as today — the deep link is only what brings the user back into the UI, it never triggers the ledger write itself. **[v8]** The config surface this will eventually point at already exists (`PAYMENT_REDIRECT_URL`, sent to Kora as `redirect_url` on every charge) — it's a placeholder web URL for now since no frontend exists yet; swapping it for a real deep link scheme when mobile is built is a config change, not new plumbing.
 - **Client-side idempotency key persistence.** The idempotency key for a client-initiated action (§3.4) needs to be generated and persisted locally *before* the request fires, so the app can safely retry the same key after being backgrounded or losing connectivity mid-request, instead of generating a new key and risking a duplicate.
 - **Tier 3 liveness check needs media upload plumbing** that doesn't exist yet — object storage (S3-compatible) plus an upload endpoint for the mobile client to submit the selfie/video Kora's KYC API requires.
 - **Real-time balance updates: default to push-notification-triggers-refetch, not WebSockets**, unless a concrete need for live updates emerges — simpler, and consistent with how comparable wallet apps handle it. Worth stating as the default so it isn't left ambiguous and someone builds a WebSocket layer that wasn't actually needed.

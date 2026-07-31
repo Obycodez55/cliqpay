@@ -60,3 +60,24 @@ export interface PasswordResetOtpEventPayload {
   resetUrl: string;
   expiresInMinutes: number;
 }
+
+export const FUNDING_COMPLETED_EVENT = 'funding_completed';
+
+export interface FundingCompletedEventPayload {
+  userId: string;
+  email: string;
+  amount: string; // decimal display string (Money.toDecimalString()), not minor units
+  currency: string;
+}
+
+export const RECONCILIATION_MISMATCH_EVENT = 'reconciliation_mismatch';
+
+export interface ReconciliationMismatchEventPayload {
+  email: string;
+  provider: string;
+  currency: string;
+  ledgerBalance: string; // decimal display string, ledger-derived float_<ccy> balance
+  providerBalance: string; // decimal display string, provider-reported balance
+  delta: string; // decimal display string, ledgerBalance - providerBalance
+  occurredAt: string; // ISO timestamp
+}
