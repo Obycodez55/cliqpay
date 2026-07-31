@@ -11,6 +11,11 @@ import {
   TransactionProvider,
 } from './entities/transaction.entity';
 
+// Re-exported through the module's one door (this file) — `payments` needs
+// the type for its active-(provider, currency)-pairs list (issue #15), and
+// cross-module code only ever reaches ledger through LedgerService.
+export type { TransactionProvider };
+
 export interface CreatePendingFundingTransactionData {
   reference: string;
   provider: TransactionProvider;
@@ -164,6 +169,25 @@ export class LedgerService {
       reference: transaction.reference,
       currency: transaction.currency,
     }));
+  }
+
+  // Feeds the external reconciliation job (issue #15) — a plain read of
+  // `float_<ccy>`'s cached balance, ledger's own table, so `payments` gets
+  // just the Money it needs to compare against the provider's reported
+  // balance rather than the full Account entity (same narrowing as
+  // StaleFundingTransaction above).
+  async getFloatBalance(
+    provider: TransactionProvider,
+    currency: string,
+  ): Promise<Money> {
+    const account = await this.dataSource
+      .getRepository(Account)
+      .findOneByOrFail({
+        role: 'float',
+        provider,
+        currency,
+      });
+    return Money.of(account.balance, account.currency);
   }
 
   /**
