@@ -149,7 +149,10 @@ describe('GET /wallet/transactions', () => {
     // precision (JS `Date` ceiling) while Postgres stores microseconds —
     // realistic because postFundingEntries batch-inserts entries in one
     // statement, so distinct fundings can land in the same millisecond.
-    // Forced explicitly here rather than relying on incidental timing.
+    // Forced explicitly here by setting created_at at INSERT time (rather
+    // than seeding via postFunding then UPDATE-ing afterward) — ledger_entries
+    // is append-only (docs/architecture.md §7), so the collision has to be
+    // baked in at creation, not patched in after the fact.
     const { userId, walletId } = await seedUserWithWallet(ctx, {
       email: 'history-collision@example.com',
       phone: '+2348022220005',
@@ -157,28 +160,39 @@ describe('GET /wallet/transactions', () => {
     });
 
     const rowCount = 6;
+    // Same millisecond, distinct microseconds — the exact shape that broke
+    // the truncated cursor.
+    const sameMillisecond = new Date('2026-01-01T00:00:00.500Z');
     for (let i = 0; i < rowCount; i++) {
-      await seedCompletedFunding(ctx, {
-        walletId,
-        reference: `cliqpay-history-collision-${i}`,
-        netAmountMinor: BigInt(2000 + i),
-      });
+      const transaction = await ctx.transactionRepo.save(
+        ctx.transactionRepo.create({
+          reference: `cliqpay-history-collision-${i}`,
+          provider: 'kora',
+          providerReference: `cliqpay-history-collision-${i}`,
+          type: 'funding',
+          status: 'completed',
+          amount: BigInt(2000 + i),
+          currency: 'NGN',
+          recipientWalletId: walletId,
+          metadata: { checkoutUrl: null, grossAmount: null },
+        }),
+      );
+      await ctx.dataSource.query(
+        `INSERT INTO ledger_entries (transaction_id, account_id, direction, amount, running_balance, created_at)
+         VALUES ($1, $2, 'credit', $3, $3, $4::timestamptz + ($5 || ' microseconds')::interval)`,
+        [
+          transaction.id,
+          walletId,
+          transaction.amount.toString(),
+          sameMillisecond.toISOString(),
+          i,
+        ],
+      );
     }
     const entries = await ctx.ledgerEntryRepo.find({
       where: { accountId: walletId },
     });
     expect(entries).toHaveLength(rowCount);
-    // Same millisecond, distinct microseconds — the exact shape that broke
-    // the truncated cursor.
-    const sameMillisecond = new Date('2026-01-01T00:00:00.500Z');
-    await Promise.all(
-      entries.map((entry, i) =>
-        ctx.dataSource.query(
-          `UPDATE ledger_entries SET created_at = $1::timestamptz + ($2 || ' microseconds')::interval WHERE id = $3`,
-          [sameMillisecond.toISOString(), i, entry.id],
-        ),
-      ),
-    );
 
     const limit = 2;
     const seenIds: string[] = [];
