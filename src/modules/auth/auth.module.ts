@@ -9,6 +9,8 @@ import { AuthService } from './auth.service';
 import { MfaController } from './mfa.controller';
 import { MfaService } from './mfa.service';
 import { VerificationCodeService } from './verification-code.service';
+import { TransactionPinService } from './transaction-pin.service';
+import { SessionService } from './session.service';
 
 @Module({
   imports: [
@@ -21,7 +23,13 @@ import { VerificationCodeService } from './verification-code.service';
     }),
   ],
   controllers: [AuthController, MfaController],
-  providers: [AuthService, MfaService, VerificationCodeService],
+  providers: [
+    AuthService,
+    MfaService,
+    VerificationCodeService,
+    TransactionPinService,
+    SessionService,
+  ],
   exports: [AuthService],
 })
 export class AuthModule {}

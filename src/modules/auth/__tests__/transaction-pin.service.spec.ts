@@ -1,9 +1,7 @@
-import { JwtService } from '@nestjs/jwt';
 import { DataSource } from 'typeorm';
 import { AppConfig } from '../../../config';
 import { DomainEventEnvelope } from '../../../shared/events/domain-events';
-import { AuthService } from '../auth.service';
-import { LedgerService } from '../../ledger/ledger.service';
+import { TransactionPinService } from '../transaction-pin.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { Credential } from '../entities/credential.entity';
 import { UsersService } from '../../users/users.service';
@@ -15,7 +13,6 @@ import {
   TransactionPinNotSetException,
 } from '../internal/errors';
 import { MfaService } from '../mfa.service';
-import { VerificationCodeService } from '../verification-code.service';
 import {
   compareTransactionPin,
   hashTransactionPin,
@@ -60,7 +57,7 @@ function buildCredential(overrides: Partial<Credential> = {}): Credential {
   } as Credential;
 }
 
-describe('AuthService — transaction PIN', () => {
+describe('TransactionPinService', () => {
   let usersService: {
     findById: jest.Mock<Promise<UserFixture>, [string]>;
   };
@@ -83,7 +80,7 @@ describe('AuthService — transaction PIN', () => {
     save: jest.Mock<Promise<Credential>, [Credential]>;
   };
   let dataSource: { getRepository: jest.Mock<unknown, [unknown]> };
-  let service: AuthService;
+  let service: TransactionPinService;
 
   beforeEach(() => {
     usersService = {
@@ -121,15 +118,12 @@ describe('AuthService — transaction PIN', () => {
     compareTransactionPinMock.mockReset();
     compareTransactionPinMock.mockResolvedValue(true);
 
-    service = new AuthService(
+    service = new TransactionPinService(
       dataSource as unknown as DataSource,
       { transactionPin: { pepper: 'test-pepper' } } as unknown as AppConfig,
       usersService as unknown as UsersService,
-      {} as LedgerService,
-      { signAsync: jest.fn() } as unknown as JwtService,
-      eventBus as unknown as EventBusService,
       mfaService as unknown as MfaService,
-      {} as VerificationCodeService,
+      eventBus as unknown as EventBusService,
     );
   });
 

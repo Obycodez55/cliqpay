@@ -27,6 +27,7 @@ import {
 } from '../../common/guards/jwt-auth.guard';
 import { MfaService, TRUSTED_DEVICE_TTL_MS } from './mfa.service';
 import { extractDeviceMetadata } from './internal/device-metadata.util';
+import { SessionService } from './session.service';
 
 @ApiTags('MFA')
 @Controller('mfa')
@@ -34,6 +35,7 @@ export class MfaController {
   constructor(
     private readonly mfaService: MfaService,
     private readonly authService: AuthService,
+    private readonly sessionService: SessionService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
@@ -92,7 +94,7 @@ export class MfaController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<TokenPairResponseDto> {
     const { tokens, trustedDeviceToken } =
-      await this.authService.verifyMfaChallenge(
+      await this.sessionService.verifyMfaChallenge(
         dto,
         extractDeviceMetadata(req),
       );

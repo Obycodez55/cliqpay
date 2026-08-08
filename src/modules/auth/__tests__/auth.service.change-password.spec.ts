@@ -1,5 +1,4 @@
 import * as bcrypt from 'bcrypt';
-import { JwtService } from '@nestjs/jwt';
 import { DataSource } from 'typeorm';
 import { AppConfig } from '../../../config';
 import { DomainEventEnvelope } from '../../../shared/events/domain-events';
@@ -15,6 +14,7 @@ import {
 } from '../internal/errors';
 import { MfaService } from '../mfa.service';
 import { VerificationCodeService } from '../verification-code.service';
+import { TransactionPinService } from '../transaction-pin.service';
 
 jest.mock('bcrypt', () => ({
   compare: jest.fn(),
@@ -117,7 +117,6 @@ describe('AuthService — change password', () => {
       {} as unknown as AppConfig,
       usersService as unknown as UsersService,
       {} as LedgerService,
-      { signAsync: jest.fn() } as unknown as JwtService,
       {
         dispatchAndAwait: jest.fn(
           (_event: DomainEventEnvelope<string, unknown>) => Promise.resolve(),
@@ -128,6 +127,7 @@ describe('AuthService — change password', () => {
       } as unknown as EventBusService,
       mfaService as unknown as MfaService,
       {} as VerificationCodeService,
+      {} as TransactionPinService,
     );
   });
 

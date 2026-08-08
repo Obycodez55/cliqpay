@@ -1,4 +1,3 @@
-import { JwtService } from '@nestjs/jwt';
 import { DataSource } from 'typeorm';
 import { AppConfig } from '../../../config';
 import { DomainEventEnvelope } from '../../../shared/events/domain-events';
@@ -10,6 +9,7 @@ import { VerificationPurpose } from '../entities/verification-code.entity';
 import { EmailAlreadyVerifiedException } from '../internal/errors';
 import { MfaService } from '../mfa.service';
 import { VerificationCodeService } from '../verification-code.service';
+import { TransactionPinService } from '../transaction-pin.service';
 
 // Structural, not `users.User` — auth's tests can't import another core
 // module's entity (only its exported service), same reasoning as
@@ -102,10 +102,10 @@ describe('AuthService — email verification', () => {
       } as unknown as AppConfig,
       usersService as unknown as UsersService,
       {} as LedgerService,
-      { signAsync: jest.fn() } as unknown as JwtService,
       eventBus as unknown as EventBusService,
       {} as MfaService,
       verificationCodeService as unknown as VerificationCodeService,
+      {} as TransactionPinService,
     );
   });
 

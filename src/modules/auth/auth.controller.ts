@@ -48,11 +48,17 @@ import {
   AuthenticatedRequest,
   JwtAuthGuard,
 } from '../../common/guards/jwt-auth.guard';
+import { SessionService } from './session.service';
+import { TransactionPinService } from './transaction-pin.service';
 
 @ApiTags('Authentication')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly sessionService: SessionService,
+    private readonly transactionPinService: TransactionPinService,
+  ) {}
 
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
@@ -83,7 +89,7 @@ export class AuthController {
     },
   })
   login(@Body() dto: LoginDto, @Req() req: Request): Promise<LoginResponseDto> {
-    return this.authService.login(
+    return this.sessionService.login(
       dto,
       readTrustedDeviceCookie(req),
       extractDeviceMetadata(req),
@@ -94,14 +100,14 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Exchange a refresh token for a new token pair' })
   refresh(@Body() dto: RefreshDto): Promise<TokenPairResponseDto> {
-    return this.authService.refresh(dto);
+    return this.sessionService.refresh(dto);
   }
 
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Log out and revoke the current session' })
   logout(@Body() dto: LogoutDto): Promise<void> {
-    return this.authService.logout(dto);
+    return this.sessionService.logout(dto);
   }
 
   // Public — the token itself is the proof of identity, no guard needed.
@@ -327,7 +333,7 @@ export class AuthController {
   initiateSetPinStepUp(
     @Req() req: AuthenticatedRequest,
   ): Promise<StepUpChallengeResponseDto> {
-    return this.authService.initiateSetPinStepUp(req.user.userId);
+    return this.transactionPinService.initiateSetPinStepUp(req.user.userId);
   }
 
   // Step 2 of 2 — first-time PIN only; an existing PIN must go through
@@ -344,7 +350,7 @@ export class AuthController {
     @Req() req: AuthenticatedRequest,
     @Body() dto: SetTransactionPinDto,
   ): Promise<void> {
-    return this.authService.setTransactionPin(req.user.userId, dto);
+    return this.transactionPinService.setTransactionPin(req.user.userId, dto);
   }
 
   // Step 1 of 2 for change-pin.
@@ -359,7 +365,7 @@ export class AuthController {
   initiateChangePinStepUp(
     @Req() req: AuthenticatedRequest,
   ): Promise<StepUpChallengeResponseDto> {
-    return this.authService.initiateChangePinStepUp(req.user.userId);
+    return this.transactionPinService.initiateChangePinStepUp(req.user.userId);
   }
 
   // Step 2 of 2 — requires the current PIN; a wrong current PIN here counts
@@ -377,7 +383,10 @@ export class AuthController {
     @Req() req: AuthenticatedRequest,
     @Body() dto: ChangeTransactionPinDto,
   ): Promise<void> {
-    return this.authService.changeTransactionPin(req.user.userId, dto);
+    return this.transactionPinService.changeTransactionPin(
+      req.user.userId,
+      dto,
+    );
   }
 
   // Step 1 of 2 for reset-pin — the recovery path for a forgotten PIN, so
@@ -394,7 +403,7 @@ export class AuthController {
   initiateResetPinStepUp(
     @Req() req: AuthenticatedRequest,
   ): Promise<StepUpChallengeResponseDto> {
-    return this.authService.initiateResetPinStepUp(req.user.userId);
+    return this.transactionPinService.initiateResetPinStepUp(req.user.userId);
   }
 
   // Step 2 of 2 — no current PIN required, since this is the recovery path;
@@ -411,6 +420,6 @@ export class AuthController {
     @Req() req: AuthenticatedRequest,
     @Body() dto: ResetTransactionPinDto,
   ): Promise<void> {
-    return this.authService.resetTransactionPin(req.user.userId, dto);
+    return this.transactionPinService.resetTransactionPin(req.user.userId, dto);
   }
 }

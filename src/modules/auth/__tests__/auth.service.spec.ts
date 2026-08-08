@@ -1,5 +1,4 @@
 import * as bcrypt from 'bcrypt';
-import { JwtService } from '@nestjs/jwt';
 import { DataSource, EntityManager } from 'typeorm';
 import { AppConfig } from '../../../config';
 import { DomainEventEnvelope } from '../../../shared/events/domain-events';
@@ -11,6 +10,7 @@ import { Credential } from '../entities/credential.entity';
 import { RegisterDto } from '../dto/register.dto';
 import { MfaService } from '../mfa.service';
 import { VerificationCodeService } from '../verification-code.service';
+import { TransactionPinService } from '../transaction-pin.service';
 
 // Structural, not `users.User` — auth's tests can't import another core
 // module's entity (only its exported service), same reasoning as
@@ -138,10 +138,10 @@ describe('AuthService.register', () => {
       } as unknown as AppConfig,
       usersService as unknown as UsersService,
       ledgerService as unknown as LedgerService,
-      { signAsync: jest.fn() } as unknown as JwtService,
       eventBus as unknown as EventBusService,
       mfaService as unknown as MfaService,
       verificationCodeService as unknown as VerificationCodeService,
+      {} as TransactionPinService,
     );
   });
 
@@ -231,5 +231,34 @@ describe('AuthService.register', () => {
         'redis unreachable',
       );
     });
+  });
+});
+
+describe('AuthService.verifyTransactionPin', () => {
+  // #22 (send-money) only ever calls AuthService.verifyTransactionPin, per
+  // ADR-0009 — this is the one seam that must keep delegating to
+  // TransactionPinService after the extraction, so it gets its own
+  // regression test rather than relying on TransactionPinService's own spec.
+  it('delegates to TransactionPinService.verifyTransactionPin', async () => {
+    const transactionPinService = {
+      verifyTransactionPin: jest.fn(() => Promise.resolve()),
+    };
+    const service = new AuthService(
+      {} as unknown as DataSource,
+      {} as unknown as AppConfig,
+      {} as UsersService,
+      {} as LedgerService,
+      {} as EventBusService,
+      {} as MfaService,
+      {} as VerificationCodeService,
+      transactionPinService as unknown as TransactionPinService,
+    );
+
+    await service.verifyTransactionPin('user-1', '4837');
+
+    expect(transactionPinService.verifyTransactionPin).toHaveBeenCalledWith(
+      'user-1',
+      '4837',
+    );
   });
 });

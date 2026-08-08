@@ -39,6 +39,7 @@ import { Session } from '../../../src/modules/auth/entities/session.entity';
 import { TrustedDevice } from '../../../src/modules/auth/entities/trusted-device.entity';
 import { VerificationCode } from '../../../src/modules/auth/entities/verification-code.entity';
 import { MfaService } from '../../../src/modules/auth/mfa.service';
+import { SessionService } from '../../../src/modules/auth/session.service';
 import { Account } from '../../../src/modules/ledger/entities/account.entity';
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
 import { User } from '../../../src/modules/users/entities/user.entity';
@@ -67,6 +68,7 @@ export interface AuthTestContext {
   app: INestApplication<App>;
   authService: AuthService;
   mfaService: MfaService;
+  sessionService: SessionService;
   dataSource: DataSource;
   userRepo: Repository<User>;
   credentialRepo: Repository<Credential>;
@@ -204,6 +206,7 @@ export async function createAuthTestContext(): Promise<AuthTestContext> {
     app,
     authService: moduleRef.get(AuthService),
     mfaService: moduleRef.get(MfaService),
+    sessionService: moduleRef.get(SessionService),
     dataSource,
     userRepo: dataSource.getRepository(User),
     credentialRepo: dataSource.getRepository(Credential),

@@ -88,7 +88,13 @@ export interface AuthTestHelpers {
 }
 
 export function createAuthTestHelpers(ctx: AuthTestContext): AuthTestHelpers {
-  const { authService, emailAdapter, smsAdapter, verificationCodeRepo } = ctx;
+  const {
+    authService,
+    sessionService,
+    emailAdapter,
+    smsAdapter,
+    verificationCodeRepo,
+  } = ctx;
 
   function registerUser(overrides: Record<string, unknown> = {}) {
     return authService.register(registerPayload(overrides));
@@ -157,7 +163,7 @@ export function createAuthTestHelpers(ctx: AuthTestContext): AuthTestHelpers {
     email: string,
     password: string,
   ): Promise<{ tokens: TokenPairResponseDto; trustedDeviceToken: string }> {
-    const result = await authService.login(
+    const result = await sessionService.login(
       { email, password },
       null,
       TEST_DEVICE,
@@ -170,7 +176,7 @@ export function createAuthTestHelpers(ctx: AuthTestContext): AuthTestHelpers {
     const code = extractSixDigitCode(
       latestEmailWithSubject(SIGN_IN_CODE_SUBJECT).text,
     );
-    return authService.verifyMfaChallenge(
+    return sessionService.verifyMfaChallenge(
       { challengeId: result.challengeId, code },
       TEST_DEVICE,
     );
