@@ -46,6 +46,18 @@ const envSchema = z
         'ENCRYPTION_KEY must be a 64-character hex string (32 bytes)',
       ),
 
+    // HMAC-SHA256 pepper applied before bcrypt on transaction PINs — 32
+    // bytes as hex, required unconditionally (unlike the provider secrets
+    // below) since there's no unpeppered fallback to degrade to. See
+    // ADR-0009: this key can never be rotated without invalidating every
+    // PIN in the system.
+    TRANSACTION_PIN_PEPPER: z
+      .string()
+      .regex(
+        /^[0-9a-fA-F]{64}$/,
+        'TRANSACTION_PIN_PEPPER must be a 64-character hex string (32 bytes)',
+      ),
+
     // Named per concrete provider, not a real/fake toggle — `fake` is just
     // another option in the same set, so adding a second real provider for a
     // channel (e.g. SES alongside Brevo) is adding an enum value, not
@@ -171,6 +183,9 @@ function buildConfig(env: Env) {
     },
     encryption: {
       key: env.ENCRYPTION_KEY,
+    },
+    transactionPin: {
+      pepper: env.TRANSACTION_PIN_PEPPER,
     },
     notifications: {
       emailProvider: env.EMAIL_PROVIDER,
