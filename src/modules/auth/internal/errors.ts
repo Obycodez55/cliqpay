@@ -113,3 +113,37 @@ export class VerificationCodeRateLimitedException extends DomainException {
     );
   }
 }
+
+export class TransactionPinAlreadySetException extends DomainException {
+  readonly code = 'TRANSACTION_PIN_ALREADY_SET';
+  constructor() {
+    super(
+      'A transaction PIN is already set — use change or reset instead',
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
+export class TransactionPinNotSetException extends DomainException {
+  readonly code = 'TRANSACTION_PIN_NOT_SET';
+  constructor() {
+    super('No transaction PIN is set for this account', HttpStatus.NOT_FOUND);
+  }
+}
+
+export class InvalidTransactionPinException extends DomainException {
+  readonly code = 'INVALID_TRANSACTION_PIN';
+  constructor() {
+    super('Invalid transaction PIN', HttpStatus.UNAUTHORIZED);
+  }
+}
+
+export class TransactionPinLockedException extends DomainException {
+  readonly code = 'TRANSACTION_PIN_LOCKED';
+  constructor(lockedUntil: Date) {
+    super(
+      `Transaction PIN locked until ${lockedUntil.toISOString()} after too many failed attempts`,
+      HttpStatus.LOCKED,
+    );
+  }
+}
