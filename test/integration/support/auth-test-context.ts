@@ -29,6 +29,7 @@ import { CreateCredentials1784707276062 } from '../../../src/database/migrations
 import { DropUserForeignKeys1784707276063 } from '../../../src/database/migrations/1784707276063-DropUserForeignKeys';
 import { AddPendingEmailToUsers1784707276064 } from '../../../src/database/migrations/1784707276064-AddPendingEmailToUsers';
 import { AddPendingPhoneToUsers1784707276065 } from '../../../src/database/migrations/1784707276065-AddPendingPhoneToUsers';
+import { AddTransactionPinLockoutToCredentials1785491931164 } from '../../../src/database/migrations/1785491931164-AddTransactionPinLockoutToCredentials';
 import { AuthModule } from '../../../src/modules/auth/auth.module';
 import { AuthService } from '../../../src/modules/auth/auth.service';
 import { Credential } from '../../../src/modules/auth/entities/credential.entity';
@@ -115,6 +116,9 @@ export async function createAuthTestContext(): Promise<AuthTestContext> {
   await new DropUserForeignKeys1784707276063().up(queryRunner);
   await new AddPendingEmailToUsers1784707276064().up(queryRunner);
   await new AddPendingPhoneToUsers1784707276065().up(queryRunner);
+  await new AddTransactionPinLockoutToCredentials1785491931164().up(
+    queryRunner,
+  );
   await queryRunner.release();
   await setupDataSource.destroy();
 
@@ -135,6 +139,9 @@ export async function createAuthTestContext(): Promise<AuthTestContext> {
     jwt: { secret: 'test-jwt-secret-at-least-32-characters-long' },
     encryption: {
       key: 'a'.repeat(64),
+    },
+    transactionPin: {
+      pepper: 'b'.repeat(64),
     },
     notifications: {
       emailProvider: 'fake',

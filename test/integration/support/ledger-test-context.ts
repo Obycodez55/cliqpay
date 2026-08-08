@@ -97,6 +97,7 @@ export async function createLedgerTestContext(): Promise<LedgerTestContext> {
     rateLimit: { ttlMs: 60_000, limit: 100 },
     jwt: { secret: 'test-jwt-secret-at-least-32-characters-long' },
     encryption: { key: 'a'.repeat(64) },
+    transactionPin: { pepper: 'b'.repeat(64) },
     notifications: {
       emailProvider: 'fake',
       smsProvider: 'fake',

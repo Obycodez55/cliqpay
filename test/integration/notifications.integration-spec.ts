@@ -106,6 +106,9 @@ describe('Notifications module — end-to-end dispatch', () => {
       encryption: {
         key: '0'.repeat(64),
       },
+      transactionPin: {
+        pepper: '0'.repeat(64),
+      },
       notifications: {
         emailProvider: 'fake',
         smsProvider: 'fake',
