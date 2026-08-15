@@ -189,6 +189,7 @@ export class TransactionPinService {
 
       if (justLocked) {
         const user = await this.usersService.findById(userId);
+        const alertOccurredAt = new Date();
         await this.eventBus.publish<string, SecurityAlertEventPayload>({
           name: SECURITY_ALERT_EVENT,
           payload: {
@@ -196,8 +197,9 @@ export class TransactionPinService {
             email: user.email,
             message:
               'Your transaction PIN was locked for 15 minutes after too many failed attempts. If this wasn’t you, please secure your account and reset your PIN.',
+            occurredAt: alertOccurredAt.toISOString(),
           },
-          occurredAt: new Date(),
+          occurredAt: alertOccurredAt,
         });
       }
 

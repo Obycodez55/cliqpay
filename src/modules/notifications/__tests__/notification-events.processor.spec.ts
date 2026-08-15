@@ -26,10 +26,11 @@ describe('NotificationEventsProcessor', () => {
       userId: 'u1',
       email: 'a@example.com',
       message: 'New device login',
+      occurredAt: '2026-08-15T10:32:00.000Z',
     };
     await processor.process(jobFor('security_alert', payload));
 
-    expect(queue.add).toHaveBeenCalledTimes(2);
+    expect(queue.add).toHaveBeenCalledTimes(3);
     expect(queue.add).toHaveBeenCalledWith('security_alert', {
       channel: 'email',
       type: 'security_alert',
@@ -37,6 +38,11 @@ describe('NotificationEventsProcessor', () => {
     });
     expect(queue.add).toHaveBeenCalledWith('security_alert', {
       channel: 'push',
+      type: 'security_alert',
+      payload,
+    });
+    expect(queue.add).toHaveBeenCalledWith('security_alert', {
+      channel: 'in_app',
       type: 'security_alert',
       payload,
     });

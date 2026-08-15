@@ -20,6 +20,7 @@ import { FakePushAdapter } from '../../src/modules/notifications/channels/push/f
 import { PushToken } from '../../src/modules/notifications/entities/push-token.entity';
 import { CreatePushTokens1784616220824 } from '../../src/database/migrations/1784616220824-CreatePushTokens';
 import { ConvertPushTokensTimestamps1784707276059 } from '../../src/database/migrations/1784707276059-ConvertPushTokensTimestamps';
+import { CreateNotifications1786812506579 } from '../../src/database/migrations/1786812506579-CreateNotifications';
 
 jest.setTimeout(120_000);
 
@@ -87,6 +88,7 @@ describe('Notifications module — end-to-end dispatch', () => {
     const queryRunner = setupDataSource.createQueryRunner();
     await new CreatePushTokens1784616220824().up(queryRunner);
     await new ConvertPushTokensTimestamps1784707276059().up(queryRunner);
+    await new CreateNotifications1786812506579().up(queryRunner);
     await queryRunner.release();
     await setupDataSource.destroy();
 
@@ -126,6 +128,7 @@ describe('Notifications module — end-to-end dispatch', () => {
           clientEmail: undefined,
           privateKey: undefined,
         },
+        retentionDays: 180,
       },
       payments: {
         provider: 'fake',
@@ -174,6 +177,7 @@ describe('Notifications module — end-to-end dispatch', () => {
         userId: USER_1,
         email: 'user-1@example.com',
         message: 'New device login',
+        occurredAt: new Date().toISOString(),
       },
       occurredAt: new Date(),
     });
@@ -274,6 +278,7 @@ describe('Notifications module — end-to-end dispatch', () => {
       userId: USER_6,
       email: 'user-6@example.com',
       message: 'Password changed',
+      occurredAt: new Date().toISOString(),
     });
 
     expect(pushAdapter.sent.some((m) => m.token === 'user-6-device')).toBe(
@@ -298,6 +303,7 @@ describe('Notifications module — end-to-end dispatch', () => {
         userId: USER_7,
         email: 'user-7@example.com',
         message: 'New device login',
+        occurredAt: new Date().toISOString(),
       },
       occurredAt: new Date(),
     });
@@ -335,6 +341,7 @@ describe('Notifications module — end-to-end dispatch', () => {
         userId: USER_8,
         email: 'user-8@example.com',
         message: 'New device login',
+        occurredAt: new Date().toISOString(),
       },
       occurredAt: new Date(),
     });

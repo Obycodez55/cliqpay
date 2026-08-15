@@ -51,6 +51,7 @@ describe('PaymentsService.handleFundingWebhook', () => {
   const postFundingResult: PostFundingResult = {
     userId: 'user-1',
     netAmount: Money.of(500_000n, 'NGN'),
+    reference: 'cliqpay-ref-1',
   };
 
   beforeEach(() => {
@@ -106,6 +107,7 @@ describe('PaymentsService.handleFundingWebhook', () => {
       email: 'user@example.com',
       amount: '5000.00',
       currency: 'NGN',
+      reference: 'cliqpay-ref-1',
     });
   });
 
@@ -163,6 +165,7 @@ describe('PaymentsService.pollStaleFundingTransactions', () => {
   const postFundingResult: PostFundingResult = {
     userId: 'user-1',
     netAmount: Money.of(500_000n, 'NGN'),
+    reference: 'cliqpay-ref-1',
   };
 
   beforeEach(() => {

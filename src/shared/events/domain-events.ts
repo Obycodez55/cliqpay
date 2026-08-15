@@ -18,6 +18,7 @@ export interface SecurityAlertEventPayload {
   userId: string;
   email: string;
   message: string;
+  occurredAt: string; // ISO-8601 — see notifications' SecurityAlertPayload
 }
 
 export const MFA_CHALLENGE_OTP_EVENT = 'mfa_challenge_otp';
@@ -68,6 +69,7 @@ export interface FundingCompletedEventPayload {
   email: string;
   amount: string; // decimal display string (Money.toDecimalString()), not minor units
   currency: string;
+  reference: string; // funding transaction reference — see notifications' FundingCompletedPayload
 }
 
 export const RECONCILIATION_MISMATCH_EVENT = 'reconciliation_mismatch';

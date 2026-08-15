@@ -1,5 +1,16 @@
 import { UnrecoverableError } from 'bullmq';
 
+// Mirrors payments' own isUniqueViolation (payments/internal/errors.ts) —
+// each module keeps its own copy rather than one shared elsewhere, per the
+// module boundary rules (CLAUDE.md). Used by the in-app channel: a
+// (user_id, type, dedupe_key) collision on insert means a worker already
+// wrote this notification and died before acking, which is a no-op, not an
+// error.
+export function isUniqueViolation(error: unknown, constraint: string): boolean {
+  const pgError = error as { code?: string; constraint?: string };
+  return pgError?.code === '23505' && pgError.constraint === constraint;
+}
+
 /**
  * Shared retryable/non-retryable split used by the HTTP-based real adapters
  * (Brevo, Termii): timeouts, connection errors, 5xx, and 429 are transient

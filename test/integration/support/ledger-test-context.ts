@@ -113,6 +113,7 @@ export async function createLedgerTestContext(): Promise<LedgerTestContext> {
         clientEmail: undefined,
         privateKey: undefined,
       },
+      retentionDays: 180,
     },
     payments: {
       provider: 'fake',

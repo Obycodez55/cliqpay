@@ -225,6 +225,7 @@ export class SessionService {
         // NotificationService (peripheral) directly, so this goes through
         // the shared event bus; notifications' existing fire-and-forget
         // processor picks it up by job name.
+        const alertOccurredAt = new Date();
         await this.eventBus.publish<string, SecurityAlertEventPayload>({
           name: SECURITY_ALERT_EVENT,
           payload: {
@@ -232,8 +233,9 @@ export class SessionService {
             email: user.email,
             message:
               'We detected an already-used refresh token being replayed and revoked the affected session for your protection. If this wasn’t you, please change your password.',
+            occurredAt: alertOccurredAt.toISOString(),
           },
-          occurredAt: new Date(),
+          occurredAt: alertOccurredAt,
         });
 
         throw new SessionRevokedException();

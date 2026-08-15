@@ -391,6 +391,7 @@ export class PaymentsService {
           email: user.email,
           amount: result.netAmount.toDecimalString(),
           currency: result.netAmount.currency,
+          reference: result.reference,
         },
         occurredAt: new Date(),
       });

@@ -1,9 +1,13 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { Brackets, DataSource, EntityManager, In, LessThan } from 'typeorm';
 import { runInTransaction } from '../../database/transaction.util';
 import { Money } from '../../shared/primitives/money';
 import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
+import {
+  decodeCreatedAtIdCursor,
+  encodeCreatedAtIdCursor,
+} from '../../common/pagination/cursor';
 import {
   TransactionHistoryItemDto,
   toTransactionHistoryItem,
@@ -40,6 +44,7 @@ export interface PostFundingFacts {
 export interface PostFundingResult {
   userId: string;
   netAmount: Money;
+  reference: string;
 }
 
 // Structurally narrow rather than the full `Transaction` entity — `payments`
@@ -70,43 +75,6 @@ export type IdempotentReplay =
   | { outcome: 'match'; transaction: Transaction }
   | { outcome: 'foreign' }
   | { outcome: 'diverged' };
-
-// Opaque to the client per docs/conventions.md — encodes the last returned
-// row's (createdAt, id) tie-break key, nothing else.
-interface TransactionHistoryCursor {
-  createdAt: string;
-  id: string;
-}
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-function encodeHistoryCursor(cursor: TransactionHistoryCursor): string {
-  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
-}
-
-// A corrupted/forged cursor must 400, not reach the DB query — see
-// getTransactionHistory.
-function decodeHistoryCursor(raw: string): TransactionHistoryCursor {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
-  } catch {
-    throw new BadRequestException('Invalid cursor');
-  }
-  const candidate = parsed as Partial<TransactionHistoryCursor> | null;
-  if (
-    typeof candidate !== 'object' ||
-    candidate === null ||
-    typeof candidate.createdAt !== 'string' ||
-    typeof candidate.id !== 'string' ||
-    Number.isNaN(Date.parse(candidate.createdAt)) ||
-    !UUID_RE.test(candidate.id)
-  ) {
-    throw new BadRequestException('Invalid cursor');
-  }
-  return { createdAt: candidate.createdAt, id: candidate.id };
-}
 
 /**
  * The one exported surface of the ledger module — see docs/architecture.md
@@ -325,7 +293,7 @@ export class LedgerService {
     pagination: TransactionHistoryPagination,
   ): Promise<PaginatedResult<TransactionHistoryItemDto>> {
     const cursor = pagination.cursor
-      ? decodeHistoryCursor(pagination.cursor)
+      ? decodeCreatedAtIdCursor(pagination.cursor)
       : null;
 
     const query = this.dataSource
@@ -364,7 +332,7 @@ export class LedgerService {
       items: page.map(toTransactionHistoryItem),
       nextCursor:
         hasMore && lastRaw
-          ? encodeHistoryCursor({
+          ? encodeCreatedAtIdCursor({
               createdAt: lastRaw.raw_created_at,
               id: page[page.length - 1].id,
             })
@@ -572,6 +540,10 @@ export class LedgerService {
       manager,
     );
 
-    return { userId: wallet.userId!, netAmount: facts.netAmount };
+    return {
+      userId: wallet.userId!,
+      netAmount: facts.netAmount,
+      reference: transaction.reference,
+    };
   }
 }

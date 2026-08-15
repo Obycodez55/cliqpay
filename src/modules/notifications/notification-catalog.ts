@@ -1,4 +1,4 @@
-export type NotificationChannel = 'email' | 'sms' | 'push';
+export type NotificationChannel = 'email' | 'sms' | 'push' | 'in_app';
 
 // Delivered as a clickable link, not a typed code — the token is a long,
 // opaque value (see VerificationCode entity), so the payload carries the
@@ -37,6 +37,10 @@ export interface SecurityAlertPayload {
   userId: string;
   email: string;
   message: string;
+  // ISO-8601 event time, distinct from BullMQ job/dispatch time — the
+  // in-app channel's dedupe_key is derived from this (see templates.ts),
+  // since this payload carries no other stable event identifier.
+  occurredAt: string;
 }
 
 export interface FundingCompletedPayload {
@@ -44,6 +48,10 @@ export interface FundingCompletedPayload {
   email: string;
   amount: string;
   currency: string;
+  // The funding transaction's own reference — the in-app channel's
+  // dedupe_key (see templates.ts), since it's the one stable id a retried
+  // publish of the same real-world funding event will always share.
+  reference: string;
 }
 
 export interface ReconciliationMismatchPayload {
@@ -66,20 +74,36 @@ export interface NotificationPayloadMap {
   reconciliation_mismatch: ReconciliationMismatchPayload;
 }
 
+// The in-app channel writes a row addressed to a user (see
+// docs/adr/0013-in-app-notifications.md) — a type with no `userId` on its
+// payload (reconciliation_mismatch, addressed to ops) has nothing to
+// address a row to, so it can never route there. Enforced at compile time
+// below; the complementary "data never carries secrets" rule (no OTPs,
+// tokens, reset URLs, PINs) has no type-level signal to hang off and stays
+// a documented review obligation whenever a new type is added here.
+type AllowedChannels<K extends keyof NotificationPayloadMap> =
+  NotificationPayloadMap[K] extends { userId: string }
+    ? readonly NotificationChannel[]
+    : readonly Exclude<NotificationChannel, 'in_app'>[];
+
+export type NotificationCatalogShape = {
+  [K in keyof NotificationPayloadMap]: { channels: AllowedChannels<K> };
+};
+
 // Notification type -> channel(s). Dispatch mechanism (fire-and-forget vs
 // synchronous) is the caller's choice, not encoded here — email_verification_otp
-// is sent both ways depending on which endpoint triggers it.
+// is sent both ways depending on which endpoint triggers it. OTP/reset-link
+// types are never routed to in_app even though their payloads have a
+// userId — their content is the secret the no-secrets rule above exists to
+// keep out of a long-lived, listable row.
 export const NOTIFICATION_CATALOG = {
   email_verification_otp: { channels: ['email'] },
   phone_verification_otp: { channels: ['sms'] },
   password_reset_otp: { channels: ['email'] },
   mfa_challenge_otp: { channels: ['email'] },
-  security_alert: { channels: ['email', 'push'] },
-  funding_completed: { channels: ['email'] },
+  security_alert: { channels: ['email', 'push', 'in_app'] },
+  funding_completed: { channels: ['email', 'in_app'] },
   reconciliation_mismatch: { channels: ['email'] },
-} as const satisfies Record<
-  keyof NotificationPayloadMap,
-  { channels: readonly NotificationChannel[] }
->;
+} as const satisfies NotificationCatalogShape;
 
 export type NotificationType = keyof typeof NOTIFICATION_CATALOG;

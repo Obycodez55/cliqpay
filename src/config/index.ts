@@ -99,6 +99,14 @@ const envSchema = z
     PAYMENT_REDIRECT_URL: z.url().optional(),
 
     RECONCILIATION_ALERT_EMAIL: z.email(),
+
+    // In-app notification rows older than this are deleted regardless of
+    // read state — see docs/adr/0013-in-app-notifications.md.
+    NOTIFICATION_RETENTION_DAYS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(180),
   })
   .superRefine((env, ctx) => {
     // A provider's own credentials are only required when it's the one
@@ -205,6 +213,7 @@ function buildConfig(env: Env) {
         clientEmail: env.FIREBASE_CLIENT_EMAIL,
         privateKey: env.FIREBASE_PRIVATE_KEY,
       },
+      retentionDays: env.NOTIFICATION_RETENTION_DAYS,
     },
     payments: {
       provider: env.PAYMENT_PROVIDER,

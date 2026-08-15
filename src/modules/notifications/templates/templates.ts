@@ -26,6 +26,13 @@ export interface PushContent {
   data?: Record<string, string>;
 }
 
+export interface InAppContent {
+  title: string;
+  body: string;
+  data: Record<string, unknown>;
+  dedupeKey: string;
+}
+
 /**
  * Code-defined, version-controlled templates — not managed in Brevo's
  * dashboard — so copy changes go through normal code review and fake
@@ -80,5 +87,30 @@ export const pushTemplates: {
   security_alert: (payload: SecurityAlertPayload) => ({
     title: 'Security alert',
     body: payload.message,
+  }),
+};
+
+export const inAppTemplates: {
+  [K in keyof NotificationPayloadMap]?: (
+    payload: NotificationPayloadMap[K],
+  ) => InAppContent;
+} = {
+  funding_completed: (payload: FundingCompletedPayload) => ({
+    title: 'Wallet funded',
+    body: `Your wallet was funded with ${payload.currency} ${payload.amount}.`,
+    data: { amount: payload.amount, currency: payload.currency },
+    dedupeKey: payload.reference,
+  }),
+  security_alert: (payload: SecurityAlertPayload) => ({
+    title: 'Security alert',
+    body: payload.message,
+    data: { message: payload.message },
+    // No stable event id exists on this payload (unlike funding's
+    // transaction reference), so the dedupe_key is derived instead:
+    // occurredAt rounded to the minute, combined with the message text. A
+    // genuine retry of the same publish lands in the same 60s bucket with
+    // identical text; two distinct alerts for the same user essentially
+    // never share both.
+    dedupeKey: `${payload.occurredAt.slice(0, 16)}:${payload.message}`,
   }),
 };

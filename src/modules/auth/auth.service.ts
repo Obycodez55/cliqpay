@@ -447,14 +447,16 @@ export class AuthService {
     const event = await this.buildEmailVerificationEvent(userId, dto.newEmail);
     await this.eventBus.dispatchAndAwait(event);
 
+    const alertOccurredAt = new Date();
     await this.eventBus.publish<string, SecurityAlertEventPayload>({
       name: SECURITY_ALERT_EVENT,
       payload: {
         userId,
         email: user.email,
         message: `We received a request to change the email on your account to ${dto.newEmail}. If this wasn't you, please secure your account immediately.`,
+        occurredAt: alertOccurredAt.toISOString(),
       },
-      occurredAt: new Date(),
+      occurredAt: alertOccurredAt,
     });
   }
 
@@ -532,14 +534,16 @@ export class AuthService {
     const event = await this.buildPhoneVerificationEvent(userId, dto.newPhone);
     await this.eventBus.dispatchAndAwait(event);
 
+    const alertOccurredAt = new Date();
     await this.eventBus.publish<string, SecurityAlertEventPayload>({
       name: SECURITY_ALERT_EVENT,
       payload: {
         userId,
         email: user.email,
         message: `We received a request to change the phone number on your account to ${dto.newPhone}. If this wasn't you, please secure your account immediately.`,
+        occurredAt: alertOccurredAt.toISOString(),
       },
-      occurredAt: new Date(),
+      occurredAt: alertOccurredAt,
     });
   }
 
