@@ -40,6 +40,11 @@ import { FakeAdapter } from '../../../src/modules/payments/adapters/fake.adapter
 import { NotificationsModule } from '../../../src/modules/notifications/notifications.module';
 import { EMAIL_SENDER } from '../../../src/modules/notifications/channels/email/email-sender.interface';
 import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/email/fake-email.adapter';
+import { NotificationEventsProcessor } from '../../../src/modules/notifications/internal/notification-events.processor';
+import { OtpNotificationProcessor } from '../../../src/modules/notifications/internal/otp.processor';
+import { ChannelDispatchProcessor } from '../../../src/modules/notifications/internal/channel-dispatch.processor';
+import { FundingPollProcessor } from '../../../src/modules/payments/internal/funding-poll.processor';
+import { ReconciliationProcessor } from '../../../src/modules/payments/internal/reconciliation.processor';
 
 @Module({})
 class TestConfigModule {}
@@ -205,9 +210,42 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
   };
 }
 
+// This context bootstraps PaymentsModule + NotificationsModule together,
+// which between them register 5 BullMQ queues/workers -- the only test
+// context in this suite that does. Plain app.close() relies on
+// @nestjs/bullmq's own shutdown hook, which closes every worker
+// *gracefully* (BullExplorer.onApplicationShutdown -> worker.close()).
+// Under Jest's default (non-`--runInBand`) child-process execution, one of
+// those graceful closes reliably never resolves once there are 5 of them in
+// play, hanging app.close() -- and with it the whole test process --
+// indefinitely. It doesn't reproduce under --runInBand or in the real app,
+// only in this specific multi-process-worker + 5-queue combination.
+// Force-closing every WorkerHost's underlying worker first (force: true
+// skips waiting on in-flight jobs, which is fine here -- nothing is
+// mid-delivery between test cases) sidesteps it entirely; the subsequent
+// app.close() then has nothing left to gracefully wait on.
+async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
+  const hosts = [
+    NotificationEventsProcessor,
+    OtpNotificationProcessor,
+    ChannelDispatchProcessor,
+    FundingPollProcessor,
+    ReconciliationProcessor,
+  ];
+  await Promise.all(
+    hosts.map(async (hostClass) => {
+      const host = app.get(hostClass, { strict: false });
+      await host?.worker?.close(true);
+    }),
+  );
+}
+
 export async function destroyPaymentsTestContext(
   ctx: Partial<PaymentsTestContext>,
 ): Promise<void> {
+  if (ctx.app) {
+    await forceCloseWorkers(ctx.app);
+  }
   await ctx.app?.close();
   await ctx.postgres?.stop();
   await ctx.redis?.stop();

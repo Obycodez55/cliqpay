@@ -48,6 +48,14 @@ export class NotificationService {
     );
   }
 
+  async sendToChannel<T extends NotificationType>(
+    channel: NotificationChannel,
+    type: T,
+    payload: NotificationPayloadMap[T],
+  ): Promise<void> {
+    await this.dispatchToChannel(channel, type, payload);
+  }
+
   private dispatchToChannel(
     channel: NotificationChannel,
     type: NotificationType,

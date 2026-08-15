@@ -11,6 +11,8 @@ import { PushToken } from './entities/push-token.entity';
 import { NotificationService } from './notification.service';
 import { NotificationEventsProcessor } from './internal/notification-events.processor';
 import { OtpNotificationProcessor } from './internal/otp.processor';
+import { ChannelDispatchProcessor } from './internal/channel-dispatch.processor';
+import { CHANNEL_DISPATCH_QUEUE } from './internal/channel-dispatch.queue';
 import {
   EMAIL_SENDER,
   EmailSender,
@@ -66,11 +68,25 @@ const PUSH_ADAPTERS = {
     TypeOrmModule.forFeature([PushToken]),
     BullModule.registerQueue({ name: DOMAIN_EVENTS_QUEUE }),
     BullModule.registerQueue({ name: PRIORITY_DISPATCH_QUEUE }),
+    // Internal to this module — no other module publishes or consumes it,
+    // unlike the two queues above. Same attempts/backoff/removal shape as
+    // DOMAIN_EVENTS_QUEUE; each job here delivers exactly one channel, so
+    // its retry budget never spills over into another channel's delivery.
+    BullModule.registerQueue({
+      name: CHANNEL_DISPATCH_QUEUE,
+      defaultJobOptions: {
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 1000 },
+        removeOnComplete: { age: 3_600, count: 1_000 },
+        removeOnFail: { age: 86_400, count: 5_000 },
+      },
+    }),
   ],
   providers: [
     NotificationService,
     NotificationEventsProcessor,
     OtpNotificationProcessor,
+    ChannelDispatchProcessor,
     {
       provide: EMAIL_SENDER,
       inject: [APP_CONFIG],

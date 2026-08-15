@@ -1,4 +1,5 @@
 import { Repository } from 'typeorm';
+import { UnrecoverableError } from 'bullmq';
 import { NotificationService } from '../notification.service';
 import { FakeEmailAdapter } from '../channels/email/fake-email.adapter';
 import { FakeSmsAdapter } from '../channels/sms/fake-sms.adapter';
@@ -103,6 +104,27 @@ describe('NotificationService', () => {
         message: 'x',
       }),
     ).rejects.toThrow();
+  });
+
+  it('sendToChannel delivers to exactly the requested channel, not the others', async () => {
+    await service.sendToChannel('email', 'security_alert', {
+      userId: 'u1',
+      email: 'a@example.com',
+      message: 'New device login',
+    });
+    expect(emailAdapter.sent).toHaveLength(1);
+    expect(pushAdapter.sent).toHaveLength(0);
+  });
+
+  it('sendToChannel throws UnrecoverableError for a channel with no template, without retrying', async () => {
+    await expect(
+      service.sendToChannel('push', 'funding_completed', {
+        userId: 'u1',
+        email: 'a@example.com',
+        amount: '5000.00',
+        currency: 'NGN',
+      }),
+    ).rejects.toBeInstanceOf(UnrecoverableError);
   });
 
   it('upserts on push token registration, keyed on token', async () => {
