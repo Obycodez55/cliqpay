@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   UnauthorizedException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { LedgerService } from '../ledger/ledger.service';
@@ -27,7 +28,11 @@ import {
 } from './adapters/payment-provider.interface';
 import { isUniqueViolation } from './internal/errors';
 import { extractTopLevelJsonField } from './internal/raw-json';
-import { PostFundingFacts, PostFundingResult } from '../ledger/ledger.service';
+import {
+  IdempotentReplay,
+  PostFundingFacts,
+  PostFundingResult,
+} from '../ledger/ledger.service';
 import {
   ACTIVE_RECONCILIATION_PAIRS,
   ActiveReconciliationPair,
@@ -107,18 +112,26 @@ export class PaymentsService {
     userId: string,
     dto: FundWalletDto,
   ): Promise<FundWalletResponseDto> {
-    const existing = await this.ledgerService.findTransactionByReference(
+    const amount = Money.of(dto.amount, NGN);
+    // Funding has no counterparty (it always credits the caller's own
+    // wallet) — amount/currency are the only fields that define the
+    // operation here, per ADR-0010.
+    const fingerprint = { amount: amount.amount, currency: amount.currency };
+
+    const replay = await this.ledgerService.checkIdempotentReplay(
       dto.reference,
+      userId,
+      fingerprint,
     );
-    if (existing) {
-      return toFundWalletResponse(existing);
+    const replayResponse = resolveFundingReplay(replay);
+    if (replayResponse) {
+      return replayResponse;
     }
 
     const [user, wallet] = await Promise.all([
       this.usersService.findById(userId),
       this.ledgerService.getUserWallet(userId),
     ]);
-    const amount = Money.of(dto.amount, NGN);
 
     try {
       await this.ledgerService.createPendingFundingTransaction({
@@ -131,11 +144,14 @@ export class PaymentsService {
       });
     } catch (error) {
       if (isUniqueViolation(error, 'UQ_transactions_reference')) {
-        const raced = await this.ledgerService.findTransactionByReference(
+        const raced = await this.ledgerService.checkIdempotentReplay(
           dto.reference,
+          userId,
+          fingerprint,
         );
-        if (raced) {
-          return toFundWalletResponse(raced);
+        const racedResponse = resolveFundingReplay(raced);
+        if (racedResponse) {
+          return racedResponse;
         }
       }
       throw error;
@@ -383,6 +399,29 @@ export class PaymentsService {
         `publishFundingCompletedEvent: funding posted successfully for user "${result.userId}", but publishing the completion notification failed (${(error as Error).message}) — this will not be retried`,
       );
     }
+  }
+}
+
+// A reference belonging to another user must 409 with nothing about the
+// other transaction attached (ADR-0010, defect 1) — the message here never
+// touches `replay.transaction`. Returns null on 'none' so the caller falls
+// through to actually creating the transaction.
+function resolveFundingReplay(
+  replay: IdempotentReplay,
+): FundWalletResponseDto | null {
+  switch (replay.outcome) {
+    case 'match':
+      return toFundWalletResponse(replay.transaction);
+    case 'foreign':
+      throw new ConflictException(
+        'This reference has already been used for a different funding request.',
+      );
+    case 'diverged':
+      throw new UnprocessableEntityException(
+        'This reference was already used to fund with different parameters — use a new reference.',
+      );
+    case 'none':
+      return null;
   }
 }
 

@@ -42,9 +42,7 @@ function webhookBody(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe('PaymentsService.handleFundingWebhook', () => {
-  let ledgerService: jest.Mocked<
-    Pick<LedgerService, 'postFunding' | 'findTransactionByReference'>
-  >;
+  let ledgerService: jest.Mocked<Pick<LedgerService, 'postFunding'>>;
   let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let adapter: jest.Mocked<PaymentProviderAdapter>;
@@ -58,7 +56,6 @@ describe('PaymentsService.handleFundingWebhook', () => {
   beforeEach(() => {
     ledgerService = {
       postFunding: jest.fn(),
-      findTransactionByReference: jest.fn(),
     };
     usersService = { findById: jest.fn() };
     eventBus = { publish: jest.fn() };

@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { Brackets, DataSource, EntityManager, LessThan } from 'typeorm';
+import { Brackets, DataSource, EntityManager, In, LessThan } from 'typeorm';
 import { runInTransaction } from '../../database/transaction.util';
 import { Money } from '../../shared/primitives/money';
 import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
@@ -54,6 +54,22 @@ export interface TransactionHistoryPagination {
   cursor?: string;
   limit: number;
 }
+
+// Only the fields that define the operation (ADR-0010) — never headers,
+// timestamps, or display-only fields, or a legitimate retry would spuriously
+// diverge. `counterpartyWalletId` is omitted by callers that have no
+// counterparty concept (funding always credits the caller's own wallet).
+export interface TransactionFingerprint {
+  amount: bigint;
+  currency: string;
+  counterpartyWalletId?: string;
+}
+
+export type IdempotentReplay =
+  | { outcome: 'none' }
+  | { outcome: 'match'; transaction: Transaction }
+  | { outcome: 'foreign' }
+  | { outcome: 'diverged' };
 
 // Opaque to the client per docs/conventions.md — encodes the last returned
 // row's (createdAt, id) tie-break key, nothing else.
@@ -135,15 +151,60 @@ export class LedgerService {
       .findOneByOrFail({ userId, role: 'user_wallet' });
   }
 
-  // Idempotency lookup for client-initiated money movements (§3.4) — a
-  // repeat call carrying a `reference` already seen returns the existing
-  // row's result instead of creating a second one.
-  async findTransactionByReference(
+  // Idempotency lookup for client-initiated money movements (§3.4, ADR-0010)
+  // — shared by every such endpoint (funding today, transfers next) so the
+  // cross-user and fingerprint rules are decided once. A reference that
+  // exists but belongs to someone else must never replay or leak anything
+  // about the other transaction (defect 1) — 'foreign' stops that at the
+  // lookup, before the caller can build a response from it. A reference
+  // reused with different meaningful parameters must not silently replay
+  // the old result under a new request (defect 2) — 'diverged' stops that.
+  async checkIdempotentReplay(
     reference: string,
-  ): Promise<Transaction | null> {
-    return this.dataSource.getRepository(Transaction).findOneBy({
-      reference,
-    });
+    callerId: string,
+    fingerprint: TransactionFingerprint,
+  ): Promise<IdempotentReplay> {
+    const transaction = await this.dataSource
+      .getRepository(Transaction)
+      .findOneBy({ reference });
+    if (!transaction) {
+      return { outcome: 'none' };
+    }
+
+    if (!(await this.transactionBelongsToUser(transaction, callerId))) {
+      return { outcome: 'foreign' };
+    }
+
+    const fingerprintMatches =
+      transaction.amount === fingerprint.amount &&
+      transaction.currency === fingerprint.currency &&
+      (fingerprint.counterpartyWalletId === undefined ||
+        transaction.recipientWalletId === fingerprint.counterpartyWalletId);
+
+    return fingerprintMatches
+      ? { outcome: 'match', transaction }
+      : { outcome: 'diverged' };
+  }
+
+  // `transactions` has no user_id column (ADR-0010 rejected adding one) —
+  // participants live only in the denormalized sender/recipient wallet
+  // columns, so ownership resolves by checking whether either wallet on the
+  // row is one of the caller's own accounts.
+  private async transactionBelongsToUser(
+    transaction: Transaction,
+    userId: string,
+  ): Promise<boolean> {
+    const walletIds = [
+      transaction.senderWalletId,
+      transaction.recipientWalletId,
+    ].filter((id): id is string => id !== null);
+    if (walletIds.length === 0) {
+      return false;
+    }
+    const count = await this.dataSource
+      .getRepository(Account)
+      .count({ where: { id: In(walletIds), userId } });
+    return count > 0;
   }
 
   // `type`/`status` are fixed to 'funding'/'pending' — this is the only
