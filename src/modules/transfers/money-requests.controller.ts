@@ -25,6 +25,7 @@ import { CursorPaginationQueryDto } from '../../common/dto/cursor-pagination-que
 import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
 import { MoneyRequestsService } from './money-requests.service';
 import { CreateMoneyRequestDto } from './dto/create-money-request.dto';
+import { PayMoneyRequestDto } from './dto/pay-money-request.dto';
 import { MoneyRequestResponseDto } from './dto/money-request-response.dto';
 
 @ApiTags('Money requests')
@@ -110,5 +111,15 @@ export class MoneyRequestsController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<MoneyRequestResponseDto> {
     return this.moneyRequestsService.declineRequest(req.user.userId, id);
+  }
+
+  @Post(':id/pay')
+  @ApiOperation({ summary: 'Pay a money request you received' })
+  async pay(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: PayMoneyRequestDto,
+  ): Promise<MoneyRequestResponseDto> {
+    return this.moneyRequestsService.payRequest(req.user.userId, id, dto);
   }
 }

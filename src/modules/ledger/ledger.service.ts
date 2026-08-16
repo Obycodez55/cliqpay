@@ -611,6 +611,21 @@ export class LedgerService {
     );
   }
 
+  /**
+   * Public sibling of postTransfer for a caller that already has its own
+   * open transaction and needs the posting to be part of it — paying a
+   * money request must post the transfer and flip the request row to
+   * `paid` atomically, so MoneyRequestsService.payRequest opens the one
+   * transaction and calls this instead of postTransfer (same pattern as
+   * mergeTransactionMetadata's manager-accepting form).
+   */
+  async postTransferWithinTransaction(
+    manager: EntityManager,
+    params: PostTransferParams,
+  ): Promise<PostTransferResult> {
+    return this.postTransferEntries(manager, params);
+  }
+
   // Deliberately not sharing postFundingEntries' lock query — that one locks
   // a fixed set of provider-scoped system accounts alongside one wallet;
   // this locks two user wallets and, only when the fee is non-zero, one

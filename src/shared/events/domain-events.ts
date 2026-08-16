@@ -119,6 +119,18 @@ export interface MoneyRequestDeclinedEventPayload {
   moneyRequestId: string;
 }
 
+export const MONEY_REQUEST_PAID_EVENT = 'money_request_paid';
+
+export interface MoneyRequestPaidEventPayload {
+  userId: string; // the requester, notified their request was paid
+  email: string;
+  counterpartyUsername: string; // payer's username
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  note: string | null;
+  moneyRequestId: string;
+}
+
 export const RECONCILIATION_MISMATCH_EVENT = 'reconciliation_mismatch';
 
 export interface ReconciliationMismatchEventPayload {

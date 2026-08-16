@@ -4,6 +4,7 @@ import {
   MfaChallengeOtpPayload,
   MoneyRequestCreatedPayload,
   MoneyRequestDeclinedPayload,
+  MoneyRequestPaidPayload,
   NotificationPayloadMap,
   PasswordResetOtpPayload,
   PhoneVerificationOtpPayload,
@@ -83,6 +84,10 @@ export const emailTemplates: {
     subject: `Your money request was declined`,
     ...renderEmail('money_request_declined', payload),
   }),
+  money_request_paid: (payload: MoneyRequestPaidPayload) => ({
+    subject: `${payload.counterpartyUsername} paid your money request`,
+    ...renderEmail('money_request_paid', payload),
+  }),
   reconciliation_mismatch: (payload: ReconciliationMismatchPayload) => ({
     subject: `Reconciliation mismatch: ${payload.provider}/${payload.currency}`,
     ...renderEmail('reconciliation_mismatch', payload),
@@ -123,6 +128,10 @@ export const pushTemplates: {
   money_request_declined: (payload: MoneyRequestDeclinedPayload) => ({
     title: 'Request declined',
     body: `${payload.counterpartyUsername} declined your request for ${payload.currency} ${payload.amount}.`,
+  }),
+  money_request_paid: (payload: MoneyRequestPaidPayload) => ({
+    title: 'Request paid',
+    body: `${payload.counterpartyUsername} paid you ${payload.currency} ${payload.amount}.`,
   }),
 };
 
@@ -171,6 +180,17 @@ export const inAppTemplates: {
   money_request_declined: (payload: MoneyRequestDeclinedPayload) => ({
     title: 'Request declined',
     body: `${payload.counterpartyUsername} declined your request for ${payload.currency} ${payload.amount}.`,
+    data: {
+      amount: payload.amount,
+      currency: payload.currency,
+      counterpartyUsername: payload.counterpartyUsername,
+      moneyRequestId: payload.moneyRequestId,
+    },
+    dedupeKey: payload.moneyRequestId,
+  }),
+  money_request_paid: (payload: MoneyRequestPaidPayload) => ({
+    title: 'Request paid',
+    body: `${payload.counterpartyUsername} paid you ${payload.currency} ${payload.amount}.`,
     data: {
       amount: payload.amount,
       currency: payload.currency,

@@ -117,6 +117,22 @@ export class MoneyRequestNotFoundException extends DomainException {
   }
 }
 
+// Covers expired, cancelled, declined, and already-paid (via a different
+// reference than the one on this attempt — a genuine idempotent replay of
+// the *same* reference never reaches this check, see
+// MoneyRequestsService.payRequest) uniformly — one message, not four, since
+// none of them are a client-actionable distinction beyond "this request
+// can't be paid anymore."
+export class MoneyRequestNotPayableException extends DomainException {
+  readonly code = 'MONEY_REQUEST_NOT_PAYABLE';
+  constructor() {
+    super(
+      'This money request is no longer payable',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
 // `transfers` (core) can't reuse another module's copy of this — see
 // payments/internal/errors.ts's own comment on the same convention. Used
 // when two concurrent sendMoney() calls for the same `reference` both miss

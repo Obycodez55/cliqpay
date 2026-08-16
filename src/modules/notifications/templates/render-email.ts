@@ -24,6 +24,7 @@ const bodies = {
   transfer_received: compile('transfer-received.hbs'),
   money_request_created: compile('money-request-created.hbs'),
   money_request_declined: compile('money-request-declined.hbs'),
+  money_request_paid: compile('money-request-paid.hbs'),
   reconciliation_mismatch: compile('reconciliation-mismatch.hbs'),
 };
 

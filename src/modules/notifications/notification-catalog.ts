@@ -93,6 +93,16 @@ export interface MoneyRequestDeclinedPayload {
   moneyRequestId: string;
 }
 
+export interface MoneyRequestPaidPayload {
+  userId: string;
+  email: string;
+  counterpartyUsername: string;
+  amount: string;
+  currency: string;
+  note: string | null;
+  moneyRequestId: string;
+}
+
 export interface ReconciliationMismatchPayload {
   email: string;
   provider: string;
@@ -114,6 +124,7 @@ export interface NotificationPayloadMap {
   transfer_received: TransferReceivedPayload;
   money_request_created: MoneyRequestCreatedPayload;
   money_request_declined: MoneyRequestDeclinedPayload;
+  money_request_paid: MoneyRequestPaidPayload;
   reconciliation_mismatch: ReconciliationMismatchPayload;
 }
 
@@ -152,6 +163,7 @@ export const NOTIFICATION_CATALOG = {
   // create and decline notify.
   money_request_created: { channels: ['email', 'push', 'in_app'] },
   money_request_declined: { channels: ['email', 'push', 'in_app'] },
+  money_request_paid: { channels: ['email', 'push', 'in_app'] },
   reconciliation_mismatch: { channels: ['email'] },
 } as const satisfies NotificationCatalogShape;
 

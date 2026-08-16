@@ -1,6 +1,6 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, WhereExpressionBuilder } from 'typeorm';
+import { ConflictException, Inject, Injectable, Logger } from '@nestjs/common';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource, Repository, WhereExpressionBuilder } from 'typeorm';
 import { EntityNotFoundError } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { UsersService } from '../users/users.service';
@@ -8,8 +8,10 @@ import { EventBusService } from '../../shared/events/event-bus.service';
 import {
   MONEY_REQUEST_CREATED_EVENT,
   MONEY_REQUEST_DECLINED_EVENT,
+  MONEY_REQUEST_PAID_EVENT,
   MoneyRequestCreatedEventPayload,
   MoneyRequestDeclinedEventPayload,
+  MoneyRequestPaidEventPayload,
 } from '../../shared/events/domain-events';
 import { Money } from '../../shared/primitives/money';
 import { toIdentitySummary } from '../../common/dto/identity-summary.dto';
@@ -18,16 +20,20 @@ import {
   decodeCreatedAtIdCursor,
   encodeCreatedAtIdCursor,
 } from '../../common/pagination/cursor';
+import { runInTransaction } from '../../database/transaction.util';
 import { MoneyRequest } from './entities/money-request.entity';
 import { CreateMoneyRequestDto } from './dto/create-money-request.dto';
+import { PayMoneyRequestDto } from './dto/pay-money-request.dto';
 import {
   MoneyRequestResponseDto,
   toMoneyRequestResponse,
 } from './dto/money-request-response.dto';
+import { TransfersService } from './transfers.service';
 import {
   MoneyRequestAmountTooLargeException,
   MoneyRequestAmountTooSmallException,
   MoneyRequestNotFoundException,
+  MoneyRequestNotPayableException,
   MoneyRequestPairCapExceededException,
   PayerNotFoundException,
   SelfMoneyRequestException,
@@ -61,6 +67,15 @@ function applyEffectivelyPending<T extends WhereExpressionBuilder>(
     .andWhere(`${alias}.expiresAt > :now`, { now });
 }
 
+// Same predicate as applyEffectivelyPending above, evaluated against an
+// already-fetched row rather than as a SQL WHERE clause — payRequest below
+// needs the row regardless of its status (a paid row must still be
+// fetchable, to detect an idempotent replay), so it can't filter for
+// "pending" in the query itself the way cancel/decline do.
+function isEffectivelyPending(moneyRequest: MoneyRequest, now: Date): boolean {
+  return moneyRequest.status === 'pending' && moneyRequest.expiresAt > now;
+}
+
 /**
  * A peer to TransfersService within the same module, not a standalone
  * module — money requests are a genuinely distinct responsibility (own
@@ -78,12 +93,22 @@ export class MoneyRequestsService {
   private readonly logger = new Logger(MoneyRequestsService.name);
 
   constructor(
-    @InjectRepository(MoneyRequest)
-    private readonly moneyRequests: Repository<MoneyRequest>,
+    // @InjectDataSource, not @InjectRepository — payRequest below runs a
+    // multi-step atomic write (lock the request row, post the transfer,
+    // flip status, all in one DB transaction), so this service needs
+    // transaction-scoped repository access the same way ledger.service.ts
+    // and auth's transacting services do (CLAUDE.md's repository-access
+    // rule).
+    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly usersService: UsersService,
+    private readonly transfersService: TransfersService,
     private readonly eventBus: EventBusService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
+
+  private get moneyRequests(): Repository<MoneyRequest> {
+    return this.dataSource.getRepository(MoneyRequest);
+  }
 
   async createRequest(
     requesterId: string,
@@ -236,6 +261,110 @@ export class MoneyRequestsService {
     return toMoneyRequestResponse(moneyRequest, toIdentitySummary(payer), now);
   }
 
+  // Paying a request is a P2P transfer with a moneyRequestId attached
+  // (ADR-0012) — the request moving to `paid` and the transfer posting must
+  // never disagree, so both writes happen inside the one transaction opened
+  // here, via TransfersService.finalizeTransfer's manager-accepting form.
+  //
+  // The request row is locked (`pessimistic_write`) before any payability
+  // decision is made, and the idempotency replay check runs before the
+  // pending/expiry gate — a reference-based replay check alone doesn't stop
+  // two concurrent pay attempts that use two *different* references, since
+  // ADR-0010's idempotency is scoped per reference, not per request. The
+  // lock is what makes that race safe: a second concurrent attempt blocks
+  // here until the first commits, then observes `status = 'paid'` and is
+  // rejected by the pending/expiry gate below — never a second successful
+  // post. Checking for a replay ahead of that gate is what lets a genuine
+  // retry of an already-paid request still return the original result
+  // instead of "not payable".
+  async payRequest(
+    payerId: string,
+    id: string,
+    dto: PayMoneyRequestDto,
+  ): Promise<MoneyRequestResponseDto> {
+    const outcome = await runInTransaction(this.dataSource, async (manager) => {
+      const moneyRequest = await manager
+        .getRepository(MoneyRequest)
+        .createQueryBuilder('moneyRequest')
+        .where('moneyRequest.id = :id', { id })
+        .andWhere('moneyRequest.payerUserId = :payerId', { payerId })
+        .setLock('pessimistic_write')
+        .getOne();
+      if (!moneyRequest) {
+        throw new MoneyRequestNotFoundException();
+      }
+
+      const prepared = await this.transfersService.prepareTransfer(
+        payerId,
+        moneyRequest.requesterUserId,
+        Number(moneyRequest.amount),
+      );
+
+      const replayResult = await this.transfersService.checkTransferReplay(
+        payerId,
+        prepared,
+        dto.reference,
+      );
+      if (replayResult) {
+        // checkTransferReplay's fingerprint (amount/currency/counterparty)
+        // can't tell "paying request A" apart from "paying request B" when
+        // both happen to be for the same amount to the same requester — it
+        // only proves *some* prior transfer matches this reference, not
+        // that it was this specific request's payment. Compare against
+        // this row's own transactionId to be sure: if it doesn't match,
+        // the reference collides with something unrelated to this request
+        // (another request, or a plain transfer) and must not be treated
+        // as if this request were paid.
+        if (moneyRequest.transactionId === replayResult.transactionId) {
+          return {
+            moneyRequest,
+            result: replayResult,
+            replayed: true,
+            sender: prepared.sender,
+          };
+        }
+        throw new ConflictException(
+          'This reference has already been used for a different transfer.',
+        );
+      }
+
+      if (!isEffectivelyPending(moneyRequest, new Date())) {
+        throw new MoneyRequestNotPayableException();
+      }
+
+      const result = await this.transfersService.finalizeTransfer(
+        payerId,
+        prepared,
+        dto.reference,
+        dto.pin,
+        manager,
+      );
+
+      moneyRequest.status = 'paid';
+      moneyRequest.transactionId = result.transactionId;
+      await manager.getRepository(MoneyRequest).save(moneyRequest);
+
+      return { moneyRequest, result, replayed: false, sender: prepared.sender };
+    });
+
+    const requester = await this.usersService.findById(
+      outcome.moneyRequest.requesterUserId,
+    );
+    if (!outcome.replayed) {
+      await this.publishPaidEvent(
+        outcome.moneyRequest,
+        requester,
+        outcome.sender,
+      );
+    }
+
+    return toMoneyRequestResponse(
+      outcome.moneyRequest,
+      toIdentitySummary(requester),
+      new Date(),
+    );
+  }
+
   private async countEffectivelyPending(
     requesterId: string,
     payerId: string,
@@ -372,6 +501,43 @@ export class MoneyRequestsService {
     } catch (error) {
       this.logger.error(
         `publishDeclinedEvent: money request "${moneyRequest.id}" declined successfully, but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
+  }
+
+  // A distinct notification type rather than reusing transfer_received —
+  // the requester should connect this payment to *their specific request*
+  // (amount, note) rather than receiving an undifferentiated "someone sent
+  // you money", same as money_request_created/declined carry their own
+  // context instead of a generic transfer notification. Only the requester
+  // is notified here, matching #25's acceptance criteria; the payer gets no
+  // separate transfer_sent, since this is the flow they themselves just
+  // completed.
+  private async publishPaidEvent(
+    moneyRequest: MoneyRequest,
+    requester: CounterpartyUser,
+    payer: CounterpartyUser,
+  ): Promise<void> {
+    try {
+      await this.eventBus.publish<string, MoneyRequestPaidEventPayload>({
+        name: MONEY_REQUEST_PAID_EVENT,
+        payload: {
+          userId: requester.id,
+          email: requester.email,
+          counterpartyUsername: payer.username,
+          amount: Money.of(
+            moneyRequest.amount,
+            moneyRequest.currency,
+          ).toDecimalString(),
+          currency: moneyRequest.currency,
+          note: moneyRequest.note,
+          moneyRequestId: moneyRequest.id,
+        },
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `publishPaidEvent: money request "${moneyRequest.id}" paid successfully, but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
       );
     }
   }
