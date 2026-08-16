@@ -1,6 +1,8 @@
-# Cliqpay — Project Documentation (v9)
+# Cliqpay — Project Documentation (v10)
 
 > Cliqpay is a production-grade peer-to-peer payment platform. A Venmo-equivalent for Africa — built on NestJS, PostgreSQL, TypeORM, currently integrated with Kora.
+
+> **v10 changes:** Phase 4 design pass — a new `withdrawals` module owning `bank_accounts` and payout orchestration, since neither `payments` (owns no tables) nor `ledger` (zero peer-dependency) nor `transfers` (user-to-user only, per ADR-0011) can take it (ADR-0014); bank-account save requires provider-resolved account names and step-up MFA; debit-first posting with a single compensating-transaction failure path covering both synchronous provider rejection and async webhook failure; withdrawal bounds and PIN/idempotency rules mirror Phase 3's transfer pattern; platform fee launches at ₦0 but — unlike transfers — all 5 ledger legs always post regardless, since `provider_fee` is real settled money. Also: `bank_accounts` (§5).
 
 > **v9 changes:** Phase 3 design pass — the transaction PIN's format, storage and lockout (ADR-0009); idempotency scoped to the sender and matched by request fingerprint, fixing two defects in the shipped funding flow (ADR-0010); a `transfers` module so `ledger` keeps its zero peer-dependency property (ADR-0011); the money-request state machine, with expiry derived rather than swept (ADR-0012); in-app notifications as a persisted fourth channel, plus per-channel dispatch fixing a live cross-channel retry bug (ADR-0013). Also: the zero-fee posting shape and the `fee_income` contention it hides (§4.2), `money_requests` / `notifications` / the new `credentials` columns (§5), concurrency criteria made gating rather than follow-up (§6 Phase 3), and two follow-on items recorded against Phase 7. *(The v8 tags already in the body are Phase 2's audit hardening — webhook amount cross-checking, the production guard on `fake` adapters, and the DB-level append-only trigger on `ledger_entries` — which landed without a header entry.)*
 
@@ -377,6 +379,19 @@ notifications
   read_at           timestamptz nullable
   created_at        timestamptz
 
+-- [v10] Phase 4 — owned by `withdrawals` (see ADR-0014)
+bank_accounts
+  id                uuid PK
+  user_id           uuid                -- cross-module reference, no FK
+  provider          varchar             -- same CHECK-constraint pattern as accounts.provider
+  bank_code         varchar             -- provider's bank code
+  bank_name         varchar             -- provider-returned, human-facing
+  account_number    varchar
+  account_name      varchar             -- provider-resolved at save time; never client-supplied
+  created_at        timestamptz
+
+  -- unique (user_id, provider, bank_code, account_number)
+
 ```
 
 > **[v9] Note on** `money_requests.status`**:** there is deliberately no
@@ -492,7 +507,13 @@ Each phase exits with a working, production-quality slice of the system. No phas
 
 **Goal:** A user can withdraw their balance to a bank account.
 
-- Save bank account (Kora bank account verification, via `KoraAdapter`)
+- **[v10]** A new `withdrawals` module owns `bank_accounts` and withdrawal orchestration (PIN check, idempotency, save/resolve, initiate, webhook, history) — neither `payments` (owns no tables, per ADR-0008) nor `ledger` (would compromise its zero peer-dependency property) can take it, and it is explicitly not folded into `transfers` (per ADR-0011). See [ADR-0014](adr/0014-withdrawals-module-boundary.md)
+- **[v10]** Save bank account — client submits `bankCode` + `accountNumber` only; `KoraAdapter.resolveBankAccount()` returns the provider-confirmed `accountName`, which is what gets stored (never a client-supplied name). Resolution failure means nothing is persisted. Requires step-up MFA, same mechanism as email change (ADR-0006) — the cheapest control against account-takeover-then-cashout available before Phase 11's cooling-off window exists
+- **[v10]** A user may save multiple bank accounts; no "default" flag — withdrawal requests specify `bankAccountId` explicitly
+- **[v10]** Transaction PIN required on every withdrawal initiation, same as every other money-moving request (ADR-0009); client-supplied idempotency key required, scoped to the sender (ADR-0010's pattern, not its funding-webhook dedupe)
+- **[v10]** Eligibility and bounds mirror Phase 3's transfer bounds: NGN only, minimum ₦100, configurable maximum as an interim ceiling until Phase 6 tier limits replace it
+- **[v10]** Platform fee is flat, config-driven, launching at ₦0 like the transfer fee — but unlike a zero-fee transfer, all 5 ledger legs in §4.2's Withdrawal posting always post regardless of the platform fee's value, since `provider_fee` is real settled money either way and isn't conditionally omittable the way `fee_income` is
+- **[v10]** Posting is debit-first: `ledger.postWithdrawal()` posts the full balanced entry set and commits *before* `payments` calls `KoraAdapter.initiatePayout()`. Every failure path — a synchronous provider rejection or an async webhook failure — reverses through the same compensating transaction (§7); there is no separate no-op path for synchronous rejection
 - Initiate withdrawal via `KoraAdapter.initiatePayout()`
 - Webhook for payout success/failure
 - Ledger entries for withdrawal, including expense/recovery pair
