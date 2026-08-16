@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager } from 'typeorm';
+import { DataSource, EntityManager, In } from 'typeorm';
 import { User } from './entities/user.entity';
 import {
   NoPendingEmailChangeException,
@@ -90,6 +90,16 @@ export class UsersService {
 
   async findById(userId: string): Promise<User> {
     return this.dataSource.getRepository(User).findOneByOrFail({ id: userId });
+  }
+
+  // Batch counterpart to findById — feeds transaction-history counterparty
+  // resolution (issue #23), where a page of rows can name several distinct
+  // users and resolving them one at a time would be an N+1.
+  async findByIds(userIds: string[]): Promise<User[]> {
+    if (userIds.length === 0) {
+      return [];
+    }
+    return this.dataSource.getRepository(User).findBy({ id: In(userIds) });
   }
 
   async markEmailVerified(userId: string): Promise<void> {

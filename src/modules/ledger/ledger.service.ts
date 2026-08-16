@@ -9,8 +9,8 @@ import {
   encodeCreatedAtIdCursor,
 } from '../../common/pagination/cursor';
 import {
-  TransactionHistoryItemDto,
-  toTransactionHistoryItem,
+  TransactionHistoryEntry,
+  toTransactionHistoryEntry,
 } from './dto/transaction-history-item.dto';
 import { Account } from './entities/account.entity';
 import { LedgerEntry } from './entities/ledger-entry.entity';
@@ -310,7 +310,7 @@ export class LedgerService {
   async getTransactionHistory(
     walletId: string,
     pagination: TransactionHistoryPagination,
-  ): Promise<PaginatedResult<TransactionHistoryItemDto>> {
+  ): Promise<PaginatedResult<TransactionHistoryEntry>> {
     const cursor = pagination.cursor
       ? decodeCreatedAtIdCursor(pagination.cursor)
       : null;
@@ -347,8 +347,36 @@ export class LedgerService {
     const page = hasMore ? entities.slice(0, pagination.limit) : entities;
     const lastRaw = hasMore ? raw[pagination.limit - 1] : raw[raw.length - 1];
 
+    const counterpartyWalletIds = [
+      ...new Set(
+        page
+          .filter((entry) => entry.transaction.type === 'p2p_transfer')
+          .map((entry) =>
+            entry.transaction.senderWalletId === walletId
+              ? entry.transaction.recipientWalletId
+              : entry.transaction.senderWalletId,
+          )
+          .filter((id): id is string => id !== null),
+      ),
+    ];
+    const counterpartyAccounts = counterpartyWalletIds.length
+      ? await this.dataSource.getRepository(Account).find({
+          where: { id: In(counterpartyWalletIds) },
+          select: { id: true, userId: true },
+        })
+      : [];
+    const counterpartyUserIdByWalletId = new Map(
+      counterpartyAccounts.map((account) => [account.id, account.userId]),
+    );
+
     return {
-      items: page.map(toTransactionHistoryItem),
+      items: page.map((entry) =>
+        toTransactionHistoryEntry(
+          entry,
+          walletId,
+          counterpartyUserIdByWalletId,
+        ),
+      ),
       nextCursor:
         hasMore && lastRaw
           ? encodeCreatedAtIdCursor({
