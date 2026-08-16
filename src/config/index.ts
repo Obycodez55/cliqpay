@@ -120,6 +120,18 @@ const envSchema = z
       .int()
       .positive()
       .default(100_000_000),
+
+    // Money requests (ADR-0012) — expiry is derived at read time, never
+    // swept, so this only controls what gets stamped on `expires_at` at
+    // creation.
+    MONEY_REQUEST_EXPIRY_DAYS: z.coerce.number().int().positive().default(7),
+    // Cap on outstanding pending requests from one requester to one payer —
+    // see ADR-0012's rejection of a daily rate limit instead.
+    MONEY_REQUEST_MAX_PENDING_PER_PAIR: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(3),
   })
   .superRefine((env, ctx) => {
     // A provider's own credentials are only required when it's the one
@@ -243,6 +255,10 @@ function buildConfig(env: Env) {
       platformFee: env.TRANSFER_PLATFORM_FEE,
       minAmount: env.TRANSFER_MIN_AMOUNT,
       maxAmount: env.TRANSFER_MAX_AMOUNT,
+    },
+    moneyRequests: {
+      expiryDays: env.MONEY_REQUEST_EXPIRY_DAYS,
+      maxPendingPerPair: env.MONEY_REQUEST_MAX_PENDING_PER_PAIR,
     },
   };
 }

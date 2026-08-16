@@ -94,6 +94,31 @@ export interface TransferReceivedEventPayload {
   reference: string;
 }
 
+export const MONEY_REQUEST_CREATED_EVENT = 'money_request_created';
+
+export interface MoneyRequestCreatedEventPayload {
+  userId: string; // the payer being asked
+  email: string;
+  counterpartyUsername: string; // requester's username
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  note: string | null;
+  // The money request's own id — the in-app channel's dedupe_key, same
+  // reasoning as TransferSentEventPayload's reference.
+  moneyRequestId: string;
+}
+
+export const MONEY_REQUEST_DECLINED_EVENT = 'money_request_declined';
+
+export interface MoneyRequestDeclinedEventPayload {
+  userId: string; // the requester, notified their request was declined
+  email: string;
+  counterpartyUsername: string; // payer's username
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  moneyRequestId: string;
+}
+
 export const RECONCILIATION_MISMATCH_EVENT = 'reconciliation_mismatch';
 
 export interface ReconciliationMismatchEventPayload {

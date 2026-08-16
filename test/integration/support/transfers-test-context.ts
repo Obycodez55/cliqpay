@@ -34,6 +34,7 @@ import { AddFundingQueryIndexes1785488695081 } from '../../../src/database/migra
 import { EnforceLedgerEntriesAppendOnly1785491930164 } from '../../../src/database/migrations/1785491930164-EnforceLedgerEntriesAppendOnly';
 import { AddTransactionPinLockoutToCredentials1785491931164 } from '../../../src/database/migrations/1785491931164-AddTransactionPinLockoutToCredentials';
 import { CreateNotifications1786812506579 } from '../../../src/database/migrations/1786812506579-CreateNotifications';
+import { CreateMoneyRequests1786900000000 } from '../../../src/database/migrations/1786900000000-CreateMoneyRequests';
 import { AuthModule } from '../../../src/modules/auth/auth.module';
 import { AuthService } from '../../../src/modules/auth/auth.service';
 import { Credential } from '../../../src/modules/auth/entities/credential.entity';
@@ -47,6 +48,8 @@ import { UsersModule } from '../../../src/modules/users/users.module';
 import { UsersService } from '../../../src/modules/users/users.service';
 import { TransfersModule } from '../../../src/modules/transfers/transfers.module';
 import { TransfersService } from '../../../src/modules/transfers/transfers.service';
+import { MoneyRequestsService } from '../../../src/modules/transfers/money-requests.service';
+import { MoneyRequest } from '../../../src/modules/transfers/entities/money-request.entity';
 import { NotificationsModule } from '../../../src/modules/notifications/notifications.module';
 import { NotificationService } from '../../../src/modules/notifications/notification.service';
 import { Notification } from '../../../src/modules/notifications/entities/notification.entity';
@@ -82,6 +85,7 @@ export interface TransfersTestContext {
   usersService: UsersService;
   ledgerService: LedgerService;
   transfersService: TransfersService;
+  moneyRequestsService: MoneyRequestsService;
   notificationService: NotificationService;
   dataSource: DataSource;
   userRepo: Repository<User>;
@@ -90,6 +94,7 @@ export interface TransfersTestContext {
   transactionRepo: Repository<Transaction>;
   ledgerEntryRepo: Repository<LedgerEntry>;
   notificationRepo: Repository<Notification>;
+  moneyRequestRepo: Repository<MoneyRequest>;
   emailAdapter: FakeEmailAdapter;
   pushAdapter: FakePushAdapter;
   config: AppConfig;
@@ -137,6 +142,7 @@ export async function createTransfersTestContext(
     queryRunner,
   );
   await new CreateNotifications1786812506579().up(queryRunner);
+  await new CreateMoneyRequests1786900000000().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 
@@ -188,6 +194,10 @@ export async function createTransfersTestContext(
       minAmount: 10_000,
       maxAmount: 100_000_000,
     },
+    moneyRequests: {
+      expiryDays: 7,
+      maxPendingPerPair: 3,
+    },
   };
 
   const moduleRef = await Test.createTestingModule({
@@ -225,6 +235,7 @@ export async function createTransfersTestContext(
     usersService: moduleRef.get(UsersService),
     ledgerService: moduleRef.get(LedgerService),
     transfersService: moduleRef.get(TransfersService),
+    moneyRequestsService: moduleRef.get(MoneyRequestsService),
     notificationService: moduleRef.get(NotificationService),
     dataSource,
     userRepo: dataSource.getRepository(User),
@@ -233,6 +244,7 @@ export async function createTransfersTestContext(
     transactionRepo: dataSource.getRepository(Transaction),
     ledgerEntryRepo: dataSource.getRepository(LedgerEntry),
     notificationRepo: dataSource.getRepository(Notification),
+    moneyRequestRepo: dataSource.getRepository(MoneyRequest),
     emailAdapter: moduleRef.get(EMAIL_SENDER),
     pushAdapter: moduleRef.get(PUSH_SENDER),
     config,

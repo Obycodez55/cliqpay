@@ -2,6 +2,8 @@ import {
   EmailVerificationOtpPayload,
   FundingCompletedPayload,
   MfaChallengeOtpPayload,
+  MoneyRequestCreatedPayload,
+  MoneyRequestDeclinedPayload,
   NotificationPayloadMap,
   PasswordResetOtpPayload,
   PhoneVerificationOtpPayload,
@@ -73,6 +75,14 @@ export const emailTemplates: {
     subject: `You received ${payload.currency} ${payload.amount}`,
     ...renderEmail('transfer_received', payload),
   }),
+  money_request_created: (payload: MoneyRequestCreatedPayload) => ({
+    subject: `${payload.counterpartyUsername} requested ${payload.currency} ${payload.amount}`,
+    ...renderEmail('money_request_created', payload),
+  }),
+  money_request_declined: (payload: MoneyRequestDeclinedPayload) => ({
+    subject: `Your money request was declined`,
+    ...renderEmail('money_request_declined', payload),
+  }),
   reconciliation_mismatch: (payload: ReconciliationMismatchPayload) => ({
     subject: `Reconciliation mismatch: ${payload.provider}/${payload.currency}`,
     ...renderEmail('reconciliation_mismatch', payload),
@@ -106,6 +116,14 @@ export const pushTemplates: {
     title: 'Money received',
     body: `${payload.counterpartyUsername} sent you ${payload.currency} ${payload.amount}.`,
   }),
+  money_request_created: (payload: MoneyRequestCreatedPayload) => ({
+    title: 'Money request',
+    body: `${payload.counterpartyUsername} requested ${payload.currency} ${payload.amount} from you.`,
+  }),
+  money_request_declined: (payload: MoneyRequestDeclinedPayload) => ({
+    title: 'Request declined',
+    body: `${payload.counterpartyUsername} declined your request for ${payload.currency} ${payload.amount}.`,
+  }),
 };
 
 export const inAppTemplates: {
@@ -138,6 +156,28 @@ export const inAppTemplates: {
       counterpartyUsername: payload.counterpartyUsername,
     },
     dedupeKey: payload.reference,
+  }),
+  money_request_created: (payload: MoneyRequestCreatedPayload) => ({
+    title: 'Money request',
+    body: `${payload.counterpartyUsername} requested ${payload.currency} ${payload.amount} from you.`,
+    data: {
+      amount: payload.amount,
+      currency: payload.currency,
+      counterpartyUsername: payload.counterpartyUsername,
+      moneyRequestId: payload.moneyRequestId,
+    },
+    dedupeKey: payload.moneyRequestId,
+  }),
+  money_request_declined: (payload: MoneyRequestDeclinedPayload) => ({
+    title: 'Request declined',
+    body: `${payload.counterpartyUsername} declined your request for ${payload.currency} ${payload.amount}.`,
+    data: {
+      amount: payload.amount,
+      currency: payload.currency,
+      counterpartyUsername: payload.counterpartyUsername,
+      moneyRequestId: payload.moneyRequestId,
+    },
+    dedupeKey: payload.moneyRequestId,
   }),
   security_alert: (payload: SecurityAlertPayload) => ({
     title: 'Security alert',

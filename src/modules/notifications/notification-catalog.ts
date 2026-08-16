@@ -74,6 +74,25 @@ export interface TransferReceivedPayload {
   reference: string;
 }
 
+export interface MoneyRequestCreatedPayload {
+  userId: string;
+  email: string;
+  counterpartyUsername: string;
+  amount: string;
+  currency: string;
+  note: string | null;
+  moneyRequestId: string;
+}
+
+export interface MoneyRequestDeclinedPayload {
+  userId: string;
+  email: string;
+  counterpartyUsername: string;
+  amount: string;
+  currency: string;
+  moneyRequestId: string;
+}
+
 export interface ReconciliationMismatchPayload {
   email: string;
   provider: string;
@@ -93,6 +112,8 @@ export interface NotificationPayloadMap {
   funding_completed: FundingCompletedPayload;
   transfer_sent: TransferSentPayload;
   transfer_received: TransferReceivedPayload;
+  money_request_created: MoneyRequestCreatedPayload;
+  money_request_declined: MoneyRequestDeclinedPayload;
   reconciliation_mismatch: ReconciliationMismatchPayload;
 }
 
@@ -127,6 +148,10 @@ export const NOTIFICATION_CATALOG = {
   funding_completed: { channels: ['email', 'in_app'] },
   transfer_sent: { channels: ['email', 'push', 'in_app'] },
   transfer_received: { channels: ['email', 'push', 'in_app'] },
+  // Cancel is deliberately excluded from this catalog (issue #24) — only
+  // create and decline notify.
+  money_request_created: { channels: ['email', 'push', 'in_app'] },
+  money_request_declined: { channels: ['email', 'push', 'in_app'] },
   reconciliation_mismatch: { channels: ['email'] },
 } as const satisfies NotificationCatalogShape;
 

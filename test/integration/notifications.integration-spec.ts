@@ -140,6 +140,7 @@ describe('Notifications module — end-to-end dispatch', () => {
         reconciliation: { alertEmail: 'ops@cliqpay.test' },
       },
       transfers: { platformFee: 0, minAmount: 10_000, maxAmount: 100_000_000 },
+      moneyRequests: { expiryDays: 7, maxPendingPerPair: 3 },
     };
 
     const moduleRef = await Test.createTestingModule({
