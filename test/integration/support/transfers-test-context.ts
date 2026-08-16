@@ -3,18 +3,19 @@ import {
   StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import { GenericContainer, StartedTestContainer } from 'testcontainers';
-import {
-  DynamicModule,
-  INestApplication,
-  Module,
-  ValidationPipe,
-} from '@nestjs/common';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { App } from 'supertest/types';
 import { DataSource, Repository } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../../src/config';
 import { buildDataSourceOptions } from '../../../src/database/data-source.options';
+import {
+  buildTestAppConfig,
+  buildTestConfigModule,
+  buildTestJwtModule,
+  TEST_PIN_PEPPER,
+} from './test-app-config';
 import { CreateUsersAndAccounts1784628665852 } from '../../../src/database/migrations/1784628665852-CreateUsersAndAccounts';
 import { CreateSessions1784642459395 } from '../../../src/database/migrations/1784642459395-CreateSessions';
 import { CreatePushTokens1784616220824 } from '../../../src/database/migrations/1784616220824-CreatePushTokens';
@@ -62,20 +63,6 @@ import { OtpNotificationProcessor } from '../../../src/modules/notifications/int
 import { ChannelDispatchProcessor } from '../../../src/modules/notifications/internal/channel-dispatch.processor';
 import { hashTransactionPin } from '../../../src/modules/auth/internal/pin.util';
 import { Money } from '../../../src/shared/primitives/money';
-
-@Module({})
-class TestConfigModule {}
-
-function buildTestConfigModule(config: AppConfig): DynamicModule {
-  return {
-    module: TestConfigModule,
-    global: true,
-    providers: [{ provide: APP_CONFIG, useValue: config }],
-    exports: [APP_CONFIG],
-  };
-}
-
-export const TEST_PIN_PEPPER = 'b'.repeat(64);
 
 export interface TransfersTestContext {
   postgres: StartedPostgreSqlContainer;
@@ -146,61 +133,22 @@ export async function createTransfersTestContext(
   await queryRunner.release();
   await setupDataSource.destroy();
 
-  const config: AppConfig = {
-    app: {
-      env: 'test',
-      port: 0,
-      corsAllowedOrigins: [],
-    },
+  const config: AppConfig = buildTestAppConfig({
     database: { url: postgres.getConnectionUri() },
     redis: {
       url: `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`,
-    },
-    sentry: { dsn: undefined },
-    rateLimit: { ttlMs: 60_000, limit: 100 },
-    jwt: { secret: 'test-jwt-secret-at-least-32-characters-long' },
-    encryption: { key: 'a'.repeat(64) },
-    transactionPin: { pepper: TEST_PIN_PEPPER },
-    notifications: {
-      emailProvider: 'fake',
-      smsProvider: 'fake',
-      pushProvider: 'fake',
-      brevo: {
-        apiKey: undefined,
-        senderEmail: undefined,
-        senderName: undefined,
-      },
-      termii: { apiKey: undefined, senderId: undefined },
-      firebase: {
-        projectId: undefined,
-        clientEmail: undefined,
-        privateKey: undefined,
-      },
-      retentionDays: 180,
-    },
-    payments: {
-      provider: 'fake',
-      kora: {
-        secretKey: undefined,
-        webhookUrl: undefined,
-        redirectUrl: undefined,
-      },
-      reconciliation: { alertEmail: 'ops@cliqpay.test' },
     },
     transfers: {
       platformFee,
       minAmount: 10_000,
       maxAmount: 100_000_000,
     },
-    moneyRequests: {
-      expiryDays: 7,
-      maxPendingPerPair: 3,
-    },
-  };
+  });
 
   const moduleRef = await Test.createTestingModule({
     imports: [
       buildTestConfigModule(config),
+      buildTestJwtModule(),
       TypeOrmModule.forRootAsync({
         inject: [APP_CONFIG],
         useFactory: (cfg: AppConfig) => buildDataSourceOptions(cfg),

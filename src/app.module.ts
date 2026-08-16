@@ -28,6 +28,11 @@ import { WithdrawalsModule } from './modules/withdrawals/withdrawals.module';
     RateLimitModule,
     RedisModule,
     EventBusModule,
+    JwtModule.registerAsync({
+      global: true,
+      inject: [APP_CONFIG],
+      useFactory: (config: AppConfig) => ({ secret: config.jwt.secret }),
+    }),
     NotificationsModule,
     LedgerModule,
     UsersModule,

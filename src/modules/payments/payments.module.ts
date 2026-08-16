@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { JwtModule } from '@nestjs/jwt';
 import { BullModule } from '@nestjs/bullmq';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { EventBusModule } from '../../shared/events/event-bus.module';
@@ -38,10 +37,6 @@ const PAYMENT_ADAPTERS = {
     LedgerModule,
     UsersModule,
     EventBusModule,
-    JwtModule.registerAsync({
-      inject: [APP_CONFIG],
-      useFactory: (config: AppConfig) => ({ secret: config.jwt.secret }),
-    }),
     BullModule.registerQueue({
       name: FUNDING_POLL_QUEUE,
       defaultJobOptions: {

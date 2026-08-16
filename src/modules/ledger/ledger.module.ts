@@ -1,18 +1,10 @@
 import { Module } from '@nestjs/common';
-import { JwtModule } from '@nestjs/jwt';
-import { APP_CONFIG, AppConfig } from '../../config';
 import { UsersModule } from '../users/users.module';
 import { WalletController } from './wallet.controller';
 import { LedgerService } from './ledger.service';
 
 @Module({
-  imports: [
-    UsersModule,
-    JwtModule.registerAsync({
-      inject: [APP_CONFIG],
-      useFactory: (config: AppConfig) => ({ secret: config.jwt.secret }),
-    }),
-  ],
+  imports: [UsersModule],
   controllers: [WalletController],
   providers: [LedgerService],
   exports: [LedgerService],

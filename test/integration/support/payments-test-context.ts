@@ -3,12 +3,7 @@ import {
   StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import { GenericContainer, StartedTestContainer } from 'testcontainers';
-import {
-  DynamicModule,
-  INestApplication,
-  Module,
-  ValidationPipe,
-} from '@nestjs/common';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { App } from 'supertest/types';
@@ -16,6 +11,11 @@ import { json, Request, urlencoded } from 'express';
 import { DataSource, Repository } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../../src/config';
 import { buildDataSourceOptions } from '../../../src/database/data-source.options';
+import {
+  buildTestAppConfig,
+  buildTestConfigModule,
+  buildTestJwtModule,
+} from './test-app-config';
 import { CreateUsersAndAccounts1784628665852 } from '../../../src/database/migrations/1784628665852-CreateUsersAndAccounts';
 import { ConvertUsersAndAccountsTimestamps1784707276057 } from '../../../src/database/migrations/1784707276057-ConvertUsersAndAccountsTimestamps';
 import { AddUsernameChangedAtToUsers1784707276061 } from '../../../src/database/migrations/1784707276061-AddUsernameChangedAtToUsers';
@@ -46,18 +46,6 @@ import { OtpNotificationProcessor } from '../../../src/modules/notifications/int
 import { ChannelDispatchProcessor } from '../../../src/modules/notifications/internal/channel-dispatch.processor';
 import { FundingPollProcessor } from '../../../src/modules/payments/internal/funding-poll.processor';
 import { ReconciliationProcessor } from '../../../src/modules/payments/internal/reconciliation.processor';
-
-@Module({})
-class TestConfigModule {}
-
-function buildTestConfigModule(config: AppConfig): DynamicModule {
-  return {
-    module: TestConfigModule,
-    global: true,
-    providers: [{ provide: APP_CONFIG, useValue: config }],
-    exports: [APP_CONFIG],
-  };
-}
 
 export interface PaymentsTestContext {
   postgres: StartedPostgreSqlContainer;
@@ -109,54 +97,17 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
   await queryRunner.release();
   await setupDataSource.destroy();
 
-  const config: AppConfig = {
-    app: {
-      env: 'test',
-      port: 0,
-      corsAllowedOrigins: [],
-    },
+  const config: AppConfig = buildTestAppConfig({
     database: { url: postgres.getConnectionUri() },
     redis: {
       url: `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`,
     },
-    sentry: { dsn: undefined },
-    rateLimit: { ttlMs: 60_000, limit: 100 },
-    jwt: { secret: 'test-jwt-secret-at-least-32-characters-long' },
-    encryption: { key: 'a'.repeat(64) },
-    transactionPin: { pepper: 'b'.repeat(64) },
-    notifications: {
-      emailProvider: 'fake',
-      smsProvider: 'fake',
-      pushProvider: 'fake',
-      brevo: {
-        apiKey: undefined,
-        senderEmail: undefined,
-        senderName: undefined,
-      },
-      termii: { apiKey: undefined, senderId: undefined },
-      firebase: {
-        projectId: undefined,
-        clientEmail: undefined,
-        privateKey: undefined,
-      },
-      retentionDays: 180,
-    },
-    payments: {
-      provider: 'fake',
-      kora: {
-        secretKey: undefined,
-        webhookUrl: undefined,
-        redirectUrl: undefined,
-      },
-      reconciliation: { alertEmail: 'ops@cliqpay.test' },
-    },
-    transfers: { platformFee: 0, minAmount: 10_000, maxAmount: 100_000_000 },
-    moneyRequests: { expiryDays: 7, maxPendingPerPair: 3 },
-  };
+  });
 
   const moduleRef = await Test.createTestingModule({
     imports: [
       buildTestConfigModule(config),
+      buildTestJwtModule(),
       TypeOrmModule.forRootAsync({
         inject: [APP_CONFIG],
         useFactory: (cfg: AppConfig) => buildDataSourceOptions(cfg),

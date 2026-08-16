@@ -1,7 +1,5 @@
 import { Module } from '@nestjs/common';
-import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { APP_CONFIG, AppConfig } from '../../config';
 import { AuthModule } from '../auth/auth.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { BankAccount } from './entities/bank-account.entity';
@@ -18,10 +16,6 @@ import { WithdrawalsService } from './withdrawals.service';
     TypeOrmModule.forFeature([BankAccount]),
     AuthModule,
     PaymentsModule,
-    JwtModule.registerAsync({
-      inject: [APP_CONFIG],
-      useFactory: (config: AppConfig) => ({ secret: config.jwt.secret }),
-    }),
   ],
   controllers: [WithdrawalsController],
   providers: [WithdrawalsService],
