@@ -358,6 +358,52 @@ describe('POST /money-requests/:id/pay', () => {
     expect(row.status).toBe('pending');
   });
 
+  // Phase 3 end-of-phase audit: the PIN lockout (#17) and paying a request
+  // (#25) share TransactionPinService.verifyTransactionPin unconditionally
+  // (TransfersService.finalizeTransfer calls it regardless of caller), but
+  // nothing had exercised the two together through this specific endpoint —
+  // only a single wrong attempt was tested here, and only the lockout's own
+  // 3-attempt threshold was tested through change-PIN, not pay.
+  it('locks the PIN after 3 wrong attempts through pay, blocking a 4th attempt with 423 even with the correct PIN, leaving the request pending throughout', async () => {
+    const requester = await seedRequester();
+    const payer = await seedPayer({ balanceMinor: 5_000_000n });
+    const created = await createRequest(
+      requester.userId,
+      payer.userId,
+      100_000,
+    );
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await pay(tokenFor(payer.userId), created.id, {
+        reference: `cliqpay-payreq-lockout-${payer.userId}-${attempt}`,
+        pin: '0000',
+      }).expect(401);
+    }
+
+    const credential = await ctx.credentialRepo.findOneByOrFail({
+      userId: payer.userId,
+    });
+    expect(credential.failedPinAttempts).toBe(3);
+    expect(credential.pinLockedUntil).not.toBeNull();
+    expect(credential.pinLockedUntil!.getTime()).toBeGreaterThan(Date.now());
+
+    // A 4th attempt, this time with the correct PIN, is still rejected —
+    // the lock blocks money movement regardless of whether the PIN is now
+    // typed correctly, same as every other PIN-gated endpoint.
+    await pay(tokenFor(payer.userId), created.id, {
+      reference: `cliqpay-payreq-lockout-${payer.userId}-correct`,
+      pin: '1234',
+    }).expect(423);
+
+    const row = await ctx.moneyRequestRepo.findOneByOrFail({ id: created.id });
+    expect(row.status).toBe('pending');
+    expect(row.transactionId).toBeNull();
+    const payerAccount = await ctx.accountRepo.findOneByOrFail({
+      id: payer.walletId,
+    });
+    expect(payerAccount.balance).toBe(5_000_000n);
+  });
+
   it('leaves insufficient-funds requests pending and payable once funded', async () => {
     const requester = await seedRequester();
     const payer = await seedPayer({ balanceMinor: 10_000n });

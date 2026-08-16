@@ -18,6 +18,7 @@ import {
   FundingTransactionMetadata,
   Transaction,
   TransactionProvider,
+  TransactionType,
 } from './entities/transaction.entity';
 import { InsufficientFundsException } from './internal/errors';
 
@@ -66,6 +67,16 @@ export interface TransactionHistoryPagination {
 // diverge. `counterpartyWalletId` is omitted by callers that have no
 // counterparty concept (funding always credits the caller's own wallet).
 export interface TransactionFingerprint {
+  // Required, not optional — `reference` is a global namespace shared by
+  // every transaction type, so without this a funding request and a P2P
+  // transfer that happen to share a reference and amount could falsely
+  // "match" each other (found in the Phase 3 end-of-phase audit): funding's
+  // fingerprint carries no counterparty, so the counterparty check is
+  // skipped rather than asserted, and a transfer's stored row would pass
+  // amount/currency alone. Type is itself a meaningful parameter of the
+  // operation (ADR-0010), and checking it costs nothing extra callers
+  // don't already know.
+  type: TransactionType;
   amount: bigint;
   currency: string;
   counterpartyWalletId?: string;
@@ -163,6 +174,7 @@ export class LedgerService {
     }
 
     const fingerprintMatches =
+      transaction.type === fingerprint.type &&
       transaction.amount === fingerprint.amount &&
       transaction.currency === fingerprint.currency &&
       (fingerprint.counterpartyWalletId === undefined ||

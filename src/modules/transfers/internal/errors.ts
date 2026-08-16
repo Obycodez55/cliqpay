@@ -132,12 +132,3 @@ export class MoneyRequestNotPayableException extends DomainException {
     );
   }
 }
-
-// `transfers` (core) can't reuse another module's copy of this — see
-// payments/internal/errors.ts's own comment on the same convention. Used
-// when two concurrent sendMoney() calls for the same `reference` both miss
-// the idempotency pre-check and both try to post.
-export function isUniqueViolation(error: unknown, constraint: string): boolean {
-  const pgError = error as { code?: string; constraint?: string };
-  return pgError?.code === '23505' && pgError.constraint === constraint;
-}

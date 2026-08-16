@@ -26,7 +26,7 @@ import {
   PaymentProviderAdapter,
   VerifyChargeResult,
 } from './adapters/payment-provider.interface';
-import { isUniqueViolation } from './internal/errors';
+import { isUniqueViolation } from '../../database/postgres-errors.util';
 import { extractTopLevelJsonField } from './internal/raw-json';
 import {
   IdempotentReplay,
@@ -115,8 +115,15 @@ export class PaymentsService {
     const amount = Money.of(dto.amount, NGN);
     // Funding has no counterparty (it always credits the caller's own
     // wallet) — amount/currency are the only fields that define the
-    // operation here, per ADR-0010.
-    const fingerprint = { amount: amount.amount, currency: amount.currency };
+    // operation here, per ADR-0010. `type` guards against a reference
+    // reused across a different transaction type entirely (Phase 3
+    // end-of-phase audit) — without it, a P2P transfer sharing this
+    // reference and amount could falsely "match" here.
+    const fingerprint = {
+      type: 'funding' as const,
+      amount: amount.amount,
+      currency: amount.currency,
+    };
 
     const replay = await this.ledgerService.checkIdempotentReplay(
       dto.reference,

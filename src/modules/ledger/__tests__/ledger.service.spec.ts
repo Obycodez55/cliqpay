@@ -161,7 +161,7 @@ describe('LedgerService', () => {
         const result = await service.checkIdempotentReplay(
           'missing-ref',
           'user-1',
-          { amount: 500000n, currency: 'NGN' },
+          { type: 'funding', amount: 500000n, currency: 'NGN' },
         );
 
         expect(transactionRepo.findOneBy).toHaveBeenCalledWith({
@@ -175,6 +175,7 @@ describe('LedgerService', () => {
         const transaction = {
           id: 'txn-1',
           reference: 'ref-1',
+          type: 'funding',
           amount: 500000n,
           currency: 'NGN',
           senderWalletId: null,
@@ -184,6 +185,7 @@ describe('LedgerService', () => {
         repo.count.mockResolvedValue(0);
 
         const result = await service.checkIdempotentReplay('ref-1', 'user-1', {
+          type: 'funding',
           amount: 500000n,
           currency: 'NGN',
         });
@@ -195,6 +197,7 @@ describe('LedgerService', () => {
         const transaction = {
           id: 'txn-1',
           reference: 'ref-1',
+          type: 'funding',
           amount: 500000n,
           currency: 'NGN',
           senderWalletId: null,
@@ -204,6 +207,7 @@ describe('LedgerService', () => {
         repo.count.mockResolvedValue(1);
 
         const result = await service.checkIdempotentReplay('ref-1', 'user-1', {
+          type: 'funding',
           amount: 500000n,
           currency: 'NGN',
         });
@@ -215,6 +219,7 @@ describe('LedgerService', () => {
         const transaction = {
           id: 'txn-1',
           reference: 'ref-1',
+          type: 'funding',
           amount: 500000n,
           currency: 'NGN',
           senderWalletId: null,
@@ -224,6 +229,7 @@ describe('LedgerService', () => {
         repo.count.mockResolvedValue(1);
 
         const result = await service.checkIdempotentReplay('ref-1', 'user-1', {
+          type: 'funding',
           amount: 999n,
           currency: 'NGN',
         });
@@ -235,6 +241,7 @@ describe('LedgerService', () => {
         const transaction = {
           id: 'txn-1',
           reference: 'ref-1',
+          type: 'p2p_transfer',
           amount: 500000n,
           currency: 'NGN',
           senderWalletId: 'wallet-1',
@@ -244,9 +251,38 @@ describe('LedgerService', () => {
         repo.count.mockResolvedValue(1);
 
         const result = await service.checkIdempotentReplay('ref-1', 'user-1', {
+          type: 'p2p_transfer',
           amount: 500000n,
           currency: 'NGN',
           counterpartyWalletId: 'a-different-recipient',
+        });
+
+        expect(result).toEqual({ outcome: 'diverged' });
+      });
+
+      // Regression for the Phase 3 end-of-phase audit finding: a reference
+      // reused across two different transaction types (e.g. a P2P transfer,
+      // then later a funding request with the same reference and amount)
+      // must not "match" just because amount/currency happen to coincide —
+      // funding's fingerprint carries no counterparty, so without this
+      // check the counterparty mismatch would never surface.
+      it("returns 'diverged' when the caller owns the reference but its transaction type differs from the fingerprint's", async () => {
+        const transaction = {
+          id: 'txn-1',
+          reference: 'ref-1',
+          type: 'p2p_transfer',
+          amount: 500000n,
+          currency: 'NGN',
+          senderWalletId: 'wallet-1',
+          recipientWalletId: 'wallet-recipient',
+        } as Transaction;
+        transactionRepo.findOneBy.mockResolvedValue(transaction);
+        repo.count.mockResolvedValue(1);
+
+        const result = await service.checkIdempotentReplay('ref-1', 'user-1', {
+          type: 'funding',
+          amount: 500000n,
+          currency: 'NGN',
         });
 
         expect(result).toEqual({ outcome: 'diverged' });

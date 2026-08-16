@@ -31,8 +31,8 @@ import {
   TransferAmountTooLargeException,
   TransferAmountTooSmallException,
   UnsupportedTransferCurrencyException,
-  isUniqueViolation,
 } from './internal/errors';
+import { isUniqueViolation } from '../../database/postgres-errors.util';
 
 const NGN = 'NGN'; // Transfers are NGN-only for now — see docs/architecture.md §6 Phase 3.
 
@@ -181,8 +181,10 @@ export class TransfersService {
   ): Promise<PostTransferResult | null> {
     // Only the fields that define the operation (ADR-0010) — the platform
     // fee is config-derived, never client-supplied, so it isn't part of the
-    // fingerprint.
+    // fingerprint. `type` guards against a reference reused across a
+    // different transaction type entirely (Phase 3 end-of-phase audit).
     const fingerprint = {
+      type: 'p2p_transfer' as const,
       amount: prepared.amount.amount,
       currency: NGN,
       counterpartyWalletId: prepared.recipientWallet.id,

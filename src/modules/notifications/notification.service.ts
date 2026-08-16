@@ -28,7 +28,7 @@ import {
 } from './templates/templates';
 import { PushPlatform, PushToken } from './entities/push-token.entity';
 import { Notification } from './entities/notification.entity';
-import { isUniqueViolation } from './internal/errors';
+import { isUniqueViolation } from '../../database/postgres-errors.util';
 import {
   NotificationItemDto,
   toNotificationItem,
