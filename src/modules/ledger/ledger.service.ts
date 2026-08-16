@@ -19,6 +19,7 @@ import {
   Transaction,
   TransactionProvider,
 } from './entities/transaction.entity';
+import { InsufficientFundsException } from './internal/errors';
 
 // Re-exported through the module's one door (this file) — `payments` needs
 // the type for its active-(provider, currency)-pairs list (issue #15), and
@@ -75,6 +76,24 @@ export type IdempotentReplay =
   | { outcome: 'match'; transaction: Transaction }
   | { outcome: 'foreign' }
   | { outcome: 'diverged' };
+
+export interface PostTransferParams {
+  reference: string;
+  senderWalletId: string;
+  recipientWalletId: string;
+  amount: Money;
+  platformFee: Money;
+}
+
+export interface PostTransferResult {
+  transactionId: string;
+  reference: string;
+  senderUserId: string;
+  recipientUserId: string;
+  amount: Money;
+  platformFee: Money;
+  createdAt: Date;
+}
 
 /**
  * The one exported surface of the ledger module — see docs/architecture.md
@@ -544,6 +563,174 @@ export class LedgerService {
       userId: wallet.userId!,
       netAmount: facts.netAmount,
       reference: transaction.reference,
+    };
+  }
+
+  /**
+   * The single place P2P transfer ledger entries are ever posted
+   * (ADR-0011) — `transfers` owns eligibility, PIN verification, and
+   * idempotency; this only knows how to move money between two wallets
+   * plus the platform fee. Posts directly to `completed` in one DB
+   * transaction — unlike funding, nothing external happens between
+   * initiation and completion, so there's no pending row worth leaving
+   * behind. A duplicate `reference` fails on the unique constraint here;
+   * the caller handles that race the same way PaymentsService.fundWallet
+   * handles funding's.
+   */
+  async postTransfer(params: PostTransferParams): Promise<PostTransferResult> {
+    return runInTransaction(this.dataSource, (manager) =>
+      this.postTransferEntries(manager, params),
+    );
+  }
+
+  // Deliberately not sharing postFundingEntries' lock query — that one locks
+  // a fixed set of provider-scoped system accounts alongside one wallet;
+  // this locks two user wallets and, only when the fee is non-zero, one
+  // provider-agnostic system account. Same Brackets/ORDER BY id ASC/
+  // pessimistic_write idea, but little of the actual query would be shared
+  // between the two, so this stays its own inline query rather than forcing
+  // an abstraction across them (see transaction.util.ts's runInTransaction
+  // comment, which anticipated this call site).
+  private async postTransferEntries(
+    manager: EntityManager,
+    params: PostTransferParams,
+  ): Promise<PostTransferResult> {
+    const accountRepo = manager.getRepository(Account);
+    const hasFee = params.platformFee.isPositive();
+
+    const accounts = await accountRepo
+      .createQueryBuilder('account')
+      .where(
+        new Brackets((qb) => {
+          qb.where('account.id IN (:...walletIds)', {
+            walletIds: [params.senderWalletId, params.recipientWalletId],
+          });
+          if (hasFee) {
+            qb.orWhere(
+              '(account.role = :feeIncome AND account.provider IS NULL AND account.currency = :currency AND account.userId IS NULL)',
+              { feeIncome: 'fee_income', currency: params.amount.currency },
+            );
+          }
+        }),
+      )
+      .orderBy('account.id', 'ASC')
+      .setLock('pessimistic_write')
+      .getMany();
+
+    const sender = accounts.find((a) => a.id === params.senderWalletId);
+    const recipient = accounts.find((a) => a.id === params.recipientWalletId);
+    const feeIncome = hasFee
+      ? accounts.find((a) => a.role === 'fee_income')
+      : undefined;
+    if (!sender || !recipient || (hasFee && !feeIncome)) {
+      throw new Error(
+        `postTransfer: missing one of sender/recipient/fee_income accounts for reference "${params.reference}"`,
+      );
+    }
+
+    const debitAmount = params.amount.add(params.platformFee);
+    // Balance is checked only after the accounts above are locked, never
+    // before (CLAUDE.md) — checking first would let a concurrent transfer
+    // draining the same sender pass this check and then invalidate it
+    // before the debit lands (check-then-lock is a TOCTOU race).
+    if (Money.of(sender.balance, sender.currency).lessThan(debitAmount)) {
+      throw new InsufficientFundsException();
+    }
+
+    // Inserted only now, after the accounts above are already locked by
+    // this transaction — sender_wallet_id/recipient_wallet_id are real FK
+    // columns (CLAUDE.md's same-module-FK rule), and Postgres validates a
+    // new FK reference by taking its own lock on the referenced accounts
+    // row, in column order (sender, then recipient), independent of and
+    // earlier than any lock this method takes explicitly. Inserting before
+    // the ordered SELECT ... FOR UPDATE above would let that FK-check lock
+    // land in the wrong order between two opposite-direction transfers —
+    // reproduced directly as a real Postgres deadlock — so the explicit
+    // ascending-id lock must be acquired first; the FK check then just
+    // re-confirms a lock this transaction already holds.
+    const transactionRepo = manager.getRepository(Transaction);
+    const transaction = await transactionRepo.save(
+      transactionRepo.create({
+        reference: params.reference,
+        provider: null,
+        providerReference: null,
+        type: 'p2p_transfer',
+        status: 'completed',
+        reversesTransactionId: null,
+        amount: params.amount.amount,
+        currency: params.amount.currency,
+        senderWalletId: params.senderWalletId,
+        recipientWalletId: params.recipientWalletId,
+        metadata: { platformFee: params.platformFee.toJSON() },
+      }),
+    );
+
+    const newSenderBalance = Money.of(sender.balance, sender.currency).subtract(
+      debitAmount,
+    );
+    const newRecipientBalance = Money.of(
+      recipient.balance,
+      recipient.currency,
+    ).add(params.amount);
+
+    sender.balance = newSenderBalance.amount;
+    recipient.balance = newRecipientBalance.amount;
+    const accountsToSave = [sender, recipient];
+
+    let newFeeIncomeBalance: Money | undefined;
+    if (hasFee && feeIncome) {
+      newFeeIncomeBalance = Money.of(feeIncome.balance, feeIncome.currency).add(
+        params.platformFee,
+      );
+      feeIncome.balance = newFeeIncomeBalance.amount;
+      accountsToSave.push(feeIncome);
+    }
+    // §2: the cache is written in the same DB transaction, from the same
+    // computation that produces the ledger entries below — one place.
+    await accountRepo.save(accountsToSave);
+
+    const entryRepo = manager.getRepository(LedgerEntry);
+    const entries = [
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: sender.id,
+        direction: 'debit',
+        amount: debitAmount.amount,
+        runningBalance: newSenderBalance.amount,
+      }),
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: recipient.id,
+        direction: 'credit',
+        amount: params.amount.amount,
+        runningBalance: newRecipientBalance.amount,
+      }),
+    ];
+    // §4.2: a zero-fee transfer is a balanced two-leg posting, not a
+    // three-leg one with a zero-amount row — ledger_entries is guaranteed
+    // to grow without bound, and a permanent no-information row on every
+    // transfer is both storage and a misleading statement line.
+    if (hasFee && feeIncome && newFeeIncomeBalance) {
+      entries.push(
+        entryRepo.create({
+          transactionId: transaction.id,
+          accountId: feeIncome.id,
+          direction: 'credit',
+          amount: params.platformFee.amount,
+          runningBalance: newFeeIncomeBalance.amount,
+        }),
+      );
+    }
+    await entryRepo.save(entries);
+
+    return {
+      transactionId: transaction.id,
+      reference: transaction.reference,
+      senderUserId: sender.userId!,
+      recipientUserId: recipient.userId!,
+      amount: params.amount,
+      platformFee: params.platformFee,
+      createdAt: transaction.createdAt,
     };
   }
 }

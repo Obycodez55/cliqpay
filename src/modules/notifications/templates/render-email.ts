@@ -20,6 +20,8 @@ const bodies = {
   mfa_challenge_otp: compile('mfa-challenge-otp.hbs'),
   security_alert: compile('security-alert.hbs'),
   funding_completed: compile('funding-completed.hbs'),
+  transfer_sent: compile('transfer-sent.hbs'),
+  transfer_received: compile('transfer-received.hbs'),
   reconciliation_mismatch: compile('reconciliation-mismatch.hbs'),
 };
 

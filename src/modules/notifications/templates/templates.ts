@@ -7,6 +7,8 @@ import {
   PhoneVerificationOtpPayload,
   ReconciliationMismatchPayload,
   SecurityAlertPayload,
+  TransferReceivedPayload,
+  TransferSentPayload,
 } from '../notification-catalog';
 import { renderEmail } from './render-email';
 
@@ -63,6 +65,14 @@ export const emailTemplates: {
     subject: 'Your Cliqpay wallet has been funded',
     ...renderEmail('funding_completed', payload),
   }),
+  transfer_sent: (payload: TransferSentPayload) => ({
+    subject: `You sent ${payload.currency} ${payload.amount}`,
+    ...renderEmail('transfer_sent', payload),
+  }),
+  transfer_received: (payload: TransferReceivedPayload) => ({
+    subject: `You received ${payload.currency} ${payload.amount}`,
+    ...renderEmail('transfer_received', payload),
+  }),
   reconciliation_mismatch: (payload: ReconciliationMismatchPayload) => ({
     subject: `Reconciliation mismatch: ${payload.provider}/${payload.currency}`,
     ...renderEmail('reconciliation_mismatch', payload),
@@ -88,6 +98,14 @@ export const pushTemplates: {
     title: 'Security alert',
     body: payload.message,
   }),
+  transfer_sent: (payload: TransferSentPayload) => ({
+    title: 'Money sent',
+    body: `You sent ${payload.currency} ${payload.amount} to ${payload.counterpartyUsername}.`,
+  }),
+  transfer_received: (payload: TransferReceivedPayload) => ({
+    title: 'Money received',
+    body: `${payload.counterpartyUsername} sent you ${payload.currency} ${payload.amount}.`,
+  }),
 };
 
 export const inAppTemplates: {
@@ -99,6 +117,26 @@ export const inAppTemplates: {
     title: 'Wallet funded',
     body: `Your wallet was funded with ${payload.currency} ${payload.amount}.`,
     data: { amount: payload.amount, currency: payload.currency },
+    dedupeKey: payload.reference,
+  }),
+  transfer_sent: (payload: TransferSentPayload) => ({
+    title: 'Money sent',
+    body: `You sent ${payload.currency} ${payload.amount} to ${payload.counterpartyUsername}.`,
+    data: {
+      amount: payload.amount,
+      currency: payload.currency,
+      counterpartyUsername: payload.counterpartyUsername,
+    },
+    dedupeKey: payload.reference,
+  }),
+  transfer_received: (payload: TransferReceivedPayload) => ({
+    title: 'Money received',
+    body: `${payload.counterpartyUsername} sent you ${payload.currency} ${payload.amount}.`,
+    data: {
+      amount: payload.amount,
+      currency: payload.currency,
+      counterpartyUsername: payload.counterpartyUsername,
+    },
     dedupeKey: payload.reference,
   }),
   security_alert: (payload: SecurityAlertPayload) => ({

@@ -107,6 +107,19 @@ const envSchema = z
       .int()
       .positive()
       .default(180),
+
+    // Flat, config-driven platform fee on P2P transfers, minor units.
+    // Launches at 0 — see docs/architecture.md §4.2 for why the fee_income
+    // leg is only posted when this is non-zero.
+    TRANSFER_PLATFORM_FEE: z.coerce.number().int().nonnegative().default(0),
+    // Bounds per transfer, minor units. The maximum is an interim ceiling
+    // until Phase 6 KYC tier limits replace it.
+    TRANSFER_MIN_AMOUNT: z.coerce.number().int().nonnegative().default(10_000),
+    TRANSFER_MAX_AMOUNT: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(100_000_000),
   })
   .superRefine((env, ctx) => {
     // A provider's own credentials are only required when it's the one
@@ -225,6 +238,11 @@ function buildConfig(env: Env) {
       reconciliation: {
         alertEmail: env.RECONCILIATION_ALERT_EMAIL,
       },
+    },
+    transfers: {
+      platformFee: env.TRANSFER_PLATFORM_FEE,
+      minAmount: env.TRANSFER_MIN_AMOUNT,
+      maxAmount: env.TRANSFER_MAX_AMOUNT,
     },
   };
 }

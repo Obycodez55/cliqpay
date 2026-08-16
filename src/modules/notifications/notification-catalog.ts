@@ -54,6 +54,26 @@ export interface FundingCompletedPayload {
   reference: string;
 }
 
+export interface TransferSentPayload {
+  userId: string;
+  email: string;
+  counterpartyUsername: string;
+  amount: string;
+  currency: string;
+  // The transfer's own reference — same dedupe-key reasoning as
+  // FundingCompletedPayload above.
+  reference: string;
+}
+
+export interface TransferReceivedPayload {
+  userId: string;
+  email: string;
+  counterpartyUsername: string;
+  amount: string;
+  currency: string;
+  reference: string;
+}
+
 export interface ReconciliationMismatchPayload {
   email: string;
   provider: string;
@@ -71,6 +91,8 @@ export interface NotificationPayloadMap {
   mfa_challenge_otp: MfaChallengeOtpPayload;
   security_alert: SecurityAlertPayload;
   funding_completed: FundingCompletedPayload;
+  transfer_sent: TransferSentPayload;
+  transfer_received: TransferReceivedPayload;
   reconciliation_mismatch: ReconciliationMismatchPayload;
 }
 
@@ -103,6 +125,8 @@ export const NOTIFICATION_CATALOG = {
   mfa_challenge_otp: { channels: ['email'] },
   security_alert: { channels: ['email', 'push', 'in_app'] },
   funding_completed: { channels: ['email', 'in_app'] },
+  transfer_sent: { channels: ['email', 'push', 'in_app'] },
+  transfer_received: { channels: ['email', 'push', 'in_app'] },
   reconciliation_mismatch: { channels: ['email'] },
 } as const satisfies NotificationCatalogShape;
 
