@@ -1,12 +1,16 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { Brackets, DataSource, EntityManager, LessThan } from 'typeorm';
+import { Brackets, DataSource, EntityManager, In, LessThan } from 'typeorm';
 import { runInTransaction } from '../../database/transaction.util';
 import { Money } from '../../shared/primitives/money';
 import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
 import {
-  TransactionHistoryItemDto,
-  toTransactionHistoryItem,
+  decodeCreatedAtIdCursor,
+  encodeCreatedAtIdCursor,
+} from '../../common/pagination/cursor';
+import {
+  TransactionHistoryEntry,
+  toTransactionHistoryEntry,
 } from './dto/transaction-history-item.dto';
 import { Account } from './entities/account.entity';
 import { LedgerEntry } from './entities/ledger-entry.entity';
@@ -14,7 +18,9 @@ import {
   FundingTransactionMetadata,
   Transaction,
   TransactionProvider,
+  TransactionType,
 } from './entities/transaction.entity';
+import { InsufficientFundsException } from './internal/errors';
 
 // Re-exported through the module's one door (this file) — `payments` needs
 // the type for its active-(provider, currency)-pairs list (issue #15), and
@@ -40,6 +46,7 @@ export interface PostFundingFacts {
 export interface PostFundingResult {
   userId: string;
   netAmount: Money;
+  reference: string;
 }
 
 // Structurally narrow rather than the full `Transaction` entity — `payments`
@@ -55,41 +62,48 @@ export interface TransactionHistoryPagination {
   limit: number;
 }
 
-// Opaque to the client per docs/conventions.md — encodes the last returned
-// row's (createdAt, id) tie-break key, nothing else.
-interface TransactionHistoryCursor {
-  createdAt: string;
-  id: string;
+// Only the fields that define the operation (ADR-0010) — never headers,
+// timestamps, or display-only fields, or a legitimate retry would spuriously
+// diverge. `counterpartyWalletId` is omitted by callers that have no
+// counterparty concept (funding always credits the caller's own wallet).
+export interface TransactionFingerprint {
+  // Required, not optional — `reference` is a global namespace shared by
+  // every transaction type, so without this a funding request and a P2P
+  // transfer that happen to share a reference and amount could falsely
+  // "match" each other (found in the Phase 3 end-of-phase audit): funding's
+  // fingerprint carries no counterparty, so the counterparty check is
+  // skipped rather than asserted, and a transfer's stored row would pass
+  // amount/currency alone. Type is itself a meaningful parameter of the
+  // operation (ADR-0010), and checking it costs nothing extra callers
+  // don't already know.
+  type: TransactionType;
+  amount: bigint;
+  currency: string;
+  counterpartyWalletId?: string;
 }
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export type IdempotentReplay =
+  | { outcome: 'none' }
+  | { outcome: 'match'; transaction: Transaction }
+  | { outcome: 'foreign' }
+  | { outcome: 'diverged' };
 
-function encodeHistoryCursor(cursor: TransactionHistoryCursor): string {
-  return Buffer.from(JSON.stringify(cursor)).toString('base64url');
+export interface PostTransferParams {
+  reference: string;
+  senderWalletId: string;
+  recipientWalletId: string;
+  amount: Money;
+  platformFee: Money;
 }
 
-// A corrupted/forged cursor must 400, not reach the DB query — see
-// getTransactionHistory.
-function decodeHistoryCursor(raw: string): TransactionHistoryCursor {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'));
-  } catch {
-    throw new BadRequestException('Invalid cursor');
-  }
-  const candidate = parsed as Partial<TransactionHistoryCursor> | null;
-  if (
-    typeof candidate !== 'object' ||
-    candidate === null ||
-    typeof candidate.createdAt !== 'string' ||
-    typeof candidate.id !== 'string' ||
-    Number.isNaN(Date.parse(candidate.createdAt)) ||
-    !UUID_RE.test(candidate.id)
-  ) {
-    throw new BadRequestException('Invalid cursor');
-  }
-  return { createdAt: candidate.createdAt, id: candidate.id };
+export interface PostTransferResult {
+  transactionId: string;
+  reference: string;
+  senderUserId: string;
+  recipientUserId: string;
+  amount: Money;
+  platformFee: Money;
+  createdAt: Date;
 }
 
 /**
@@ -135,15 +149,61 @@ export class LedgerService {
       .findOneByOrFail({ userId, role: 'user_wallet' });
   }
 
-  // Idempotency lookup for client-initiated money movements (§3.4) — a
-  // repeat call carrying a `reference` already seen returns the existing
-  // row's result instead of creating a second one.
-  async findTransactionByReference(
+  // Idempotency lookup for client-initiated money movements (§3.4, ADR-0010)
+  // — shared by every such endpoint (funding today, transfers next) so the
+  // cross-user and fingerprint rules are decided once. A reference that
+  // exists but belongs to someone else must never replay or leak anything
+  // about the other transaction (defect 1) — 'foreign' stops that at the
+  // lookup, before the caller can build a response from it. A reference
+  // reused with different meaningful parameters must not silently replay
+  // the old result under a new request (defect 2) — 'diverged' stops that.
+  async checkIdempotentReplay(
     reference: string,
-  ): Promise<Transaction | null> {
-    return this.dataSource.getRepository(Transaction).findOneBy({
-      reference,
-    });
+    callerId: string,
+    fingerprint: TransactionFingerprint,
+  ): Promise<IdempotentReplay> {
+    const transaction = await this.dataSource
+      .getRepository(Transaction)
+      .findOneBy({ reference });
+    if (!transaction) {
+      return { outcome: 'none' };
+    }
+
+    if (!(await this.transactionBelongsToUser(transaction, callerId))) {
+      return { outcome: 'foreign' };
+    }
+
+    const fingerprintMatches =
+      transaction.type === fingerprint.type &&
+      transaction.amount === fingerprint.amount &&
+      transaction.currency === fingerprint.currency &&
+      (fingerprint.counterpartyWalletId === undefined ||
+        transaction.recipientWalletId === fingerprint.counterpartyWalletId);
+
+    return fingerprintMatches
+      ? { outcome: 'match', transaction }
+      : { outcome: 'diverged' };
+  }
+
+  // `transactions` has no user_id column (ADR-0010 rejected adding one) —
+  // participants live only in the denormalized sender/recipient wallet
+  // columns, so ownership resolves by checking whether either wallet on the
+  // row is one of the caller's own accounts.
+  private async transactionBelongsToUser(
+    transaction: Transaction,
+    userId: string,
+  ): Promise<boolean> {
+    const walletIds = [
+      transaction.senderWalletId,
+      transaction.recipientWalletId,
+    ].filter((id): id is string => id !== null);
+    if (walletIds.length === 0) {
+      return false;
+    }
+    const count = await this.dataSource
+      .getRepository(Account)
+      .count({ where: { id: In(walletIds), userId } });
+    return count > 0;
   }
 
   // `type`/`status` are fixed to 'funding'/'pending' — this is the only
@@ -262,9 +322,9 @@ export class LedgerService {
   async getTransactionHistory(
     walletId: string,
     pagination: TransactionHistoryPagination,
-  ): Promise<PaginatedResult<TransactionHistoryItemDto>> {
+  ): Promise<PaginatedResult<TransactionHistoryEntry>> {
     const cursor = pagination.cursor
-      ? decodeHistoryCursor(pagination.cursor)
+      ? decodeCreatedAtIdCursor(pagination.cursor)
       : null;
 
     const query = this.dataSource
@@ -299,11 +359,39 @@ export class LedgerService {
     const page = hasMore ? entities.slice(0, pagination.limit) : entities;
     const lastRaw = hasMore ? raw[pagination.limit - 1] : raw[raw.length - 1];
 
+    const counterpartyWalletIds = [
+      ...new Set(
+        page
+          .filter((entry) => entry.transaction.type === 'p2p_transfer')
+          .map((entry) =>
+            entry.transaction.senderWalletId === walletId
+              ? entry.transaction.recipientWalletId
+              : entry.transaction.senderWalletId,
+          )
+          .filter((id): id is string => id !== null),
+      ),
+    ];
+    const counterpartyAccounts = counterpartyWalletIds.length
+      ? await this.dataSource.getRepository(Account).find({
+          where: { id: In(counterpartyWalletIds) },
+          select: { id: true, userId: true },
+        })
+      : [];
+    const counterpartyUserIdByWalletId = new Map(
+      counterpartyAccounts.map((account) => [account.id, account.userId]),
+    );
+
     return {
-      items: page.map(toTransactionHistoryItem),
+      items: page.map((entry) =>
+        toTransactionHistoryEntry(
+          entry,
+          walletId,
+          counterpartyUserIdByWalletId,
+        ),
+      ),
       nextCursor:
         hasMore && lastRaw
-          ? encodeHistoryCursor({
+          ? encodeCreatedAtIdCursor({
               createdAt: lastRaw.raw_created_at,
               id: page[page.length - 1].id,
             })
@@ -511,6 +599,193 @@ export class LedgerService {
       manager,
     );
 
-    return { userId: wallet.userId!, netAmount: facts.netAmount };
+    return {
+      userId: wallet.userId!,
+      netAmount: facts.netAmount,
+      reference: transaction.reference,
+    };
+  }
+
+  /**
+   * The single place P2P transfer ledger entries are ever posted
+   * (ADR-0011) — `transfers` owns eligibility, PIN verification, and
+   * idempotency; this only knows how to move money between two wallets
+   * plus the platform fee. Posts directly to `completed` in one DB
+   * transaction — unlike funding, nothing external happens between
+   * initiation and completion, so there's no pending row worth leaving
+   * behind. A duplicate `reference` fails on the unique constraint here;
+   * the caller handles that race the same way PaymentsService.fundWallet
+   * handles funding's.
+   */
+  async postTransfer(params: PostTransferParams): Promise<PostTransferResult> {
+    return runInTransaction(this.dataSource, (manager) =>
+      this.postTransferEntries(manager, params),
+    );
+  }
+
+  /**
+   * Public sibling of postTransfer for a caller that already has its own
+   * open transaction and needs the posting to be part of it — paying a
+   * money request must post the transfer and flip the request row to
+   * `paid` atomically, so MoneyRequestsService.payRequest opens the one
+   * transaction and calls this instead of postTransfer (same pattern as
+   * mergeTransactionMetadata's manager-accepting form).
+   */
+  async postTransferWithinTransaction(
+    manager: EntityManager,
+    params: PostTransferParams,
+  ): Promise<PostTransferResult> {
+    return this.postTransferEntries(manager, params);
+  }
+
+  // Deliberately not sharing postFundingEntries' lock query — that one locks
+  // a fixed set of provider-scoped system accounts alongside one wallet;
+  // this locks two user wallets and, only when the fee is non-zero, one
+  // provider-agnostic system account. Same Brackets/ORDER BY id ASC/
+  // pessimistic_write idea, but little of the actual query would be shared
+  // between the two, so this stays its own inline query rather than forcing
+  // an abstraction across them (see transaction.util.ts's runInTransaction
+  // comment, which anticipated this call site).
+  private async postTransferEntries(
+    manager: EntityManager,
+    params: PostTransferParams,
+  ): Promise<PostTransferResult> {
+    const accountRepo = manager.getRepository(Account);
+    const hasFee = params.platformFee.isPositive();
+
+    const accounts = await accountRepo
+      .createQueryBuilder('account')
+      .where(
+        new Brackets((qb) => {
+          qb.where('account.id IN (:...walletIds)', {
+            walletIds: [params.senderWalletId, params.recipientWalletId],
+          });
+          if (hasFee) {
+            qb.orWhere(
+              '(account.role = :feeIncome AND account.provider IS NULL AND account.currency = :currency AND account.userId IS NULL)',
+              { feeIncome: 'fee_income', currency: params.amount.currency },
+            );
+          }
+        }),
+      )
+      .orderBy('account.id', 'ASC')
+      .setLock('pessimistic_write')
+      .getMany();
+
+    const sender = accounts.find((a) => a.id === params.senderWalletId);
+    const recipient = accounts.find((a) => a.id === params.recipientWalletId);
+    const feeIncome = hasFee
+      ? accounts.find((a) => a.role === 'fee_income')
+      : undefined;
+    if (!sender || !recipient || (hasFee && !feeIncome)) {
+      throw new Error(
+        `postTransfer: missing one of sender/recipient/fee_income accounts for reference "${params.reference}"`,
+      );
+    }
+
+    const debitAmount = params.amount.add(params.platformFee);
+    // Balance is checked only after the accounts above are locked, never
+    // before (CLAUDE.md) — checking first would let a concurrent transfer
+    // draining the same sender pass this check and then invalidate it
+    // before the debit lands (check-then-lock is a TOCTOU race).
+    if (Money.of(sender.balance, sender.currency).lessThan(debitAmount)) {
+      throw new InsufficientFundsException();
+    }
+
+    // Inserted only now, after the accounts above are already locked by
+    // this transaction — sender_wallet_id/recipient_wallet_id are real FK
+    // columns (CLAUDE.md's same-module-FK rule), and Postgres validates a
+    // new FK reference by taking its own lock on the referenced accounts
+    // row, in column order (sender, then recipient), independent of and
+    // earlier than any lock this method takes explicitly. Inserting before
+    // the ordered SELECT ... FOR UPDATE above would let that FK-check lock
+    // land in the wrong order between two opposite-direction transfers —
+    // reproduced directly as a real Postgres deadlock — so the explicit
+    // ascending-id lock must be acquired first; the FK check then just
+    // re-confirms a lock this transaction already holds.
+    const transactionRepo = manager.getRepository(Transaction);
+    const transaction = await transactionRepo.save(
+      transactionRepo.create({
+        reference: params.reference,
+        provider: null,
+        providerReference: null,
+        type: 'p2p_transfer',
+        status: 'completed',
+        reversesTransactionId: null,
+        amount: params.amount.amount,
+        currency: params.amount.currency,
+        senderWalletId: params.senderWalletId,
+        recipientWalletId: params.recipientWalletId,
+        metadata: { platformFee: params.platformFee.toJSON() },
+      }),
+    );
+
+    const newSenderBalance = Money.of(sender.balance, sender.currency).subtract(
+      debitAmount,
+    );
+    const newRecipientBalance = Money.of(
+      recipient.balance,
+      recipient.currency,
+    ).add(params.amount);
+
+    sender.balance = newSenderBalance.amount;
+    recipient.balance = newRecipientBalance.amount;
+    const accountsToSave = [sender, recipient];
+
+    let newFeeIncomeBalance: Money | undefined;
+    if (hasFee && feeIncome) {
+      newFeeIncomeBalance = Money.of(feeIncome.balance, feeIncome.currency).add(
+        params.platformFee,
+      );
+      feeIncome.balance = newFeeIncomeBalance.amount;
+      accountsToSave.push(feeIncome);
+    }
+    // §2: the cache is written in the same DB transaction, from the same
+    // computation that produces the ledger entries below — one place.
+    await accountRepo.save(accountsToSave);
+
+    const entryRepo = manager.getRepository(LedgerEntry);
+    const entries = [
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: sender.id,
+        direction: 'debit',
+        amount: debitAmount.amount,
+        runningBalance: newSenderBalance.amount,
+      }),
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: recipient.id,
+        direction: 'credit',
+        amount: params.amount.amount,
+        runningBalance: newRecipientBalance.amount,
+      }),
+    ];
+    // §4.2: a zero-fee transfer is a balanced two-leg posting, not a
+    // three-leg one with a zero-amount row — ledger_entries is guaranteed
+    // to grow without bound, and a permanent no-information row on every
+    // transfer is both storage and a misleading statement line.
+    if (hasFee && feeIncome && newFeeIncomeBalance) {
+      entries.push(
+        entryRepo.create({
+          transactionId: transaction.id,
+          accountId: feeIncome.id,
+          direction: 'credit',
+          amount: params.platformFee.amount,
+          runningBalance: newFeeIncomeBalance.amount,
+        }),
+      );
+    }
+    await entryRepo.save(entries);
+
+    return {
+      transactionId: transaction.id,
+      reference: transaction.reference,
+      senderUserId: sender.userId!,
+      recipientUserId: recipient.userId!,
+      amount: params.amount,
+      platformFee: params.platformFee,
+      createdAt: transaction.createdAt,
+    };
   }
 }

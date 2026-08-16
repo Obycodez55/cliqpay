@@ -1,6 +1,8 @@
-# Cliqpay — Project Documentation (v7)
+# Cliqpay — Project Documentation (v9)
 
 > Cliqpay is a production-grade peer-to-peer payment platform. A Venmo-equivalent for Africa — built on NestJS, PostgreSQL, TypeORM, currently integrated with Kora.
+
+> **v9 changes:** Phase 3 design pass — the transaction PIN's format, storage and lockout (ADR-0009); idempotency scoped to the sender and matched by request fingerprint, fixing two defects in the shipped funding flow (ADR-0010); a `transfers` module so `ledger` keeps its zero peer-dependency property (ADR-0011); the money-request state machine, with expiry derived rather than swept (ADR-0012); in-app notifications as a persisted fourth channel, plus per-channel dispatch fixing a live cross-channel retry bug (ADR-0013). Also: the zero-fee posting shape and the `fee_income` contention it hides (§4.2), `money_requests` / `notifications` / the new `credentials` columns (§5), concurrency criteria made gating rather than follow-up (§6 Phase 3), and two follow-on items recorded against Phase 7. *(The v8 tags already in the body are Phase 2's audit hardening — webhook amount cross-checking, the production guard on `fake` adapters, and the DB-level append-only trigger on `ledger_entries` — which landed without a header entry.)*
 
 > **v7 changes:** pre-development gap check — secrets/key management, a migration-discipline rule for the ledger, database backups with PITR, error tracking, OpenAPI docs, and an explicit CI cadence for the four test layers (§7, §10); a data-protection nuance separate from financial licensing (§6); and an explicit design-vs-build-order note before the phased plan, since the real risk at this point is never finishing a first slice, not under-designing. **This document should now live in the repo (**`docs/architecture.md`**), versioned with code changes, rather than continuing to evolve only here.** (v6 — modular monolith + TDD strategy; v5 — deferred fraud prevention, frontend/client notes; v4 — full auth/MFA design; v3.1 — provider-agnostic design; v2 — architecture review fixes — all remain in place.)
 
@@ -8,20 +10,20 @@
 
 ## Table of Contents
 
-1. [Project Overview](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#1-project-overview)
-2. [Tech Stack](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#2-tech-stack)
-3. [Core Concepts](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#3-core-concepts)
-4. [Financial Architecture](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#4-financial-architecture)
-  - [Account Model](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#41-account-model)
-  - [Transaction Types](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#42-transaction-types)
-  - [The Invariant](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#43-the-invariant)
-  - [External Reconciliation](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#44-external-reconciliation)
-5. [Database Schema](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#5-database-schema)
-6. [Phased Development Plan](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#6-phased-development-plan)
-7. [Production Considerations](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#7-production-considerations)
-8. [Feature Reference](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#8-feature-reference)
-9. [Frontend & Client Considerations](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#9-frontend--client-considerations)
-10. [Code Architecture & Testing Strategy](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#10-code-architecture--testing-strategy)
+1. [Project Overview](#1-project-overview)
+2. [Tech Stack](#2-tech-stack)
+3. [Core Concepts](#3-core-concepts)
+4. [Financial Architecture](#4-financial-architecture)
+  - [Account Model](#41-account-model)
+  - [Transaction Types](#42-transaction-types)
+  - [The Invariant](#43-the-invariant)
+  - [External Reconciliation](#44-external-reconciliation)
+5. [Database Schema](#5-database-schema)
+6. [Phased Development Plan](#6-phased-development-plan)
+7. [Production Considerations](#7-production-considerations)
+8. [Feature Reference](#8-feature-reference)
+9. [Frontend & Client Considerations](#9-frontend--client-considerations)
+10. [Code Architecture & Testing Strategy](#10-code-architecture--testing-strategy)
 
 ---
 
@@ -222,6 +224,10 @@ transaction.provider: null   -- purely internal, no provider touches this
 
 Unchanged from v1/v2 — this one was already correct, and stays provider-free by nature.
 
+**[v9] Zero platform fee.** The fee is flat, config-driven, and launches at ₦0. When it is zero the `fee_income` leg is **not** posted — a zero-fee transfer is a balanced two-leg posting (sender debit, recipient credit), not a three-leg one with a zero-amount row. `ledger_entries` is the table guaranteed to grow without bound, and a permanent zero-information row on every transfer is both storage and a misleading statement line. The fee is still reported as `0` in API responses so a client can render "Free" — an absent ledger row is not an absent reported fee.
+
+**[v9] Contention, stated so it isn't discovered.** At a non-zero fee, every transfer in the system locks the single `fee_income_<ccy>` row, so all transfers serialize globally. This is accepted rather than engineered around: a single-row update inside a short transaction is something Postgres handles at thousands per second, and the real hazard is a long transaction *holding* the lock — which the existing rule against provider calls and event publishing inside a DB transaction already addresses. Sharding `fee_income` would break the `(role, currency)` uniqueness §5 enforces and turn the §4.3 invariant into a sum across shards. What matters is that the ₦0 launch **hides** this: the lock set is conditional on fee > 0, so transfers run fully concurrently today and drop to serial the day the fee changes.
+
 ---
 
 #### Withdrawal
@@ -345,7 +351,52 @@ ledger_entries
   running_balance   bigint              -- balance of this account after this entry
   created_at        timestamp
 
+-- [v9] Phase 3 — owned by `transfers` (see ADR-0011)
+money_requests
+  id                uuid PK
+  requester_user_id uuid                -- cross-module reference, no FK
+  payer_user_id     uuid                -- cross-module reference, no FK
+  amount            bigint              -- minor units
+  currency          varchar
+  note              varchar nullable
+  status            enum (pending | paid | declined | cancelled)
+  expires_at        timestamptz         -- 'expired' is derived from this, never stored
+  transaction_id    uuid FK nullable    -- set when paid; the transfer this produced
+  created_at        timestamptz
+  updated_at        timestamptz
+
+-- [v9] Phase 3 — owned by `notifications` (see ADR-0013)
+notifications
+  id                uuid PK
+  user_id           uuid                -- cross-module reference, no FK
+  type              varchar             -- the notification catalog's type key
+  data              jsonb               -- structured payload for deep linking; never secrets
+  title             varchar             -- rendered at write time
+  body              text                -- rendered at write time
+  dedupe_key        varchar             -- unique with (user_id, type)
+  read_at           timestamptz nullable
+  created_at        timestamptz
+
 ```
+
+> **[v9] Note on** `money_requests.status`**:** there is deliberately no
+> `expired` value. Expiry is derived from `expires_at` at read time and
+> enforced at pay time inside the posting transaction — so any query
+> surfacing requests must apply the `expires_at` predicate. Reading `status`
+> alone is wrong. See [ADR-0012](adr/0012-money-requests.md).
+
+> **[v9] Note on** `notifications`**:** rows are deleted after 180 days by a
+> scheduled job. This does **not** contradict the append-only rule — that
+> rule covers `ledger_entries`, which is financial history under a DB
+> trigger. Notifications are a UI convenience, already mutable by design via
+> `read_at`, and deleting one destroys nothing.
+
+> **[v9] Note on** `credentials`**:** Phase 3 adds `failed_pin_attempts` and
+> `pin_locked_until` alongside the existing `failed_login_attempts` /
+> `locked_until`. The two mechanisms have deliberately different thresholds
+> (3/15min vs 5/15min) and deliberately different blast radii — a PIN lock
+> blocks money movement only, never login. Do not harmonize them; see
+> [ADR-0009](adr/0009-transaction-pin.md).
 
 > **[v3.1] Widening the** `CHECK` **constraint** when a new provider is added is a normal `ALTER TABLE ... DROP CONSTRAINT ...; ALTER TABLE ... ADD CONSTRAINT ... CHECK (provider IN ('kora', 'paystack'))` — no join table, no FK, no enum-migration edge cases. The application layer mirrors this with its own `type ProviderCode = 'kora'` union type, so a typo is caught at compile time before it ever reaches the DB constraint.
 
@@ -416,17 +467,24 @@ Each phase exits with a working, production-quality slice of the system. No phas
 
 **Goal:** Two users can move money between each other.
 
+- **[v9]** Transaction PIN lifecycle — set, change, reset (behind step-up MFA), enforced on **every** money-moving request. 4 digits, HMAC-peppered then bcrypt; lockout state separate from login's at 3 attempts / 15 min. See [ADR-0009](adr/0009-transaction-pin.md)
+- **[v9]** Recipient lookup — resolve a username or email to a payable recipient, rate-limited, so the sender confirms a name before committing. Transfers take the resolved `userId`, not the raw identifier. Username and email only; not phone
 - Send money by username or email
-- Request money from another user
+- Request money from another user — see [ADR-0012](adr/0012-money-requests.md): `pending → paid | declined | cancelled | expired`, 7-day expiry derived from `expires_at` rather than swept, exact amount only, max 3 outstanding per requester→payer pair
 - **[v2]** Lock ordering — always lock wallet rows by `account_id` ascending, regardless of transfer direction, to prevent deadlocks between concurrent opposite-direction transfers
 - Lock rows first, then check balance, then debit (not check-then-lock)
 - Atomic ledger entries — sender debit, recipient credit, fee to fee_income
-- **[v2]** Client-supplied idempotency key required on send/request requests, separate from webhook idempotency
-- Transaction history — sent and received correctly distinguished
-- In-app notifications
+- **[v9]** Platform fee is flat and config-driven, launching at **₦0**. The `fee_income` leg is posted only when the fee is non-zero, so a zero-fee transfer is a two-leg posting; tests must run at a non-zero fee to cover the three-leg path. Note the consequence: at a non-zero fee every transfer locks the single `fee_income_<ccy>` row, serializing all transfers globally — accepted deliberately, see §4.2
+- **[v2, v9]** Client-supplied idempotency key required on send/request requests, separate from webhook idempotency — scoped to the sender and matched against a request fingerprint, see [ADR-0010](adr/0010-idempotency-key-scoping.md)
+- **[v9]** Eligibility and bounds: sender must have a verified email (the first endpoint to enforce Phase 1's verification), recipient need not; self-transfer rejected; NGN only; minimum ₦100; configurable maximum as an interim ceiling until Phase 6 tier limits replace it
+- Transaction history — sent and received correctly distinguished, direction resolved per viewer
+- **[v9]** In-app notifications — a persisted fourth channel in the existing `notifications` module, with list/unread-count/mark-read endpoints and 180-day retention. Dispatch becomes one job per channel so a failing channel can no longer cause another's redelivery. See [ADR-0013](adr/0013-in-app-notifications.md)
 - Email notification on send and receive
+- **[v9]** Orchestration lives in a new `transfers` module, which also owns `money_requests`; `ledger` gains only `postTransfer()` and keeps its zero peer-dependency property. See [ADR-0011](adr/0011-transfers-module-boundary.md)
 
 **Key concepts:** Atomicity, pessimistic locking, deadlock avoidance, race conditions, ledger correctness
+
+> **[v9] Concurrency is the risk in this phase, and it is invisible to ordinary tests.** A P2P implementation with the lock ordering reversed passes every single-threaded test that can be written; the bug appears only under concurrent load, in production, as an intermittent deadlock or a double-spend. Four checks are therefore gating acceptance criteria on the send slice, not follow-up work: (1) A→B and B→A posting simultaneously never deadlock — the first place the ascending-`account_id` rule is actually load-bearing, since funding only ever locks one user wallet; (2) N concurrent transfers from a sender who can afford one commit exactly once, proving lock-then-check rather than check-then-lock; (3) `fast-check` fuzzing of random valid transfer sequences never breaks the §4.3 invariant; (4) every account's cached `balance` equals its latest entry's `running_balance` after every operation. Iteration counts stay modest per-PR and the heavy fuzzing runs on the nightly cadence (§10).
 
 ---
 
@@ -493,6 +551,8 @@ Each phase exits with a working, production-quality slice of the system. No phas
 - Follow/unfollow users
 - Activity feed — public transactions from followed users (paginated)
 - Reactions and comments on transactions
+- **[v9]** Soft filter on money requests from non-followed users — they land in a separate bucket and don't push-notify, rather than being blocked outright. Deliberately *not* a hard gate: follow/unfollow is asymmetric and needs no consent, so it isn't a consent signal, and Phase 8 sends payment requests to bill-split participants who often aren't followers. See [ADR-0012](adr/0012-money-requests.md)
+- **[v9]** Blocking — an explicit "never let this user request from me again." Deferred from Phase 3, where the per-pair outstanding-request cap bounds the damage in the meantime
 
 **Key concepts:** Social graph, feed architecture, privacy controls
 

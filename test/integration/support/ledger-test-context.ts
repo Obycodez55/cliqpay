@@ -97,6 +97,7 @@ export async function createLedgerTestContext(): Promise<LedgerTestContext> {
     rateLimit: { ttlMs: 60_000, limit: 100 },
     jwt: { secret: 'test-jwt-secret-at-least-32-characters-long' },
     encryption: { key: 'a'.repeat(64) },
+    transactionPin: { pepper: 'b'.repeat(64) },
     notifications: {
       emailProvider: 'fake',
       smsProvider: 'fake',
@@ -112,6 +113,7 @@ export async function createLedgerTestContext(): Promise<LedgerTestContext> {
         clientEmail: undefined,
         privateKey: undefined,
       },
+      retentionDays: 180,
     },
     payments: {
       provider: 'fake',
@@ -122,6 +124,8 @@ export async function createLedgerTestContext(): Promise<LedgerTestContext> {
       },
       reconciliation: { alertEmail: 'ops@cliqpay.test' },
     },
+    transfers: { platformFee: 0, minAmount: 10_000, maxAmount: 100_000_000 },
+    moneyRequests: { expiryDays: 7, maxPendingPerPair: 3 },
   };
 
   const moduleRef = await Test.createTestingModule({

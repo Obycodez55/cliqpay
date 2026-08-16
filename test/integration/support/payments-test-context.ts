@@ -25,6 +25,7 @@ import { CreateTransactionsAndLedgerEntries1784707276066 } from '../../../src/da
 import { AddFundingQueryIndexes1785488695081 } from '../../../src/database/migrations/1785488695081-AddFundingQueryIndexes';
 import { EnforceLedgerEntriesAppendOnly1785491930164 } from '../../../src/database/migrations/1785491930164-EnforceLedgerEntriesAppendOnly';
 import { CreateCredentials1784707276062 } from '../../../src/database/migrations/1784707276062-CreateCredentials';
+import { CreateNotifications1786812506579 } from '../../../src/database/migrations/1786812506579-CreateNotifications';
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
 import { Account } from '../../../src/modules/ledger/entities/account.entity';
@@ -40,6 +41,11 @@ import { FakeAdapter } from '../../../src/modules/payments/adapters/fake.adapter
 import { NotificationsModule } from '../../../src/modules/notifications/notifications.module';
 import { EMAIL_SENDER } from '../../../src/modules/notifications/channels/email/email-sender.interface';
 import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/email/fake-email.adapter';
+import { NotificationEventsProcessor } from '../../../src/modules/notifications/internal/notification-events.processor';
+import { OtpNotificationProcessor } from '../../../src/modules/notifications/internal/otp.processor';
+import { ChannelDispatchProcessor } from '../../../src/modules/notifications/internal/channel-dispatch.processor';
+import { FundingPollProcessor } from '../../../src/modules/payments/internal/funding-poll.processor';
+import { ReconciliationProcessor } from '../../../src/modules/payments/internal/reconciliation.processor';
 
 @Module({})
 class TestConfigModule {}
@@ -99,6 +105,7 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
   await new CreateTransactionsAndLedgerEntries1784707276066().up(queryRunner);
   await new AddFundingQueryIndexes1785488695081().up(queryRunner);
   await new EnforceLedgerEntriesAppendOnly1785491930164().up(queryRunner);
+  await new CreateNotifications1786812506579().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 
@@ -118,6 +125,7 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
     rateLimit: { ttlMs: 60_000, limit: 100 },
     jwt: { secret: 'test-jwt-secret-at-least-32-characters-long' },
     encryption: { key: 'a'.repeat(64) },
+    transactionPin: { pepper: 'b'.repeat(64) },
     notifications: {
       emailProvider: 'fake',
       smsProvider: 'fake',
@@ -133,6 +141,7 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
         clientEmail: undefined,
         privateKey: undefined,
       },
+      retentionDays: 180,
     },
     payments: {
       provider: 'fake',
@@ -143,6 +152,8 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
       },
       reconciliation: { alertEmail: 'ops@cliqpay.test' },
     },
+    transfers: { platformFee: 0, minAmount: 10_000, maxAmount: 100_000_000 },
+    moneyRequests: { expiryDays: 7, maxPendingPerPair: 3 },
   };
 
   const moduleRef = await Test.createTestingModule({
@@ -204,9 +215,42 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
   };
 }
 
+// This context bootstraps PaymentsModule + NotificationsModule together,
+// which between them register 5 BullMQ queues/workers -- the only test
+// context in this suite that does. Plain app.close() relies on
+// @nestjs/bullmq's own shutdown hook, which closes every worker
+// *gracefully* (BullExplorer.onApplicationShutdown -> worker.close()).
+// Under Jest's default (non-`--runInBand`) child-process execution, one of
+// those graceful closes reliably never resolves once there are 5 of them in
+// play, hanging app.close() -- and with it the whole test process --
+// indefinitely. It doesn't reproduce under --runInBand or in the real app,
+// only in this specific multi-process-worker + 5-queue combination.
+// Force-closing every WorkerHost's underlying worker first (force: true
+// skips waiting on in-flight jobs, which is fine here -- nothing is
+// mid-delivery between test cases) sidesteps it entirely; the subsequent
+// app.close() then has nothing left to gracefully wait on.
+async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
+  const hosts = [
+    NotificationEventsProcessor,
+    OtpNotificationProcessor,
+    ChannelDispatchProcessor,
+    FundingPollProcessor,
+    ReconciliationProcessor,
+  ];
+  await Promise.all(
+    hosts.map(async (hostClass) => {
+      const host = app.get(hostClass, { strict: false });
+      await host?.worker?.close(true);
+    }),
+  );
+}
+
 export async function destroyPaymentsTestContext(
   ctx: Partial<PaymentsTestContext>,
 ): Promise<void> {
+  if (ctx.app) {
+    await forceCloseWorkers(ctx.app);
+  }
   await ctx.app?.close();
   await ctx.postgres?.stop();
   await ctx.redis?.stop();

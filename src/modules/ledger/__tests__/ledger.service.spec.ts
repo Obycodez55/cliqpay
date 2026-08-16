@@ -12,6 +12,7 @@ interface FakeAccountRepo {
   create: jest.Mock<Account, [Partial<Account>]>;
   save: jest.Mock<Promise<Account>, [Account]>;
   findOneByOrFail: jest.Mock<Promise<Account>, [Partial<Account>]>;
+  count: jest.Mock<Promise<number>, [unknown]>;
 }
 
 interface FakeTransactionRepo {
@@ -37,6 +38,7 @@ describe('LedgerService', () => {
         Promise.resolve({ ...entity, id: 'wallet-1' }),
       ),
       findOneByOrFail: jest.fn<Promise<Account>, [Partial<Account>]>(),
+      count: jest.fn<Promise<number>, [unknown]>(),
     };
     manager = {
       getRepository: jest.fn(() => repo),
@@ -152,24 +154,139 @@ describe('LedgerService', () => {
       service = new LedgerService(dataSource);
     });
 
-    it('looks up a transaction by its reference', async () => {
-      const transaction = { id: 'txn-1', reference: 'ref-1' } as Transaction;
-      transactionRepo.findOneBy.mockResolvedValue(transaction);
+    describe('checkIdempotentReplay', () => {
+      it("returns 'none' when no transaction matches the reference", async () => {
+        transactionRepo.findOneBy.mockResolvedValue(null);
 
-      const found = await service.findTransactionByReference('ref-1');
+        const result = await service.checkIdempotentReplay(
+          'missing-ref',
+          'user-1',
+          { type: 'funding', amount: 500000n, currency: 'NGN' },
+        );
 
-      expect(transactionRepo.findOneBy).toHaveBeenCalledWith({
-        reference: 'ref-1',
+        expect(transactionRepo.findOneBy).toHaveBeenCalledWith({
+          reference: 'missing-ref',
+        });
+        expect(result).toEqual({ outcome: 'none' });
+        expect(repo.count).not.toHaveBeenCalled();
       });
-      expect(found).toBe(transaction);
-    });
 
-    it('returns null when no transaction matches the reference', async () => {
-      transactionRepo.findOneBy.mockResolvedValue(null);
+      it("returns 'foreign' when the reference belongs to a different user, without exposing the transaction", async () => {
+        const transaction = {
+          id: 'txn-1',
+          reference: 'ref-1',
+          type: 'funding',
+          amount: 500000n,
+          currency: 'NGN',
+          senderWalletId: null,
+          recipientWalletId: 'wallet-owned-by-someone-else',
+        } as Transaction;
+        transactionRepo.findOneBy.mockResolvedValue(transaction);
+        repo.count.mockResolvedValue(0);
 
-      const found = await service.findTransactionByReference('missing-ref');
+        const result = await service.checkIdempotentReplay('ref-1', 'user-1', {
+          type: 'funding',
+          amount: 500000n,
+          currency: 'NGN',
+        });
 
-      expect(found).toBeNull();
+        expect(result).toEqual({ outcome: 'foreign' });
+      });
+
+      it("returns 'match' with the transaction when the reference belongs to the caller and the fingerprint matches", async () => {
+        const transaction = {
+          id: 'txn-1',
+          reference: 'ref-1',
+          type: 'funding',
+          amount: 500000n,
+          currency: 'NGN',
+          senderWalletId: null,
+          recipientWalletId: 'wallet-1',
+        } as Transaction;
+        transactionRepo.findOneBy.mockResolvedValue(transaction);
+        repo.count.mockResolvedValue(1);
+
+        const result = await service.checkIdempotentReplay('ref-1', 'user-1', {
+          type: 'funding',
+          amount: 500000n,
+          currency: 'NGN',
+        });
+
+        expect(result).toEqual({ outcome: 'match', transaction });
+      });
+
+      it("returns 'diverged' when the caller owns the reference but the amount differs from what produced it", async () => {
+        const transaction = {
+          id: 'txn-1',
+          reference: 'ref-1',
+          type: 'funding',
+          amount: 500000n,
+          currency: 'NGN',
+          senderWalletId: null,
+          recipientWalletId: 'wallet-1',
+        } as Transaction;
+        transactionRepo.findOneBy.mockResolvedValue(transaction);
+        repo.count.mockResolvedValue(1);
+
+        const result = await service.checkIdempotentReplay('ref-1', 'user-1', {
+          type: 'funding',
+          amount: 999n,
+          currency: 'NGN',
+        });
+
+        expect(result).toEqual({ outcome: 'diverged' });
+      });
+
+      it('checks the counterparty wallet only when the caller supplies one in the fingerprint', async () => {
+        const transaction = {
+          id: 'txn-1',
+          reference: 'ref-1',
+          type: 'p2p_transfer',
+          amount: 500000n,
+          currency: 'NGN',
+          senderWalletId: 'wallet-1',
+          recipientWalletId: 'wallet-recipient',
+        } as Transaction;
+        transactionRepo.findOneBy.mockResolvedValue(transaction);
+        repo.count.mockResolvedValue(1);
+
+        const result = await service.checkIdempotentReplay('ref-1', 'user-1', {
+          type: 'p2p_transfer',
+          amount: 500000n,
+          currency: 'NGN',
+          counterpartyWalletId: 'a-different-recipient',
+        });
+
+        expect(result).toEqual({ outcome: 'diverged' });
+      });
+
+      // Regression for the Phase 3 end-of-phase audit finding: a reference
+      // reused across two different transaction types (e.g. a P2P transfer,
+      // then later a funding request with the same reference and amount)
+      // must not "match" just because amount/currency happen to coincide —
+      // funding's fingerprint carries no counterparty, so without this
+      // check the counterparty mismatch would never surface.
+      it("returns 'diverged' when the caller owns the reference but its transaction type differs from the fingerprint's", async () => {
+        const transaction = {
+          id: 'txn-1',
+          reference: 'ref-1',
+          type: 'p2p_transfer',
+          amount: 500000n,
+          currency: 'NGN',
+          senderWalletId: 'wallet-1',
+          recipientWalletId: 'wallet-recipient',
+        } as Transaction;
+        transactionRepo.findOneBy.mockResolvedValue(transaction);
+        repo.count.mockResolvedValue(1);
+
+        const result = await service.checkIdempotentReplay('ref-1', 'user-1', {
+          type: 'funding',
+          amount: 500000n,
+          currency: 'NGN',
+        });
+
+        expect(result).toEqual({ outcome: 'diverged' });
+      });
     });
 
     it('creates a pending funding transaction with provider_reference mirroring reference', async () => {

@@ -1,9 +1,7 @@
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 import { DataSource, EntityManager, FindOneOptions } from 'typeorm';
-import { AppConfig } from '../../../config';
-import { AuthService } from '../auth.service';
-import { LedgerService } from '../../ledger/ledger.service';
+import { SessionService } from '../session.service';
 import { UsersService } from '../../users/users.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { Credential } from '../entities/credential.entity';
@@ -21,7 +19,6 @@ import {
 import { MfaService } from '../mfa.service';
 import { hashOpaqueToken } from '../internal/secrets.util';
 import { DeviceMetadata } from '../internal/device-metadata.util';
-import { VerificationCodeService } from '../verification-code.service';
 
 const TEST_DEVICE: DeviceMetadata = {
   ipAddress: '203.0.113.10',
@@ -120,7 +117,7 @@ interface FakeSessionRepo {
   findOne: jest.Mock<Promise<Session | null>, [FindOneOptions<Session>]>;
 }
 
-describe('AuthService — login, refresh, logout', () => {
+describe('SessionService — login, refresh, logout', () => {
   let usersService: {
     findByEmail: jest.Mock<Promise<UserFixture | null>, [string]>;
     findById: jest.Mock<Promise<UserFixture>, [string]>;
@@ -150,7 +147,7 @@ describe('AuthService — login, refresh, logout', () => {
       unknown[]
     >;
   };
-  let service: AuthService;
+  let service: SessionService;
   let existingUser: UserFixture;
   let existingCredential: Credential;
 
@@ -210,17 +207,12 @@ describe('AuthService — login, refresh, logout', () => {
       ),
     };
     bcryptCompare.mockReset();
-    service = new AuthService(
+    service = new SessionService(
       dataSource as unknown as DataSource,
-      {
-        app: { emailVerificationUrl: 'http://localhost:3000/verify-email' },
-      } as unknown as AppConfig,
       usersService as unknown as UsersService,
-      {} as LedgerService,
       jwtService as unknown as JwtService,
       eventBus as unknown as EventBusService,
       mfaService as unknown as MfaService,
-      {} as VerificationCodeService,
     );
   });
 

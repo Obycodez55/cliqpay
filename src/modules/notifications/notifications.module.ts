@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
+import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule, getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
@@ -8,9 +9,17 @@ import {
   PRIORITY_DISPATCH_QUEUE,
 } from '../../shared/events/event-bus.service';
 import { PushToken } from './entities/push-token.entity';
+import { Notification } from './entities/notification.entity';
 import { NotificationService } from './notification.service';
+import { NotificationsController } from './notifications.controller';
 import { NotificationEventsProcessor } from './internal/notification-events.processor';
 import { OtpNotificationProcessor } from './internal/otp.processor';
+import { ChannelDispatchProcessor } from './internal/channel-dispatch.processor';
+import { CHANNEL_DISPATCH_QUEUE } from './internal/channel-dispatch.queue';
+import {
+  NOTIFICATION_RETENTION_QUEUE,
+  NotificationRetentionProcessor,
+} from './internal/retention.processor';
 import {
   EMAIL_SENDER,
   EmailSender,
@@ -63,14 +72,40 @@ const PUSH_ADAPTERS = {
 // everything on fakes (EMAIL_PROVIDER=fake etc., the .env.example default).
 @Module({
   imports: [
-    TypeOrmModule.forFeature([PushToken]),
+    // Only the notifications list/unread-count/mark-read endpoints need
+    // this — every other provider here is queue-driven, not HTTP.
+    JwtModule.registerAsync({
+      inject: [APP_CONFIG],
+      useFactory: (config: AppConfig) => ({ secret: config.jwt.secret }),
+    }),
+    TypeOrmModule.forFeature([PushToken, Notification]),
     BullModule.registerQueue({ name: DOMAIN_EVENTS_QUEUE }),
     BullModule.registerQueue({ name: PRIORITY_DISPATCH_QUEUE }),
+    // Internal to this module — no other module publishes or consumes it,
+    // unlike the two queues above. Same attempts/backoff/removal shape as
+    // DOMAIN_EVENTS_QUEUE; each job here delivers exactly one channel, so
+    // its retry budget never spills over into another channel's delivery.
+    BullModule.registerQueue({
+      name: CHANNEL_DISPATCH_QUEUE,
+      defaultJobOptions: {
+        attempts: 5,
+        backoff: { type: 'exponential', delay: 1000 },
+        removeOnComplete: { age: 3_600, count: 1_000 },
+        removeOnFail: { age: 86_400, count: 5_000 },
+      },
+    }),
+    // Its own queue, same reasoning as CHANNEL_DISPATCH_QUEUE above and as
+    // RECONCILIATION_QUEUE (payments) — a daily scheduled job, independent
+    // of every other queue's schedule and retry budget.
+    BullModule.registerQueue({ name: NOTIFICATION_RETENTION_QUEUE }),
   ],
+  controllers: [NotificationsController],
   providers: [
     NotificationService,
     NotificationEventsProcessor,
     OtpNotificationProcessor,
+    ChannelDispatchProcessor,
+    NotificationRetentionProcessor,
     {
       provide: EMAIL_SENDER,
       inject: [APP_CONFIG],

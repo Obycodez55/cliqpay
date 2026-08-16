@@ -70,7 +70,7 @@ describe('login, sessions, and lockout', () => {
     });
 
     await expect(
-      ctx.authService.login(
+      ctx.sessionService.login(
         { email: 'no-such-user@example.com', password: 'whatever' },
         null,
         TEST_DEVICE,
@@ -78,7 +78,7 @@ describe('login, sessions, and lockout', () => {
     ).rejects.toBeInstanceOf(InvalidCredentialsException);
 
     await expect(
-      ctx.authService.login(
+      ctx.sessionService.login(
         { email: 'login-bad@example.com', password: 'wrong-password' },
         null,
         TEST_DEVICE,
@@ -98,13 +98,13 @@ describe('login, sessions, and lockout', () => {
     );
     const firstToken = tokens.refreshToken;
 
-    const { refreshToken: secondToken } = await ctx.authService.refresh({
+    const { refreshToken: secondToken } = await ctx.sessionService.refresh({
       refreshToken: firstToken,
     });
     expect(secondToken).not.toBe(firstToken);
 
     // Normal rotation: the new token works, rotating again.
-    const { refreshToken: thirdToken } = await ctx.authService.refresh({
+    const { refreshToken: thirdToken } = await ctx.sessionService.refresh({
       refreshToken: secondToken,
     });
     expect(thirdToken).not.toBe(secondToken);
@@ -115,12 +115,12 @@ describe('login, sessions, and lockout', () => {
     // is now previousTokenHash) is the reuse case that must revoke.
     const emailsBefore = ctx.emailAdapter.sent.length;
     await expect(
-      ctx.authService.refresh({ refreshToken: secondToken }),
+      ctx.sessionService.refresh({ refreshToken: secondToken }),
     ).rejects.toBeInstanceOf(SessionRevokedException);
 
     // The session is now fully revoked — even the latest valid token stops working.
     await expect(
-      ctx.authService.refresh({ refreshToken: thirdToken }),
+      ctx.sessionService.refresh({ refreshToken: thirdToken }),
     ).rejects.toBeInstanceOf(InvalidRefreshTokenException);
 
     // The reuse-detected revoke also fires a security_alert through the
@@ -146,7 +146,7 @@ describe('login, sessions, and lockout', () => {
     const before = await ctx.sessionRepo.find();
 
     await expect(
-      ctx.authService.refresh({ refreshToken: 'never-issued-token' }),
+      ctx.sessionService.refresh({ refreshToken: 'never-issued-token' }),
     ).rejects.toBeInstanceOf(InvalidRefreshTokenException);
 
     const after = await ctx.sessionRepo.find();
@@ -164,14 +164,14 @@ describe('login, sessions, and lockout', () => {
       'a-strong-unique-passphrase',
     );
 
-    await ctx.authService.logout({ refreshToken: tokens.refreshToken });
+    await ctx.sessionService.logout({ refreshToken: tokens.refreshToken });
 
     const session = await ctx.sessionRepo.findOneByOrFail({
       userId: user.id,
     });
     expect(session.status).toBe('revoked');
     await expect(
-      ctx.authService.refresh({ refreshToken: tokens.refreshToken }),
+      ctx.sessionService.refresh({ refreshToken: tokens.refreshToken }),
     ).rejects.toBeInstanceOf(InvalidRefreshTokenException);
   });
 
@@ -184,7 +184,7 @@ describe('login, sessions, and lockout', () => {
 
     for (let i = 0; i < 4; i++) {
       await expect(
-        ctx.authService.login(
+        ctx.sessionService.login(
           { email: 'lockout@example.com', password: 'wrong-password' },
           null,
           TEST_DEVICE,
@@ -194,7 +194,7 @@ describe('login, sessions, and lockout', () => {
 
     // 5th failure locks the account.
     await expect(
-      ctx.authService.login(
+      ctx.sessionService.login(
         { email: 'lockout@example.com', password: 'wrong-password' },
         null,
         TEST_DEVICE,
@@ -213,7 +213,7 @@ describe('login, sessions, and lockout', () => {
 
     // Even the correct password is rejected while locked.
     await expect(
-      ctx.authService.login(
+      ctx.sessionService.login(
         {
           email: 'lockout@example.com',
           password: 'a-strong-unique-passphrase',

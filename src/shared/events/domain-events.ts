@@ -18,6 +18,7 @@ export interface SecurityAlertEventPayload {
   userId: string;
   email: string;
   message: string;
+  occurredAt: string; // ISO-8601 — see notifications' SecurityAlertPayload
 }
 
 export const MFA_CHALLENGE_OTP_EVENT = 'mfa_challenge_otp';
@@ -68,6 +69,66 @@ export interface FundingCompletedEventPayload {
   email: string;
   amount: string; // decimal display string (Money.toDecimalString()), not minor units
   currency: string;
+  reference: string; // funding transaction reference — see notifications' FundingCompletedPayload
+}
+
+export const TRANSFER_SENT_EVENT = 'transfer_sent';
+
+export interface TransferSentEventPayload {
+  userId: string;
+  email: string;
+  counterpartyUsername: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  reference: string;
+}
+
+export const TRANSFER_RECEIVED_EVENT = 'transfer_received';
+
+export interface TransferReceivedEventPayload {
+  userId: string;
+  email: string;
+  counterpartyUsername: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  reference: string;
+}
+
+export const MONEY_REQUEST_CREATED_EVENT = 'money_request_created';
+
+export interface MoneyRequestCreatedEventPayload {
+  userId: string; // the payer being asked
+  email: string;
+  counterpartyUsername: string; // requester's username
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  note: string | null;
+  // The money request's own id — the in-app channel's dedupe_key, same
+  // reasoning as TransferSentEventPayload's reference.
+  moneyRequestId: string;
+}
+
+export const MONEY_REQUEST_DECLINED_EVENT = 'money_request_declined';
+
+export interface MoneyRequestDeclinedEventPayload {
+  userId: string; // the requester, notified their request was declined
+  email: string;
+  counterpartyUsername: string; // payer's username
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  moneyRequestId: string;
+}
+
+export const MONEY_REQUEST_PAID_EVENT = 'money_request_paid';
+
+export interface MoneyRequestPaidEventPayload {
+  userId: string; // the requester, notified their request was paid
+  email: string;
+  counterpartyUsername: string; // payer's username
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  note: string | null;
+  moneyRequestId: string;
 }
 
 export const RECONCILIATION_MISMATCH_EVENT = 'reconciliation_mismatch';

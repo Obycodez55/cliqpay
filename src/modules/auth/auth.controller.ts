@@ -34,6 +34,9 @@ import { VerifyPhoneDto } from './dto/verify-phone.dto';
 import { RequestPasswordResetDto } from './dto/request-password-reset.dto';
 import { CompletePasswordResetDto } from './dto/complete-password-reset.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { SetTransactionPinDto } from './dto/set-transaction-pin.dto';
+import { ChangeTransactionPinDto } from './dto/change-transaction-pin.dto';
+import { ResetTransactionPinDto } from './dto/reset-transaction-pin.dto';
 import { ChangeEmailDto } from './dto/change-email.dto';
 import { ConfirmChangeEmailDto } from './dto/confirm-change-email.dto';
 import { ChangePhoneDto } from './dto/change-phone.dto';
@@ -45,11 +48,17 @@ import {
   AuthenticatedRequest,
   JwtAuthGuard,
 } from '../../common/guards/jwt-auth.guard';
+import { SessionService } from './session.service';
+import { TransactionPinService } from './transaction-pin.service';
 
 @ApiTags('Authentication')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly sessionService: SessionService,
+    private readonly transactionPinService: TransactionPinService,
+  ) {}
 
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
@@ -80,7 +89,7 @@ export class AuthController {
     },
   })
   login(@Body() dto: LoginDto, @Req() req: Request): Promise<LoginResponseDto> {
-    return this.authService.login(
+    return this.sessionService.login(
       dto,
       readTrustedDeviceCookie(req),
       extractDeviceMetadata(req),
@@ -91,14 +100,14 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Exchange a refresh token for a new token pair' })
   refresh(@Body() dto: RefreshDto): Promise<TokenPairResponseDto> {
-    return this.authService.refresh(dto);
+    return this.sessionService.refresh(dto);
   }
 
   @Post('logout')
   @HttpCode(HttpStatus.NO_CONTENT)
   @ApiOperation({ summary: 'Log out and revoke the current session' })
   logout(@Body() dto: LogoutDto): Promise<void> {
-    return this.authService.logout(dto);
+    return this.sessionService.logout(dto);
   }
 
   // Public — the token itself is the proof of identity, no guard needed.
@@ -308,5 +317,109 @@ export class AuthController {
       req.user.sessionId,
       dto,
     );
+  }
+
+  // Step 1 of 2 for set-pin — only usable while no PIN exists yet (see
+  // setTransactionPin below); fires unconditionally regardless of
+  // trusted-device status, same as the other step-up flows.
+  @Post('transaction-pin/set/step-up')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Start a step-up challenge for setting a transaction PIN',
+  })
+  initiateSetPinStepUp(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<StepUpChallengeResponseDto> {
+    return this.transactionPinService.initiateSetPinStepUp(req.user.userId);
+  }
+
+  // Step 2 of 2 — first-time PIN only; an existing PIN must go through
+  // change or reset instead.
+  @Post('transaction-pin/set')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Set the transaction PIN using a step-up challenge',
+  })
+  setTransactionPin(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: SetTransactionPinDto,
+  ): Promise<void> {
+    return this.transactionPinService.setTransactionPin(req.user.userId, dto);
+  }
+
+  // Step 1 of 2 for change-pin.
+  @Post('transaction-pin/change/step-up')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Start a step-up challenge for changing the transaction PIN',
+  })
+  initiateChangePinStepUp(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<StepUpChallengeResponseDto> {
+    return this.transactionPinService.initiateChangePinStepUp(req.user.userId);
+  }
+
+  // Step 2 of 2 — requires the current PIN; a wrong current PIN here counts
+  // toward the PIN lockout (see docs/adr/0009-transaction-pin.md).
+  @Post('transaction-pin/change')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Change the transaction PIN using the current PIN and a step-up challenge',
+  })
+  changeTransactionPin(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: ChangeTransactionPinDto,
+  ): Promise<void> {
+    return this.transactionPinService.changeTransactionPin(
+      req.user.userId,
+      dto,
+    );
+  }
+
+  // Step 1 of 2 for reset-pin — the recovery path for a forgotten PIN, so
+  // it must stay reachable even while the PIN is locked (see ADR-0009).
+  @Post('transaction-pin/reset/step-up')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary:
+      'Start a step-up challenge for resetting a forgotten transaction PIN',
+  })
+  initiateResetPinStepUp(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<StepUpChallengeResponseDto> {
+    return this.transactionPinService.initiateResetPinStepUp(req.user.userId);
+  }
+
+  // Step 2 of 2 — no current PIN required, since this is the recovery path;
+  // clears the PIN lockout state as part of setting the new PIN.
+  @Post('transaction-pin/reset')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Reset the transaction PIN using a step-up challenge',
+  })
+  resetTransactionPin(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: ResetTransactionPinDto,
+  ): Promise<void> {
+    return this.transactionPinService.resetTransactionPin(req.user.userId, dto);
   }
 }

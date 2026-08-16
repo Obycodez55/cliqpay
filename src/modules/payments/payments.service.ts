@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   UnauthorizedException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { LedgerService } from '../ledger/ledger.service';
@@ -25,9 +26,13 @@ import {
   PaymentProviderAdapter,
   VerifyChargeResult,
 } from './adapters/payment-provider.interface';
-import { isUniqueViolation } from './internal/errors';
+import { isUniqueViolation } from '../../database/postgres-errors.util';
 import { extractTopLevelJsonField } from './internal/raw-json';
-import { PostFundingFacts, PostFundingResult } from '../ledger/ledger.service';
+import {
+  IdempotentReplay,
+  PostFundingFacts,
+  PostFundingResult,
+} from '../ledger/ledger.service';
 import {
   ACTIVE_RECONCILIATION_PAIRS,
   ActiveReconciliationPair,
@@ -107,18 +112,33 @@ export class PaymentsService {
     userId: string,
     dto: FundWalletDto,
   ): Promise<FundWalletResponseDto> {
-    const existing = await this.ledgerService.findTransactionByReference(
+    const amount = Money.of(dto.amount, NGN);
+    // Funding has no counterparty (it always credits the caller's own
+    // wallet) — amount/currency are the only fields that define the
+    // operation here, per ADR-0010. `type` guards against a reference
+    // reused across a different transaction type entirely (Phase 3
+    // end-of-phase audit) — without it, a P2P transfer sharing this
+    // reference and amount could falsely "match" here.
+    const fingerprint = {
+      type: 'funding' as const,
+      amount: amount.amount,
+      currency: amount.currency,
+    };
+
+    const replay = await this.ledgerService.checkIdempotentReplay(
       dto.reference,
+      userId,
+      fingerprint,
     );
-    if (existing) {
-      return toFundWalletResponse(existing);
+    const replayResponse = resolveFundingReplay(replay);
+    if (replayResponse) {
+      return replayResponse;
     }
 
     const [user, wallet] = await Promise.all([
       this.usersService.findById(userId),
       this.ledgerService.getUserWallet(userId),
     ]);
-    const amount = Money.of(dto.amount, NGN);
 
     try {
       await this.ledgerService.createPendingFundingTransaction({
@@ -131,11 +151,14 @@ export class PaymentsService {
       });
     } catch (error) {
       if (isUniqueViolation(error, 'UQ_transactions_reference')) {
-        const raced = await this.ledgerService.findTransactionByReference(
+        const raced = await this.ledgerService.checkIdempotentReplay(
           dto.reference,
+          userId,
+          fingerprint,
         );
-        if (raced) {
-          return toFundWalletResponse(raced);
+        const racedResponse = resolveFundingReplay(raced);
+        if (racedResponse) {
+          return racedResponse;
         }
       }
       throw error;
@@ -375,6 +398,7 @@ export class PaymentsService {
           email: user.email,
           amount: result.netAmount.toDecimalString(),
           currency: result.netAmount.currency,
+          reference: result.reference,
         },
         occurredAt: new Date(),
       });
@@ -386,12 +410,48 @@ export class PaymentsService {
   }
 }
 
+// A reference belonging to another user must 409 with nothing about the
+// other transaction attached (ADR-0010, defect 1) — the message here never
+// touches `replay.transaction`. Returns null on 'none' so the caller falls
+// through to actually creating the transaction.
+function resolveFundingReplay(
+  replay: IdempotentReplay,
+): FundWalletResponseDto | null {
+  switch (replay.outcome) {
+    case 'match':
+      return toFundWalletResponse({
+        status: replay.transaction.status,
+        metadata: replay.transaction.metadata as unknown as Record<
+          string,
+          unknown
+        >,
+      });
+    case 'foreign':
+      throw new ConflictException(
+        'This reference has already been used for a different funding request.',
+      );
+    case 'diverged':
+      throw new UnprocessableEntityException(
+        'This reference was already used to fund with different parameters — use a new reference.',
+      );
+    case 'none':
+      return null;
+  }
+}
+
 function toFundWalletResponse(transaction: {
   status: string;
-  metadata: { checkoutUrl: string | null };
+  // Untyped, not the funding-shaped metadata directly — checkIdempotentReplay
+  // is shared across every transaction type (funding, transfers), so its
+  // TypeScript shape can't promise a funding-shaped metadata payload here.
+  // In practice this is only ever called with a funding transaction, since
+  // PaymentsService is the only caller of checkIdempotentReplay with a
+  // funding reference.
+  metadata: Record<string, unknown>;
 }): FundWalletResponseDto {
-  if (transaction.metadata.checkoutUrl) {
-    return { checkoutUrl: transaction.metadata.checkoutUrl };
+  const checkoutUrl = transaction.metadata.checkoutUrl as string | null;
+  if (checkoutUrl) {
+    return { checkoutUrl };
   }
   if (transaction.status === 'failed') {
     // markFundingTransactionFailed set this before a checkout URL ever

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { ProfileController } from './profile.controller';
+import { RecipientController } from './recipient.controller';
 import { UsersService } from './users.service';
 
 @Module({
@@ -11,7 +12,7 @@ import { UsersService } from './users.service';
       useFactory: (config: AppConfig) => ({ secret: config.jwt.secret }),
     }),
   ],
-  controllers: [ProfileController],
+  controllers: [ProfileController, RecipientController],
   providers: [UsersService],
   exports: [UsersService],
 })

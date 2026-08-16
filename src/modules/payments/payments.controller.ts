@@ -9,7 +9,12 @@ import {
   Version,
   VERSION_NEUTRAL,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import {
@@ -36,6 +41,17 @@ export class PaymentsController {
   @ApiBearerAuth()
   @ApiOperation({
     summary: "Start funding the current user's wallet, returns a checkout URL",
+    description:
+      'reference must be globally unique across all users — a UUID is recommended.',
+  })
+  @ApiResponse({
+    status: 409,
+    description: 'reference was already used by a different user.',
+  })
+  @ApiResponse({
+    status: 422,
+    description:
+      'reference was already used by this user with a different amount.',
   })
   fundWallet(
     @Req() req: AuthenticatedRequest,

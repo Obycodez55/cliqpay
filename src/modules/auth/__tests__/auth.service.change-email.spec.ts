@@ -1,4 +1,3 @@
-import { JwtService } from '@nestjs/jwt';
 import { DataSource } from 'typeorm';
 import { AppConfig } from '../../../config';
 import { DomainEventEnvelope } from '../../../shared/events/domain-events';
@@ -14,6 +13,7 @@ import {
 } from '../internal/errors';
 import { MfaService } from '../mfa.service';
 import { VerificationCodeService } from '../verification-code.service';
+import { TransactionPinService } from '../transaction-pin.service';
 
 // Structural, not `users.User` — same reasoning as the password-reset spec.
 interface UserFixture {
@@ -130,10 +130,10 @@ describe('AuthService — change email', () => {
       } as unknown as AppConfig,
       usersService as unknown as UsersService,
       {} as LedgerService,
-      { signAsync: jest.fn() } as unknown as JwtService,
       eventBus as unknown as EventBusService,
       mfaService as unknown as MfaService,
       verificationCodeService as unknown as VerificationCodeService,
+      {} as TransactionPinService,
     );
   });
 

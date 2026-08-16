@@ -30,6 +30,16 @@ export class Credential {
   @Column({ type: 'timestamptz', nullable: true })
   lockedUntil: Date | null;
 
+  // Deliberately separate from failedLoginAttempts/lockedUntil above — see
+  // ADR-0009. Reusing the login lockout would let a PIN-guessing attacker
+  // lock the real user out of login, disabling the one path that lets them
+  // reset the PIN and evict the attacker.
+  @Column({ type: 'int', default: 0 })
+  failedPinAttempts: number;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  pinLockedUntil: Date | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 

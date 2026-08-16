@@ -1,14 +1,17 @@
 import { Logger } from '@nestjs/common';
-import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Job } from 'bullmq';
+import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
+import { Job, Queue } from 'bullmq';
 import { DOMAIN_EVENTS_QUEUE } from '../../../shared/events/event-bus.service';
 import { DomainEventEnvelope } from '../../../shared/events/domain-events';
-import { NotificationService } from '../notification.service';
 import {
   NOTIFICATION_CATALOG,
-  NotificationPayloadMap,
+  NotificationChannel,
   NotificationType,
 } from '../notification-catalog';
+import {
+  CHANNEL_DISPATCH_QUEUE,
+  ChannelDispatchJobData,
+} from './channel-dispatch.queue';
 
 function isKnownNotificationType(name: string): name is NotificationType {
   return name in NOTIFICATION_CATALOG;
@@ -26,7 +29,10 @@ function isKnownNotificationType(name: string): name is NotificationType {
 export class NotificationEventsProcessor extends WorkerHost {
   private readonly logger = new Logger(NotificationEventsProcessor.name);
 
-  constructor(private readonly notifications: NotificationService) {
+  constructor(
+    @InjectQueue(CHANNEL_DISPATCH_QUEUE)
+    private readonly channelDispatchQueue: Queue<ChannelDispatchJobData>,
+  ) {
     super();
   }
 
@@ -37,9 +43,20 @@ export class NotificationEventsProcessor extends WorkerHost {
       );
       return;
     }
-    await this.notifications.send(
-      job.name,
-      job.data.payload as NotificationPayloadMap[NotificationType],
+    const type: NotificationType = job.name;
+    const channels: readonly NotificationChannel[] =
+      NOTIFICATION_CATALOG[type].channels;
+    // This job is "done" once each channel's job is enqueued, not once
+    // they've delivered — that's what keeps one channel's BullMQ retry
+    // budget from resending a channel that already succeeded.
+    await Promise.all(
+      channels.map((channel) =>
+        this.channelDispatchQueue.add(type, {
+          channel,
+          type,
+          payload: job.data.payload,
+        }),
+      ),
     );
   }
 }

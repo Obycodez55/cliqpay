@@ -46,6 +46,18 @@ const envSchema = z
         'ENCRYPTION_KEY must be a 64-character hex string (32 bytes)',
       ),
 
+    // HMAC-SHA256 pepper applied before bcrypt on transaction PINs — 32
+    // bytes as hex, required unconditionally (unlike the provider secrets
+    // below) since there's no unpeppered fallback to degrade to. See
+    // ADR-0009: this key can never be rotated without invalidating every
+    // PIN in the system.
+    TRANSACTION_PIN_PEPPER: z
+      .string()
+      .regex(
+        /^[0-9a-fA-F]{64}$/,
+        'TRANSACTION_PIN_PEPPER must be a 64-character hex string (32 bytes)',
+      ),
+
     // Named per concrete provider, not a real/fake toggle — `fake` is just
     // another option in the same set, so adding a second real provider for a
     // channel (e.g. SES alongside Brevo) is adding an enum value, not
@@ -87,6 +99,39 @@ const envSchema = z
     PAYMENT_REDIRECT_URL: z.url().optional(),
 
     RECONCILIATION_ALERT_EMAIL: z.email(),
+
+    // In-app notification rows older than this are deleted regardless of
+    // read state — see docs/adr/0013-in-app-notifications.md.
+    NOTIFICATION_RETENTION_DAYS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(180),
+
+    // Flat, config-driven platform fee on P2P transfers, minor units.
+    // Launches at 0 — see docs/architecture.md §4.2 for why the fee_income
+    // leg is only posted when this is non-zero.
+    TRANSFER_PLATFORM_FEE: z.coerce.number().int().nonnegative().default(0),
+    // Bounds per transfer, minor units. The maximum is an interim ceiling
+    // until Phase 6 KYC tier limits replace it.
+    TRANSFER_MIN_AMOUNT: z.coerce.number().int().nonnegative().default(10_000),
+    TRANSFER_MAX_AMOUNT: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(100_000_000),
+
+    // Money requests (ADR-0012) — expiry is derived at read time, never
+    // swept, so this only controls what gets stamped on `expires_at` at
+    // creation.
+    MONEY_REQUEST_EXPIRY_DAYS: z.coerce.number().int().positive().default(7),
+    // Cap on outstanding pending requests from one requester to one payer —
+    // see ADR-0012's rejection of a daily rate limit instead.
+    MONEY_REQUEST_MAX_PENDING_PER_PAIR: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(3),
   })
   .superRefine((env, ctx) => {
     // A provider's own credentials are only required when it's the one
@@ -172,6 +217,9 @@ function buildConfig(env: Env) {
     encryption: {
       key: env.ENCRYPTION_KEY,
     },
+    transactionPin: {
+      pepper: env.TRANSACTION_PIN_PEPPER,
+    },
     notifications: {
       emailProvider: env.EMAIL_PROVIDER,
       smsProvider: env.SMS_PROVIDER,
@@ -190,6 +238,7 @@ function buildConfig(env: Env) {
         clientEmail: env.FIREBASE_CLIENT_EMAIL,
         privateKey: env.FIREBASE_PRIVATE_KEY,
       },
+      retentionDays: env.NOTIFICATION_RETENTION_DAYS,
     },
     payments: {
       provider: env.PAYMENT_PROVIDER,
@@ -201,6 +250,15 @@ function buildConfig(env: Env) {
       reconciliation: {
         alertEmail: env.RECONCILIATION_ALERT_EMAIL,
       },
+    },
+    transfers: {
+      platformFee: env.TRANSFER_PLATFORM_FEE,
+      minAmount: env.TRANSFER_MIN_AMOUNT,
+      maxAmount: env.TRANSFER_MAX_AMOUNT,
+    },
+    moneyRequests: {
+      expiryDays: env.MONEY_REQUEST_EXPIRY_DAYS,
+      maxPendingPerPair: env.MONEY_REQUEST_MAX_PENDING_PER_PAIR,
     },
   };
 }

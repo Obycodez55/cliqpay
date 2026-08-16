@@ -82,6 +82,10 @@ export default tseslint.config(
           pattern: 'src/modules/users/**',
         },
         {
+          type: 'transfers-module',
+          pattern: 'src/modules/transfers/**',
+        },
+        {
           type: 'peripheral-module',
           pattern:
             'src/modules/{kyc,fraud,social,billsplit,scheduling,notifications}',
@@ -121,6 +125,12 @@ export default tseslint.config(
               disallow: { to: { element: { type: 'peripheral-module' } } },
               message:
                 'Core modules (ledger, payments, auth, users) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
+            },
+            {
+              from: { element: { type: 'transfers-module' } },
+              disallow: { to: { element: { type: 'peripheral-module' } } },
+              message:
+                'Core modules (ledger, payments, auth, users, transfers) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10 and docs/adr/0011-transfers-module-boundary.md.',
             },
             {
               from: { element: { type: 'users-module' } },
@@ -167,6 +177,10 @@ export default tseslint.config(
             },
             {
               target: { type: 'users-module' },
+              allow: '*.(service|module).ts',
+            },
+            {
+              target: { type: 'transfers-module' },
               allow: '*.(service|module).ts',
             },
             {

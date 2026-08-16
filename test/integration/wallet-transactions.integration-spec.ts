@@ -2,6 +2,7 @@ import * as request from 'supertest';
 import { JwtService } from '@nestjs/jwt';
 import { TransactionHistoryItemDto } from '../../src/modules/ledger/dto/transaction-history-item.dto';
 import { PaginatedResult } from '../../src/common/interfaces/paginated-result.interface';
+import { Money } from '../../src/shared/primitives/money';
 import {
   LedgerTestContext,
   createLedgerTestContext,
@@ -96,6 +97,7 @@ describe('GET /wallet/transactions', () => {
       expect(item.direction).toBe('credit');
       expect(item.type).toBe('funding');
       expect(item.status).toBe('completed');
+      expect(item.counterparty).toBeNull();
     }
   });
 
@@ -149,7 +151,10 @@ describe('GET /wallet/transactions', () => {
     // precision (JS `Date` ceiling) while Postgres stores microseconds —
     // realistic because postFundingEntries batch-inserts entries in one
     // statement, so distinct fundings can land in the same millisecond.
-    // Forced explicitly here rather than relying on incidental timing.
+    // Forced explicitly here by setting created_at at INSERT time (rather
+    // than seeding via postFunding then UPDATE-ing afterward) — ledger_entries
+    // is append-only (docs/architecture.md §7), so the collision has to be
+    // baked in at creation, not patched in after the fact.
     const { userId, walletId } = await seedUserWithWallet(ctx, {
       email: 'history-collision@example.com',
       phone: '+2348022220005',
@@ -157,28 +162,39 @@ describe('GET /wallet/transactions', () => {
     });
 
     const rowCount = 6;
+    // Same millisecond, distinct microseconds — the exact shape that broke
+    // the truncated cursor.
+    const sameMillisecond = new Date('2026-01-01T00:00:00.500Z');
     for (let i = 0; i < rowCount; i++) {
-      await seedCompletedFunding(ctx, {
-        walletId,
-        reference: `cliqpay-history-collision-${i}`,
-        netAmountMinor: BigInt(2000 + i),
-      });
+      const transaction = await ctx.transactionRepo.save(
+        ctx.transactionRepo.create({
+          reference: `cliqpay-history-collision-${i}`,
+          provider: 'kora',
+          providerReference: `cliqpay-history-collision-${i}`,
+          type: 'funding',
+          status: 'completed',
+          amount: BigInt(2000 + i),
+          currency: 'NGN',
+          recipientWalletId: walletId,
+          metadata: { checkoutUrl: null, grossAmount: null },
+        }),
+      );
+      await ctx.dataSource.query(
+        `INSERT INTO ledger_entries (transaction_id, account_id, direction, amount, running_balance, created_at)
+         VALUES ($1, $2, 'credit', $3, $3, $4::timestamptz + ($5 || ' microseconds')::interval)`,
+        [
+          transaction.id,
+          walletId,
+          transaction.amount.toString(),
+          sameMillisecond.toISOString(),
+          i,
+        ],
+      );
     }
     const entries = await ctx.ledgerEntryRepo.find({
       where: { accountId: walletId },
     });
     expect(entries).toHaveLength(rowCount);
-    // Same millisecond, distinct microseconds — the exact shape that broke
-    // the truncated cursor.
-    const sameMillisecond = new Date('2026-01-01T00:00:00.500Z');
-    await Promise.all(
-      entries.map((entry, i) =>
-        ctx.dataSource.query(
-          `UPDATE ledger_entries SET created_at = $1::timestamptz + ($2 || ' microseconds')::interval WHERE id = $3`,
-          [sameMillisecond.toISOString(), i, entry.id],
-        ),
-      ),
-    );
 
     const limit = 2;
     const seenIds: string[] = [];
@@ -200,5 +216,149 @@ describe('GET /wallet/transactions', () => {
     } while (cursor);
 
     expect(new Set(seenIds)).toEqual(new Set(entries.map((e) => e.id)));
+  });
+
+  it("shows the recipient as counterparty on the sender's row and the sender as counterparty on the recipient's row, fee-inclusive on the sender's side", async () => {
+    const sender = await seedUserWithWallet(ctx, {
+      email: 'history-transfer-sender@example.com',
+      phone: '+2348022220006',
+      username: 'history_transfer_sender',
+    });
+    const recipient = await seedUserWithWallet(ctx, {
+      email: 'history-transfer-recipient@example.com',
+      phone: '+2348022220007',
+      username: 'history_transfer_recipient',
+    });
+    await seedCompletedFunding(ctx, {
+      walletId: sender.walletId,
+      reference: 'cliqpay-history-transfer-fund',
+      netAmountMinor: 100_000n,
+    });
+
+    await ctx.ledgerService.postTransfer({
+      reference: 'cliqpay-history-transfer-1',
+      senderWalletId: sender.walletId,
+      recipientWalletId: recipient.walletId,
+      amount: Money.of(5_000n, 'NGN'),
+      platformFee: Money.of(100n, 'NGN'),
+    });
+
+    const senderRes = await request(ctx.app.getHttpServer())
+      .get('/wallet/transactions')
+      .query({ limit: 20 })
+      .set('Authorization', `Bearer ${tokenFor(sender.userId)}`)
+      .expect(200);
+    const senderBody = senderRes.body as HistoryResponse;
+    const senderTransferRow = senderBody.items.find(
+      (i) => i.type === 'p2p_transfer',
+    );
+    expect(senderTransferRow).toBeDefined();
+    expect(senderTransferRow!.direction).toBe('debit');
+    // Fee-inclusive: 5000 transfer + 100 platform fee.
+    expect(senderTransferRow!.amount.amount).toBe('5100');
+    expect(senderTransferRow!.counterparty).toEqual({
+      userId: recipient.userId,
+      username: 'history_transfer_recipient',
+      firstName: 'Ada',
+      lastName: 'Lovelace',
+    });
+    expect(Object.keys(senderTransferRow!.counterparty!).sort()).toEqual(
+      ['firstName', 'lastName', 'userId', 'username'].sort(),
+    );
+
+    const recipientRes = await request(ctx.app.getHttpServer())
+      .get('/wallet/transactions')
+      .query({ limit: 20 })
+      .set('Authorization', `Bearer ${tokenFor(recipient.userId)}`)
+      .expect(200);
+    const recipientBody = recipientRes.body as HistoryResponse;
+    const recipientTransferRow = recipientBody.items.find(
+      (i) => i.type === 'p2p_transfer',
+    );
+    expect(recipientTransferRow).toBeDefined();
+    expect(recipientTransferRow!.direction).toBe('credit');
+    expect(recipientTransferRow!.amount.amount).toBe('5000');
+    expect(recipientTransferRow!.counterparty).toEqual({
+      userId: sender.userId,
+      username: 'history_transfer_sender',
+      firstName: 'Ada',
+      lastName: 'Lovelace',
+    });
+  });
+
+  it("never lets one party's history page surface the other party's own leg of a shared transfer", async () => {
+    const userA = await seedUserWithWallet(ctx, {
+      email: 'history-isolation-a@example.com',
+      phone: '+2348022220008',
+      username: 'history_isolation_a',
+    });
+    const userB = await seedUserWithWallet(ctx, {
+      email: 'history-isolation-b@example.com',
+      phone: '+2348022220009',
+      username: 'history_isolation_b',
+    });
+    await seedCompletedFunding(ctx, {
+      walletId: userA.walletId,
+      reference: 'cliqpay-history-isolation-fund-a',
+      netAmountMinor: 200_000n,
+    });
+    await seedCompletedFunding(ctx, {
+      walletId: userB.walletId,
+      reference: 'cliqpay-history-isolation-fund-b',
+      netAmountMinor: 50_000n,
+    });
+
+    for (let i = 0; i < 4; i++) {
+      await ctx.ledgerService.postTransfer({
+        reference: `cliqpay-history-isolation-transfer-${i}`,
+        senderWalletId: userA.walletId,
+        recipientWalletId: userB.walletId,
+        amount: Money.of(1_000n, 'NGN'),
+        platformFee: Money.zero('NGN'),
+      });
+    }
+
+    const entriesA = await ctx.ledgerEntryRepo.find({
+      where: { accountId: userA.walletId },
+    });
+    const entriesB = await ctx.ledgerEntryRepo.find({
+      where: { accountId: userB.walletId },
+    });
+
+    async function pageAllIds(
+      userId: string,
+      limit: number,
+    ): Promise<string[]> {
+      const seenIds: string[] = [];
+      let cursor: string | undefined;
+      let pages = 0;
+      do {
+        const res = await request(ctx.app.getHttpServer())
+          .get('/wallet/transactions')
+          .query(cursor ? { limit, cursor } : { limit })
+          .set('Authorization', `Bearer ${tokenFor(userId)}`)
+          .expect(200);
+        const body = res.body as HistoryResponse;
+        seenIds.push(...body.items.map((i) => i.id));
+        cursor = body.nextCursor ?? undefined;
+        pages += 1;
+        expect(pages).toBeLessThanOrEqual(
+          entriesA.length + entriesB.length + 1,
+        );
+      } while (cursor);
+      return seenIds;
+    }
+
+    const seenIdsA = await pageAllIds(userA.userId, 2);
+    const seenIdsB = await pageAllIds(userB.userId, 2);
+
+    expect(new Set(seenIdsA)).toEqual(new Set(entriesA.map((e) => e.id)));
+    expect(new Set(seenIdsB)).toEqual(new Set(entriesB.map((e) => e.id)));
+    expect([...seenIdsA].some((id) => entriesB.some((e) => e.id === id))).toBe(
+      false,
+    );
+    expect([...seenIdsB].some((id) => entriesA.some((e) => e.id === id))).toBe(
+      false,
+    );
   });
 });

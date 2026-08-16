@@ -42,9 +42,7 @@ function webhookBody(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe('PaymentsService.handleFundingWebhook', () => {
-  let ledgerService: jest.Mocked<
-    Pick<LedgerService, 'postFunding' | 'findTransactionByReference'>
-  >;
+  let ledgerService: jest.Mocked<Pick<LedgerService, 'postFunding'>>;
   let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let adapter: jest.Mocked<PaymentProviderAdapter>;
@@ -53,12 +51,12 @@ describe('PaymentsService.handleFundingWebhook', () => {
   const postFundingResult: PostFundingResult = {
     userId: 'user-1',
     netAmount: Money.of(500_000n, 'NGN'),
+    reference: 'cliqpay-ref-1',
   };
 
   beforeEach(() => {
     ledgerService = {
       postFunding: jest.fn(),
-      findTransactionByReference: jest.fn(),
     };
     usersService = { findById: jest.fn() };
     eventBus = { publish: jest.fn() };
@@ -109,6 +107,7 @@ describe('PaymentsService.handleFundingWebhook', () => {
       email: 'user@example.com',
       amount: '5000.00',
       currency: 'NGN',
+      reference: 'cliqpay-ref-1',
     });
   });
 
@@ -166,6 +165,7 @@ describe('PaymentsService.pollStaleFundingTransactions', () => {
   const postFundingResult: PostFundingResult = {
     userId: 'user-1',
     netAmount: Money.of(500_000n, 'NGN'),
+    reference: 'cliqpay-ref-1',
   };
 
   beforeEach(() => {

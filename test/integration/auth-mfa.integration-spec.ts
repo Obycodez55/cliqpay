@@ -85,7 +85,7 @@ describe('MFA enrollment, challenges, and trusted devices', () => {
       phone: '+2348055555502',
     });
 
-    const result = await ctx.authService.login(
+    const result = await ctx.sessionService.login(
       {
         email: 'untrusted@example.com',
         password: 'a-strong-unique-passphrase',
@@ -104,14 +104,14 @@ describe('MFA enrollment, challenges, and trusted devices', () => {
     );
 
     await expect(
-      ctx.authService.verifyMfaChallenge(
+      ctx.sessionService.verifyMfaChallenge(
         { challengeId: result.challengeId, code: wrongCodeFor(correctCode) },
         TEST_DEVICE,
       ),
     ).rejects.toBeInstanceOf(InvalidMfaCodeException);
 
     const { tokens, trustedDeviceToken } =
-      await ctx.authService.verifyMfaChallenge(
+      await ctx.sessionService.verifyMfaChallenge(
         { challengeId: result.challengeId, code: correctCode },
         TEST_DEVICE,
       );
@@ -131,7 +131,7 @@ describe('MFA enrollment, challenges, and trusted devices', () => {
     );
 
     const emailsBefore = ctx.emailAdapter.sent.length;
-    const result = await ctx.authService.login(
+    const result = await ctx.sessionService.login(
       {
         email: 'trusted@example.com',
         password: 'a-strong-unique-passphrase',
@@ -160,7 +160,7 @@ describe('MFA enrollment, challenges, and trusted devices', () => {
       phone: '+2348055555504',
     });
 
-    const result = await ctx.authService.login(
+    const result = await ctx.sessionService.login(
       {
         email: 'five-attempts@example.com',
         password: 'a-strong-unique-passphrase',
@@ -178,7 +178,7 @@ describe('MFA enrollment, challenges, and trusted devices', () => {
 
     for (let i = 0; i < 5; i++) {
       await expect(
-        ctx.authService.verifyMfaChallenge(
+        ctx.sessionService.verifyMfaChallenge(
           { challengeId: result.challengeId, code: wrong },
           TEST_DEVICE,
         ),
@@ -193,7 +193,7 @@ describe('MFA enrollment, challenges, and trusted devices', () => {
 
     // Even the correct code no longer works — a new challenge is required.
     await expect(
-      ctx.authService.verifyMfaChallenge(
+      ctx.sessionService.verifyMfaChallenge(
         { challengeId: result.challengeId, code: correctCode },
         TEST_DEVICE,
       ),
@@ -202,7 +202,7 @@ describe('MFA enrollment, challenges, and trusted devices', () => {
 
   it('rejects verification against a nonexistent challenge', async () => {
     await expect(
-      ctx.authService.verifyMfaChallenge(
+      ctx.sessionService.verifyMfaChallenge(
         {
           challengeId: '00000000-0000-0000-0000-000000000000',
           code: '123456',

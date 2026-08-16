@@ -20,6 +20,7 @@ import { FakePushAdapter } from '../../src/modules/notifications/channels/push/f
 import { PushToken } from '../../src/modules/notifications/entities/push-token.entity';
 import { CreatePushTokens1784616220824 } from '../../src/database/migrations/1784616220824-CreatePushTokens';
 import { ConvertPushTokensTimestamps1784707276059 } from '../../src/database/migrations/1784707276059-ConvertPushTokensTimestamps';
+import { CreateNotifications1786812506579 } from '../../src/database/migrations/1786812506579-CreateNotifications';
 
 jest.setTimeout(120_000);
 
@@ -29,6 +30,8 @@ const USER_3 = '33333333-3333-4333-8333-333333333333';
 const USER_4 = '44444444-4444-4444-8444-444444444444';
 const USER_5 = '55555555-5555-4555-8555-555555555555';
 const USER_6 = '66666666-6666-4666-8666-666666666666';
+const USER_7 = '77777777-7777-4777-8777-777777777777';
+const USER_8 = '88888888-8888-4888-8888-888888888888';
 
 @Module({})
 class TestConfigModule {}
@@ -85,6 +88,7 @@ describe('Notifications module — end-to-end dispatch', () => {
     const queryRunner = setupDataSource.createQueryRunner();
     await new CreatePushTokens1784616220824().up(queryRunner);
     await new ConvertPushTokensTimestamps1784707276059().up(queryRunner);
+    await new CreateNotifications1786812506579().up(queryRunner);
     await queryRunner.release();
     await setupDataSource.destroy();
 
@@ -106,6 +110,9 @@ describe('Notifications module — end-to-end dispatch', () => {
       encryption: {
         key: '0'.repeat(64),
       },
+      transactionPin: {
+        pepper: '0'.repeat(64),
+      },
       notifications: {
         emailProvider: 'fake',
         smsProvider: 'fake',
@@ -121,6 +128,7 @@ describe('Notifications module — end-to-end dispatch', () => {
           clientEmail: undefined,
           privateKey: undefined,
         },
+        retentionDays: 180,
       },
       payments: {
         provider: 'fake',
@@ -131,6 +139,8 @@ describe('Notifications module — end-to-end dispatch', () => {
         },
         reconciliation: { alertEmail: 'ops@cliqpay.test' },
       },
+      transfers: { platformFee: 0, minAmount: 10_000, maxAmount: 100_000_000 },
+      moneyRequests: { expiryDays: 7, maxPendingPerPair: 3 },
     };
 
     const moduleRef = await Test.createTestingModule({
@@ -169,6 +179,7 @@ describe('Notifications module — end-to-end dispatch', () => {
         userId: USER_1,
         email: 'user-1@example.com',
         message: 'New device login',
+        occurredAt: new Date().toISOString(),
       },
       occurredAt: new Date(),
     });
@@ -269,10 +280,87 @@ describe('Notifications module — end-to-end dispatch', () => {
       userId: USER_6,
       email: 'user-6@example.com',
       message: 'Password changed',
+      occurredAt: new Date().toISOString(),
     });
 
     expect(pushAdapter.sent.some((m) => m.token === 'user-6-device')).toBe(
       true,
     );
   });
+
+  it('retries a failing channel on its own budget without resending a channel that already succeeded', async () => {
+    await notificationService.registerPushToken(
+      USER_7,
+      'android',
+      'user-7-device-fail-transient',
+    );
+    const sendSpy = jest.spyOn(pushAdapter, 'send');
+    const emailBefore = emailAdapter.sent.filter(
+      (m) => m.to === 'user-7@example.com',
+    ).length;
+
+    await eventBus.publish({
+      name: 'security_alert',
+      payload: {
+        userId: USER_7,
+        email: 'user-7@example.com',
+        message: 'New device login',
+        occurredAt: new Date().toISOString(),
+      },
+      occurredAt: new Date(),
+    });
+
+    await waitFor(
+      () => emailAdapter.sent.some((m) => m.to === 'user-7@example.com'),
+      10_000,
+    );
+    // Exponential backoff (1s, 2s, 4s, 8s) across 5 attempts sums to ~15s —
+    // long enough for every retry of the failing push job to have run.
+    await waitFor(() => sendSpy.mock.calls.length >= 5, 20_000);
+
+    expect(
+      emailAdapter.sent.filter((m) => m.to === 'user-7@example.com'),
+    ).toHaveLength(emailBefore + 1);
+    expect(sendSpy.mock.calls.length).toBe(5);
+
+    sendSpy.mockRestore();
+  }, 30_000);
+
+  it('does not retry a permanently failing channel, while the other channel still delivers once', async () => {
+    await notificationService.registerPushToken(
+      USER_8,
+      'android',
+      'user-8-device-fail-permanent',
+    );
+    const sendSpy = jest.spyOn(pushAdapter, 'send');
+    const emailBefore = emailAdapter.sent.filter(
+      (m) => m.to === 'user-8@example.com',
+    ).length;
+
+    await eventBus.publish({
+      name: 'security_alert',
+      payload: {
+        userId: USER_8,
+        email: 'user-8@example.com',
+        message: 'New device login',
+        occurredAt: new Date().toISOString(),
+      },
+      occurredAt: new Date(),
+    });
+
+    await waitFor(
+      () => emailAdapter.sent.some((m) => m.to === 'user-8@example.com'),
+      10_000,
+    );
+    // A permanent failure throws UnrecoverableError on the first attempt —
+    // give it a moment to run, then confirm no retry followed.
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+
+    expect(
+      emailAdapter.sent.filter((m) => m.to === 'user-8@example.com'),
+    ).toHaveLength(emailBefore + 1);
+    expect(sendSpy.mock.calls.length).toBe(1);
+
+    sendSpy.mockRestore();
+  }, 15_000);
 });

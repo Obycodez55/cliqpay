@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager } from 'typeorm';
+import { DataSource, EntityManager, In } from 'typeorm';
 import { User } from './entities/user.entity';
 import {
   NoPendingEmailChangeException,
@@ -13,6 +13,10 @@ import {
   ProfileResponseDto,
   toProfileResponse,
 } from './dto/profile-response.dto';
+import {
+  RecipientLookupResponseDto,
+  toRecipientLookupResponse,
+} from './dto/recipient-lookup-response.dto';
 
 const USERNAME_CHANGE_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
@@ -68,8 +72,34 @@ export class UsersService {
     return this.dataSource.getRepository(User).findOneBy({ email });
   }
 
+  async findByUsername(username: string): Promise<User | null> {
+    return this.dataSource.getRepository(User).findOneBy({ username });
+  }
+
+  // Exactly one query either way — a hit and a miss run the same
+  // findOneBy, so there's no extra join or lookup on the hit path that
+  // could show up as a timing difference (see issue #21).
+  async lookupRecipient(
+    identifier: string,
+  ): Promise<RecipientLookupResponseDto | null> {
+    const user = identifier.includes('@')
+      ? await this.findByEmail(identifier)
+      : await this.findByUsername(identifier);
+    return user ? toRecipientLookupResponse(user) : null;
+  }
+
   async findById(userId: string): Promise<User> {
     return this.dataSource.getRepository(User).findOneByOrFail({ id: userId });
+  }
+
+  // Batch counterpart to findById — feeds transaction-history counterparty
+  // resolution (issue #23), where a page of rows can name several distinct
+  // users and resolving them one at a time would be an N+1.
+  async findByIds(userIds: string[]): Promise<User[]> {
+    if (userIds.length === 0) {
+      return [];
+    }
+    return this.dataSource.getRepository(User).findBy({ id: In(userIds) });
   }
 
   async markEmailVerified(userId: string): Promise<void> {

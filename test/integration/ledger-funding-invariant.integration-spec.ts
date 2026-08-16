@@ -13,12 +13,13 @@ jest.setTimeout(180_000);
 
 // Property-based coverage per docs/architecture.md §10 and CLAUDE.md
 // Testing: random valid operation sequences must never break the §4.3
-// ledger invariant. Funding is the only transaction type LedgerService
-// posts entries for so far (issue #13) — p2p/withdrawal extend this same
-// generator with their own operation kind once those land. Runs against a
-// real Postgres (Testcontainers) rather than mocks, since the invariant is
-// a real cross-row DB property (account balances + running_balance), not
-// something a mock can meaningfully assert.
+// ledger invariant. Funding was the only transaction type LedgerService
+// posted entries for at first (issue #13); transfers (issue #22) extend
+// this same generator with their own operation kind below rather than a
+// separate property-test file — withdrawal does the same once it lands.
+// Runs against a real Postgres (Testcontainers) rather than mocks, since
+// the invariant is a real cross-row DB property (account balances +
+// running_balance), not something a mock can meaningfully assert.
 const numRuns = process.env.FC_NUM_RUNS
   ? parseInt(process.env.FC_NUM_RUNS, 10)
   : 5;
@@ -43,6 +44,28 @@ async function assertInvariantHolds(ctx: PaymentsTestContext): Promise<void> {
   expect(float.balance).toBe(walletSum + feeIncome.balance);
 }
 
+// §2 ("accounts.balance is a cache") as a checkable property: after any
+// operation, an account's cached balance must equal its own latest
+// ledger_entries.running_balance — checked directly against the DB, not
+// against whatever the posting call happened to return.
+// Summed across every entry rather than compared against "the latest
+// entry's running_balance" — see the identical helper in
+// ledger-transfer-concurrency.integration-spec.ts for why "latest by
+// (createdAt, id)" isn't reliable once concurrent writers are involved.
+async function assertCacheMatchesLedger(
+  ctx: PaymentsTestContext,
+  accountId: string,
+): Promise<void> {
+  const account = await ctx.accountRepo.findOneByOrFail({ id: accountId });
+  const entries = await ctx.ledgerEntryRepo.findBy({ accountId });
+  const netFromEntries = entries.reduce(
+    (sum, entry) =>
+      entry.direction === 'credit' ? sum + entry.amount : sum - entry.amount,
+    0n,
+  );
+  expect(account.balance).toBe(netFromEntries);
+}
+
 interface FundingOp {
   netAmountMinor: number;
   feeMinor: number;
@@ -53,6 +76,22 @@ interface FundingOp {
 const fundingOpArb: fc.Arbitrary<FundingOp> = fc.record({
   netAmountMinor: fc.integer({ min: 100, max: 10_000_000 }),
   feeMinor: fc.integer({ min: 0, max: 50_000 }),
+});
+
+interface TransferOp {
+  // Funds the sender's fresh wallet first so the transfer below is always
+  // affordable — bounds are chosen so fundAmountMinor always exceeds
+  // transferAmountMinor + platformFeeMinor regardless of combination,
+  // rather than a dependent arbitrary.
+  fundAmountMinor: number;
+  transferAmountMinor: number;
+  platformFeeMinor: number;
+}
+
+const transferOpArb: fc.Arbitrary<TransferOp> = fc.record({
+  fundAmountMinor: fc.integer({ min: 1_000, max: 10_000_000 }),
+  transferAmountMinor: fc.integer({ min: 1, max: 500 }),
+  platformFeeMinor: fc.integer({ min: 0, max: 50 }),
 });
 
 describe('Ledger §4.3 invariant — random funding sequences', () => {
@@ -116,6 +155,94 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
             expect(result).not.toBeNull();
 
             await assertInvariantHolds(ctx);
+          }
+        },
+      ),
+      { numRuns },
+    );
+  });
+
+  it('holds after any sequence mixing funding and transfer postings, with cache/ledger agreement checked throughout', async () => {
+    const opArb: fc.Arbitrary<
+      { kind: 'funding'; op: FundingOp } | { kind: 'transfer'; op: TransferOp }
+    > = fc.oneof(
+      fundingOpArb.map((op) => ({ kind: 'funding' as const, op })),
+      transferOpArb.map((op) => ({ kind: 'transfer' as const, op })),
+    );
+
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(opArb, { minLength: 1, maxLength: 8 }),
+        async (ops) => {
+          for (const entry of ops) {
+            if (entry.kind === 'funding') {
+              const identity = nextIdentity();
+              const { walletId } = await seedUserWithWallet(ctx, identity);
+              const reference = `cliqpay-invariant-mixed-${randomUUID()}`;
+              const netAmount = Money.of(entry.op.netAmountMinor, 'NGN');
+              const providerFee = Money.of(entry.op.feeMinor, 'NGN');
+
+              await ctx.ledgerService.createPendingFundingTransaction({
+                reference,
+                provider: 'kora',
+                providerReference: reference,
+                amount: netAmount,
+                recipientWalletId: walletId,
+                metadata: { checkoutUrl: null, grossAmount: null },
+              });
+              const result = await ctx.ledgerService.postFunding({
+                reference,
+                netAmount,
+                providerFee,
+                providerStatus: 'success',
+              });
+              expect(result).not.toBeNull();
+
+              await assertInvariantHolds(ctx);
+              await assertCacheMatchesLedger(ctx, walletId);
+              continue;
+            }
+
+            const senderIdentity = nextIdentity();
+            const recipientIdentity = nextIdentity();
+            const { walletId: senderWalletId } = await seedUserWithWallet(
+              ctx,
+              senderIdentity,
+            );
+            const { walletId: recipientWalletId } = await seedUserWithWallet(
+              ctx,
+              recipientIdentity,
+            );
+            const fundReference = `cliqpay-invariant-mixed-fund-${randomUUID()}`;
+            await ctx.ledgerService.createPendingFundingTransaction({
+              reference: fundReference,
+              provider: 'kora',
+              providerReference: fundReference,
+              amount: Money.of(entry.op.fundAmountMinor, 'NGN'),
+              recipientWalletId: senderWalletId,
+              metadata: { checkoutUrl: null, grossAmount: null },
+            });
+            const fundingResult = await ctx.ledgerService.postFunding({
+              reference: fundReference,
+              netAmount: Money.of(entry.op.fundAmountMinor, 'NGN'),
+              providerFee: Money.zero('NGN'),
+              providerStatus: 'success',
+            });
+            expect(fundingResult).not.toBeNull();
+
+            const transferReference = `cliqpay-invariant-mixed-xfer-${randomUUID()}`;
+            const transferResult = await ctx.ledgerService.postTransfer({
+              reference: transferReference,
+              senderWalletId,
+              recipientWalletId,
+              amount: Money.of(entry.op.transferAmountMinor, 'NGN'),
+              platformFee: Money.of(entry.op.platformFeeMinor, 'NGN'),
+            });
+            expect(transferResult).toBeDefined();
+
+            await assertInvariantHolds(ctx);
+            await assertCacheMatchesLedger(ctx, senderWalletId);
+            await assertCacheMatchesLedger(ctx, recipientWalletId);
           }
         },
       ),

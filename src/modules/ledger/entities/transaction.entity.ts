@@ -48,13 +48,25 @@ export interface FundingTransactionMetadata {
   grossAmount: { amount: string; currency: string } | null;
 }
 
+// `note`/`is_public` belong to Phase 7 (social layer), not this one.
+// `platformFee` is recorded because it's needed to reconstruct an
+// idempotent replay response (TransfersService) without a second query
+// against ledger_entries — `amount`/ledger_entries only carry the
+// recipient-credited side, same reasoning as FundingTransactionMetadata's
+// grossAmount above.
+export interface TransferTransactionMetadata {
+  platformFee: { amount: string; currency: string };
+}
+
 /**
  * Metadata is shaped per transaction type, not a free-form bag — `payments`
  * writing an untyped field here and casting it back on read is exactly the
- * leak ADR-0008 rules out. Only `funding` exists so far; each further type
- * adds its own shape (making this a union) when that type is built.
+ * leak ADR-0008 rules out. Each further type adds its own shape to this
+ * union when that type is built.
  */
-export type TransactionMetadata = FundingTransactionMetadata;
+export type TransactionMetadata =
+  | FundingTransactionMetadata
+  | TransferTransactionMetadata;
 
 /**
  * See docs/architecture.md §5. `sender_wallet_id`/`recipient_wallet_id` are
