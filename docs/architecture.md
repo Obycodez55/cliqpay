@@ -10,20 +10,20 @@
 
 ## Table of Contents
 
-1. [Project Overview](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#1-project-overview)
-2. [Tech Stack](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#2-tech-stack)
-3. [Core Concepts](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#3-core-concepts)
-4. [Financial Architecture](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#4-financial-architecture)
-  - [Account Model](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#41-account-model)
-  - [Transaction Types](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#42-transaction-types)
-  - [The Invariant](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#43-the-invariant)
-  - [External Reconciliation](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#44-external-reconciliation)
-5. [Database Schema](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#5-database-schema)
-6. [Phased Development Plan](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#6-phased-development-plan)
-7. [Production Considerations](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#7-production-considerations)
-8. [Feature Reference](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#8-feature-reference)
-9. [Frontend & Client Considerations](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#9-frontend--client-considerations)
-10. [Code Architecture & Testing Strategy](https://claude.ai/chat/192d70b4-9e30-4bfc-9ff4-a21daf3b79db#10-code-architecture--testing-strategy)
+1. [Project Overview](#1-project-overview)
+2. [Tech Stack](#2-tech-stack)
+3. [Core Concepts](#3-core-concepts)
+4. [Financial Architecture](#4-financial-architecture)
+  - [Account Model](#41-account-model)
+  - [Transaction Types](#42-transaction-types)
+  - [The Invariant](#43-the-invariant)
+  - [External Reconciliation](#44-external-reconciliation)
+5. [Database Schema](#5-database-schema)
+6. [Phased Development Plan](#6-phased-development-plan)
+7. [Production Considerations](#7-production-considerations)
+8. [Feature Reference](#8-feature-reference)
+9. [Frontend & Client Considerations](#9-frontend--client-considerations)
+10. [Code Architecture & Testing Strategy](#10-code-architecture--testing-strategy)
 
 ---
 
