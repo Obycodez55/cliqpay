@@ -2,12 +2,6 @@
 // helpers — they live in a peripheral module, off-limits per the module
 // boundary rules (docs/architecture.md §10). Small and module-local by
 // design, same as every other module's own internal/errors.ts.
-//
-// isUniqueViolation used to live here too, duplicated identically in
-// transfers/internal/errors.ts — moved to
-// src/database/postgres-errors.util.ts (Phase 3 end-of-phase audit), since
-// it's generic Postgres error classification, not module-owned business
-// logic; import it from there directly.
 
 // FakeAdapter's deterministic, configurable-failure equivalent of the
 // email/sms adapters' "fail-permanent"/"fail-transient" sentinel convention
