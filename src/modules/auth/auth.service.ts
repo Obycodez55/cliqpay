@@ -575,4 +575,42 @@ export class AuthService {
   async verifyTransactionPin(userId: string, pin: string): Promise<void> {
     return this.transactionPinService.verifyTransactionPin(userId, pin);
   }
+
+  // Generic step-up, for peripheral/core callers outside this module that
+  // need the same re-prove-MFA-on-an-authenticated-session mechanism
+  // change-email/phone/password use (docs/adr/0006) without each growing
+  // its own feature-named pair of methods here the way those three did.
+  // First caller: withdrawals' bank-account save (issue #27, ADR-0014).
+  // Return type is structural, matching MfaService.createStepUpChallenge's
+  // own shape, rather than auth's StepUpChallengeResponseDto — that DTO
+  // class lives under auth/dto and isn't an importable cross-module entry
+  // point (docs/architecture.md §10); callers outside this module get the
+  // same shape without needing to import anything from here to type it.
+  async initiateStepUp(userId: string): Promise<{
+    challengeId: string;
+    method: 'email' | 'totp';
+    expiresAt: Date;
+  }> {
+    const user = await this.usersService.findById(userId);
+    return this.mfaService.createStepUpChallenge(user);
+  }
+
+  // Verifies a step-up challenge was created for, and answered by, this
+  // exact caller — same ownership check every other step-up consumer in
+  // this file repeats (verifyChallenge itself isn't caller-scoped). Throws
+  // rather than returning a boolean so a caller can't accidentally ignore
+  // the result, same as every other step-up gate here.
+  async verifyStepUp(
+    userId: string,
+    challengeId: string,
+    code: string,
+  ): Promise<void> {
+    const { userId: challengeUserId } = await this.mfaService.verifyChallenge(
+      challengeId,
+      code,
+    );
+    if (challengeUserId !== userId) {
+      throw new MfaChallengeInvalidException();
+    }
+  }
 }

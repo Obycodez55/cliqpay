@@ -120,4 +120,43 @@ describe('FakeAdapter', () => {
       );
     });
   });
+
+  describe('resolveBankAccount', () => {
+    it('defaults to a deterministic resolved result for an unconfigured pair', async () => {
+      const adapter = new FakeAdapter();
+
+      await expect(
+        adapter.resolveBankAccount('033', '0000000000'),
+      ).resolves.toEqual({
+        status: 'resolved',
+        bankName: 'Test Bank 033',
+        accountName: 'Test Account 0000000000',
+      });
+    });
+
+    it('fails deterministically when the account number carries the failure sentinel', async () => {
+      const adapter = new FakeAdapter();
+
+      await expect(
+        adapter.resolveBankAccount('033', 'fail000000'),
+      ).resolves.toEqual({ status: 'not_found' });
+    });
+
+    it('returns whatever result was configured for that bank/account pair', async () => {
+      const adapter = new FakeAdapter();
+      adapter.setResolveBankAccountResult('058', '0123456789', {
+        status: 'resolved',
+        bankName: 'GTBank',
+        accountName: 'Jane Doe',
+      });
+
+      await expect(
+        adapter.resolveBankAccount('058', '0123456789'),
+      ).resolves.toEqual({
+        status: 'resolved',
+        bankName: 'GTBank',
+        accountName: 'Jane Doe',
+      });
+    });
+  });
 });

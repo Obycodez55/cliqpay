@@ -23,9 +23,21 @@ export type VerifyChargeResult =
   | { status: 'pending' };
 
 /**
- * See docs/architecture.md §3.6 — exactly the methods Phase 2 needs.
- * `initiatePayout()`/`verifyKyc()` are not stubbed here; they arrive with
- * Phase 4/6, not ahead of them (CLAUDE.md's incremental-build rule).
+ * `not_found` covers both "bank account doesn't exist" and "invalid bank
+ * code" — Kora's real resolve endpoint returns the same 4xx/status:false
+ * shape for both (see KoraAdapter.resolveBankAccount) and neither is a
+ * system failure, so both are a typed outcome rather than a thrown error —
+ * same reasoning as VerifyChargeResult above.
+ */
+export type ResolveBankAccountResult =
+  | { status: 'resolved'; bankName: string; accountName: string }
+  | { status: 'not_found' };
+
+/**
+ * See docs/architecture.md §3.6. `initiatePayout()`/`verifyKyc()` are not
+ * stubbed here; they arrive with the rest of Phase 4/6, not ahead of them
+ * (CLAUDE.md's incremental-build rule) — `resolveBankAccount()` is the one
+ * Phase 4 method issue #27 actually needs.
  */
 export interface PaymentProviderAdapter {
   initiatePayment(
@@ -43,6 +55,14 @@ export interface PaymentProviderAdapter {
   // ledger-derived balance. Read-only, no posting knowledge here or in any
   // caller (ADR-0008).
   getBalance(currency: string): Promise<Money>;
+
+  // Issue #27 — resolves a bank account against the provider before it's
+  // ever persisted, so `bank_accounts.account_name` is always
+  // provider-confirmed, never client-supplied.
+  resolveBankAccount(
+    bankCode: string,
+    accountNumber: string,
+  ): Promise<ResolveBankAccountResult>;
 }
 
 export const PAYMENT_PROVIDER_ADAPTER = Symbol('PAYMENT_PROVIDER_ADAPTER');

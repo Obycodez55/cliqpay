@@ -24,6 +24,7 @@ import {
   InitiatePaymentResult,
   PAYMENT_PROVIDER_ADAPTER,
   PaymentProviderAdapter,
+  ResolveBankAccountResult,
   VerifyChargeResult,
 } from './adapters/payment-provider.interface';
 import { isUniqueViolation } from '../../database/postgres-errors.util';
@@ -407,6 +408,17 @@ export class PaymentsService {
         `publishFundingCompletedEvent: funding posted successfully for user "${result.userId}", but publishing the completion notification failed (${(error as Error).message}) — this will not be retried`,
       );
     }
+  }
+
+  // Issue #27 — a thin pass-through to the adapter: `payments` owns no
+  // `bank_accounts` table (ADR-0008), so this hands back the provider's own
+  // resolved facts and lets the caller (`withdrawals`) decide what to do
+  // with them.
+  resolveBankAccount(
+    bankCode: string,
+    accountNumber: string,
+  ): Promise<ResolveBankAccountResult> {
+    return this.adapter.resolveBankAccount(bankCode, accountNumber);
   }
 }
 

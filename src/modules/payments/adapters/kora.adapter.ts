@@ -6,6 +6,7 @@ import {
   InitiatePaymentParams,
   InitiatePaymentResult,
   PaymentProviderAdapter,
+  ResolveBankAccountResult,
   VerifyChargeResult,
 } from './payment-provider.interface';
 import { extractTopLevelJsonField } from '../internal/raw-json';
@@ -46,6 +47,24 @@ interface KoraBalancesResponse {
   status: boolean;
   message: string;
   data?: Record<string, { pending_balance: number; available_balance: number }>;
+}
+
+// Ground truth: a real sandbox call to POST /misc/banks/resolve, run during
+// issue #27's design (not guessed from docs), per the same discipline as
+// ADR-0007. A resolvable account returns `status: true` with
+// `data.account_name`; both an unknown account number and an invalid bank
+// code come back as `status: false` over a 400/404 respectively, with no
+// distinct field distinguishing the two cases from each other — Kora
+// exposes both as one flavor of "couldn't resolve this."
+interface KoraResolveBankAccountResponse {
+  status: boolean;
+  message: string;
+  data?: {
+    bank_name: string;
+    bank_code: string;
+    account_number: string;
+    account_name: string;
+  };
 }
 
 // Ground truth for the request/response shapes below: docs/adr/0007, backed
@@ -198,6 +217,49 @@ export class KoraAdapter implements PaymentProviderAdapter {
       currency,
     );
     return available.add(pending);
+  }
+
+  // 400/404 are Kora's normal shape for "couldn't resolve this" (bad
+  // account number or bad bank code, confirmed against the real sandbox —
+  // see KoraResolveBankAccountResponse) — a typed `not_found` result, not a
+  // thrown error. Any other non-ok status (401, 5xx, ...) is a genuine
+  // system failure and still throws, same as every other adapter method.
+  async resolveBankAccount(
+    bankCode: string,
+    accountNumber: string,
+  ): Promise<ResolveBankAccountResult> {
+    let response: Response;
+    try {
+      response = await fetch(`${KORA_BASE_URL}/misc/banks/resolve`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.secretKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ bank: bankCode, account: accountNumber }),
+        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
+      });
+    } catch (error) {
+      throw new Error(
+        `KoraAdapter: network error (${(error as Error).message})`,
+      );
+    }
+
+    const body = (await response.json()) as KoraResolveBankAccountResponse;
+
+    if (response.ok && body.status && body.data) {
+      return {
+        status: 'resolved',
+        bankName: body.data.bank_name,
+        accountName: body.data.account_name,
+      };
+    }
+    if (response.status === 400 || response.status === 404) {
+      return { status: 'not_found' };
+    }
+    throw new Error(
+      `KoraAdapter: ${response.status} ${body.message ?? 'unknown error'}`,
+    );
   }
 
   verifyWebhookSignature(rawBody: Buffer, signature: string): boolean {

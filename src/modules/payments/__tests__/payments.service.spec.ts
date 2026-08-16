@@ -18,6 +18,7 @@ function mockAdapter(): jest.Mocked<PaymentProviderAdapter> {
     verifyWebhookSignature: jest.fn().mockReturnValue(true),
     verifyCharge: jest.fn(),
     getBalance: jest.fn(),
+    resolveBankAccount: jest.fn(),
   };
 }
 

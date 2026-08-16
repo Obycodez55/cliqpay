@@ -5,6 +5,7 @@ import {
   InitiatePaymentParams,
   InitiatePaymentResult,
   PaymentProviderAdapter,
+  ResolveBankAccountResult,
   VerifyChargeResult,
 } from './payment-provider.interface';
 import { maybeThrowFakePaymentFailure } from '../internal/errors';
@@ -21,6 +22,10 @@ export class FakeAdapter implements PaymentProviderAdapter {
   readonly initiated: InitiatePaymentParams[] = [];
   private readonly verifyChargeResults = new Map<string, VerifyChargeResult>();
   private readonly balances = new Map<string, Money>();
+  private readonly resolveBankAccountResults = new Map<
+    string,
+    ResolveBankAccountResult
+  >();
 
   // async with nothing to await, deliberately: the sentinel throw below has
   // to reach a caller doing `.catch()` without `await` as a rejection, which
@@ -66,5 +71,43 @@ export class FakeAdapter implements PaymentProviderAdapter {
   // eslint-disable-next-line @typescript-eslint/require-await
   async getBalance(currency: string): Promise<Money> {
     return this.balances.get(currency) ?? Money.zero(currency);
+  }
+
+  // Test-only configuration for resolveBankAccount — same shape as
+  // setVerifyChargeResult above.
+  setResolveBankAccountResult(
+    bankCode: string,
+    accountNumber: string,
+    result: ResolveBankAccountResult,
+  ): void {
+    this.resolveBankAccountResults.set(`${bankCode}:${accountNumber}`, result);
+  }
+
+  // Unconfigured pairs default to a deterministic resolved result rather
+  // than pending/zero's "safe do-nothing" default — most integration tests
+  // saving a bank account don't care about the resolved name, only that
+  // resolution succeeds, so forcing per-test configuration everywhere would
+  // just be friction. An account number containing "fail" is the same
+  // sentinel convention as maybeThrowFakePaymentFailure, for tests that do
+  // need the not_found path without configuring it explicitly.
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async resolveBankAccount(
+    bankCode: string,
+    accountNumber: string,
+  ): Promise<ResolveBankAccountResult> {
+    const configured = this.resolveBankAccountResults.get(
+      `${bankCode}:${accountNumber}`,
+    );
+    if (configured) {
+      return configured;
+    }
+    if (accountNumber.includes('fail')) {
+      return { status: 'not_found' };
+    }
+    return {
+      status: 'resolved',
+      bankName: `Test Bank ${bankCode}`,
+      accountName: `Test Account ${accountNumber}`,
+    };
   }
 }

@@ -340,4 +340,116 @@ describe('KoraAdapter', () => {
       await expect(adapter.getBalance('NGN')).rejects.toThrow(/ECONNRESET/);
     });
   });
+
+  // Shapes below are ground truth from a real sandbox call to
+  // POST /misc/banks/resolve, run during issue #27's design — see
+  // KoraAdapter.resolveBankAccount and docs/adr/0007's discipline.
+  describe('resolveBankAccount', () => {
+    it('maps a resolved account to bankName/accountName', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(200, {
+          status: true,
+          message: 'Request completed',
+          data: {
+            bank_name: 'United Bank for Africa',
+            bank_code: '033',
+            account_number: '0000000000',
+            account_name: 'Test Bank Account - Success',
+          },
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      const result = await adapter.resolveBankAccount('033', '0000000000');
+
+      expect(result).toEqual({
+        status: 'resolved',
+        bankName: 'United Bank for Africa',
+        accountName: 'Test Bank Account - Success',
+      });
+    });
+
+    it('sends the bank code and account number as bank/account', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(200, {
+          status: true,
+          message: 'ok',
+          data: {
+            bank_name: 'GTBank',
+            bank_code: '058',
+            account_number: '0123456789',
+            account_name: 'Jane Doe',
+          },
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await adapter.resolveBankAccount('058', '0123456789');
+
+      const [url, requestInit] = fetchMock.mock.calls[0] as [
+        string,
+        RequestInit,
+      ];
+      expect(url).toBe(
+        'https://api.korapay.com/merchant/api/v1/misc/banks/resolve',
+      );
+      expect(JSON.parse(requestInit.body as string)).toEqual({
+        bank: '058',
+        account: '0123456789',
+      });
+    });
+
+    it('maps a 400 "account not found" response to a not_found result', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(400, {
+          status: false,
+          error: 'bad_request',
+          message:
+            "We couldn't find this bank account. Please check the details and try again.",
+          data: { code: 'AA027' },
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(
+        adapter.resolveBankAccount('033', '1111111111'),
+      ).resolves.toEqual({ status: 'not_found' });
+    });
+
+    it('maps a 404 "invalid bank" response to a not_found result', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(404, {
+          status: false,
+          code: 'AA026',
+          message: 'Invalid bank provided.',
+          data: null,
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(
+        adapter.resolveBankAccount('999', '0000000000'),
+      ).resolves.toEqual({ status: 'not_found' });
+    });
+
+    it('throws on a non-ok, non-400/404 response (system failure)', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(401, { status: false, message: 'unauthorized' }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(
+        adapter.resolveBankAccount('033', '0000000000'),
+      ).rejects.toThrow(/unauthorized/);
+    });
+
+    it('throws a descriptive error on a network failure', async () => {
+      fetchMock.mockRejectedValue(new Error('ECONNRESET'));
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(
+        adapter.resolveBankAccount('033', '0000000000'),
+      ).rejects.toThrow(/ECONNRESET/);
+    });
+  });
 });
