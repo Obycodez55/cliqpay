@@ -7,6 +7,7 @@ import {
   DynamicModule,
   INestApplication,
   Module,
+  Type,
   ValidationPipe,
 } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
@@ -90,7 +91,9 @@ export interface AuthTestContext {
 // reuse-detection alert and the MFA challenge email dispatch go through it;
 // NotificationsModule is wired in alongside it so delivery can be asserted,
 // not just that EventBusService was called.
-export async function createAuthTestContext(): Promise<AuthTestContext> {
+export async function createAuthTestContext(
+  extraImports: (DynamicModule | Type<unknown>)[] = [],
+): Promise<AuthTestContext> {
   const postgres = await new PostgreSqlContainer('postgres:16-alpine').start();
   const redis = await new GenericContainer('redis:7-alpine')
     .withExposedPorts(6379)
@@ -186,6 +189,7 @@ export async function createAuthTestContext(): Promise<AuthTestContext> {
       LedgerModule,
       AuthModule,
       NotificationsModule,
+      ...extraImports,
     ],
   }).compile();
 

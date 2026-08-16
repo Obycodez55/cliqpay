@@ -138,6 +138,47 @@ describe('UsersService', () => {
     });
   });
 
+  describe('lookupRecipient', () => {
+    it('resolves by email and returns only userId/username/firstName/lastName', async () => {
+      userRepo.findOneBy.mockResolvedValueOnce(buildUser());
+
+      const result = await service.lookupRecipient('ada@example.com');
+
+      expect(userRepo.findOneBy).toHaveBeenCalledWith({
+        email: 'ada@example.com',
+      });
+      expect(result).toEqual({
+        userId: 'user-1',
+        username: 'ada_l',
+        firstName: 'Ada',
+        lastName: 'Lovelace',
+      });
+    });
+
+    it('resolves by username when the identifier has no @', async () => {
+      userRepo.findOneBy.mockResolvedValueOnce(buildUser());
+
+      const result = await service.lookupRecipient('ada_l');
+
+      expect(userRepo.findOneBy).toHaveBeenCalledWith({ username: 'ada_l' });
+      expect(result).toEqual({
+        userId: 'user-1',
+        username: 'ada_l',
+        firstName: 'Ada',
+        lastName: 'Lovelace',
+      });
+    });
+
+    it('returns null on a miss, via the same single-query shape as a hit', async () => {
+      userRepo.findOneBy.mockResolvedValueOnce(null);
+
+      const result = await service.lookupRecipient('nobody@example.com');
+
+      expect(result).toBeNull();
+      expect(userRepo.findOneBy).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('updateProfile', () => {
     it('updates firstName/lastName with no cooldown or restriction', async () => {
       const dto = Object.assign(new UpdateProfileDto(), {

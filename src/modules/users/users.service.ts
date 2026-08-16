@@ -13,6 +13,10 @@ import {
   ProfileResponseDto,
   toProfileResponse,
 } from './dto/profile-response.dto';
+import {
+  RecipientLookupResponseDto,
+  toRecipientLookupResponse,
+} from './dto/recipient-lookup-response.dto';
 
 const USERNAME_CHANGE_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
@@ -66,6 +70,22 @@ export class UsersService {
 
   async findByEmail(email: string): Promise<User | null> {
     return this.dataSource.getRepository(User).findOneBy({ email });
+  }
+
+  async findByUsername(username: string): Promise<User | null> {
+    return this.dataSource.getRepository(User).findOneBy({ username });
+  }
+
+  // Exactly one query either way — a hit and a miss run the same
+  // findOneBy, so there's no extra join or lookup on the hit path that
+  // could show up as a timing difference (see issue #21).
+  async lookupRecipient(
+    identifier: string,
+  ): Promise<RecipientLookupResponseDto | null> {
+    const user = identifier.includes('@')
+      ? await this.findByEmail(identifier)
+      : await this.findByUsername(identifier);
+    return user ? toRecipientLookupResponse(user) : null;
   }
 
   async findById(userId: string): Promise<User> {
