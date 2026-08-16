@@ -72,6 +72,28 @@ export interface FundingCompletedEventPayload {
   reference: string; // funding transaction reference — see notifications' FundingCompletedPayload
 }
 
+export const TRANSFER_SENT_EVENT = 'transfer_sent';
+
+export interface TransferSentEventPayload {
+  userId: string;
+  email: string;
+  counterpartyUsername: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  reference: string;
+}
+
+export const TRANSFER_RECEIVED_EVENT = 'transfer_received';
+
+export interface TransferReceivedEventPayload {
+  userId: string;
+  email: string;
+  counterpartyUsername: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  reference: string;
+}
+
 export const RECONCILIATION_MISMATCH_EVENT = 'reconciliation_mismatch';
 
 export interface ReconciliationMismatchEventPayload {

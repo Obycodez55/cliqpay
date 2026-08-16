@@ -14,6 +14,7 @@ import { LedgerModule } from './modules/ledger/ledger.module';
 import { UsersModule } from './modules/users/users.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { PaymentsModule } from './modules/payments/payments.module';
+import { TransfersModule } from './modules/transfers/transfers.module';
 
 @Module({
   imports: [
@@ -29,6 +30,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
     UsersModule,
     AuthModule,
     PaymentsModule,
+    TransfersModule,
     TerminusModule,
   ],
   controllers: [AppController],
