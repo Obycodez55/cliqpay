@@ -1,12 +1,9 @@
 export type NotificationChannel = 'email' | 'sms' | 'push' | 'in_app';
 
-// Delivered as a clickable link, not a typed code — the token is a long,
-// opaque value (see VerificationCode entity), so the payload carries the
-// full URL rather than a bare code the user would type in.
 export interface EmailVerificationOtpPayload {
   userId: string;
   email: string;
-  verificationUrl: string;
+  code: string;
   expiresInMinutes: number;
 }
 
@@ -17,12 +14,10 @@ export interface PhoneVerificationOtpPayload {
   expiresInMinutes: number;
 }
 
-// Delivered as a clickable link, not a typed code — same reasoning as
-// EmailVerificationOtpPayload above.
 export interface PasswordResetOtpPayload {
   userId: string;
   email: string;
-  resetUrl: string;
+  code: string;
   expiresInMinutes: number;
 }
 

@@ -1,8 +1,7 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { DataSource, Not } from 'typeorm';
-import { APP_CONFIG, AppConfig } from '../../config';
 import { runInTransaction } from '../../database/transaction.util';
 import {
   DomainEventEnvelope,
@@ -65,7 +64,6 @@ const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000; // 1 hour
 export class AuthService {
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
-    @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly usersService: UsersService,
     private readonly ledgerService: LedgerService,
     private readonly eventBus: EventBusService,
@@ -138,17 +136,15 @@ export class AuthService {
       userId,
       'email_verification',
       EMAIL_VERIFICATION_TTL_MS,
+      'numeric',
     );
-
-    const url = new URL(this.config.app.emailVerificationUrl);
-    url.searchParams.set('token', token);
 
     return {
       name: EMAIL_VERIFICATION_OTP_EVENT,
       payload: {
         userId,
         email,
-        verificationUrl: url.toString(),
+        code: token,
         expiresInMinutes: Math.round(
           (expiresAt.getTime() - Date.now()) / 60_000,
         ),
@@ -242,17 +238,15 @@ export class AuthService {
       user.id,
       'password_reset',
       PASSWORD_RESET_TTL_MS,
+      'numeric',
     );
-
-    const url = new URL(this.config.app.passwordResetUrl);
-    url.searchParams.set('token', token);
 
     return {
       name: PASSWORD_RESET_OTP_EVENT,
       payload: {
         userId: user.id,
         email: user.email,
-        resetUrl: url.toString(),
+        code: token,
         expiresInMinutes: Math.round(
           (expiresAt.getTime() - Date.now()) / 60_000,
         ),

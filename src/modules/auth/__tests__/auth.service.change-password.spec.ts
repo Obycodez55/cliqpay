@@ -1,6 +1,5 @@
 import * as bcrypt from 'bcrypt';
 import { DataSource } from 'typeorm';
-import { AppConfig } from '../../../config';
 import { DomainEventEnvelope } from '../../../shared/events/domain-events';
 import { AuthService } from '../auth.service';
 import { LedgerService } from '../../ledger/ledger.service';
@@ -114,7 +113,6 @@ describe('AuthService — change password', () => {
 
     service = new AuthService(
       dataSource as unknown as DataSource,
-      {} as unknown as AppConfig,
       usersService as unknown as UsersService,
       {} as LedgerService,
       {

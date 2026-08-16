@@ -1,5 +1,4 @@
 import { DataSource } from 'typeorm';
-import { AppConfig } from '../../../config';
 import { DomainEventEnvelope } from '../../../shared/events/domain-events';
 import { AuthService } from '../auth.service';
 import { LedgerService } from '../../ledger/ledger.service';
@@ -97,9 +96,6 @@ describe('AuthService — email verification', () => {
     };
     service = new AuthService(
       dataSource as unknown as DataSource,
-      {
-        app: { emailVerificationUrl: 'http://localhost:3000/verify-email' },
-      } as unknown as AppConfig,
       usersService as unknown as UsersService,
       {} as LedgerService,
       eventBus as unknown as EventBusService,
@@ -141,6 +137,7 @@ describe('AuthService — email verification', () => {
         'user-1',
         'email_verification',
         expect.any(Number),
+        'numeric',
       );
       expect(eventBus.dispatchAndAwait).toHaveBeenCalledWith(
         expect.objectContaining({ name: 'email_verification_otp' }),

@@ -4,7 +4,7 @@ import { IsNotCommonPassword } from '../internal/is-not-common-password.validato
 export class CompletePasswordResetDto {
   @IsString()
   @IsNotEmpty()
-  token: string;
+  code: string;
 
   @IsString()
   @MinLength(8)

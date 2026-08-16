@@ -37,7 +37,7 @@ export const EMAIL_VERIFICATION_OTP_EVENT = 'email_verification_otp';
 export interface EmailVerificationOtpEventPayload {
   userId: string;
   email: string;
-  verificationUrl: string;
+  code: string;
   expiresInMinutes: number;
 }
 
@@ -58,7 +58,7 @@ export const PASSWORD_RESET_OTP_EVENT = 'password_reset_otp';
 export interface PasswordResetOtpEventPayload {
   userId: string;
   email: string;
-  resetUrl: string;
+  code: string;
   expiresInMinutes: number;
 }
 

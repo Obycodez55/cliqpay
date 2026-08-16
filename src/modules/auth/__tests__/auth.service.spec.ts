@@ -1,6 +1,5 @@
 import * as bcrypt from 'bcrypt';
 import { DataSource, EntityManager } from 'typeorm';
-import { AppConfig } from '../../../config';
 import { DomainEventEnvelope } from '../../../shared/events/domain-events';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { AuthService } from '../auth.service';
@@ -133,9 +132,6 @@ describe('AuthService.register', () => {
     };
     service = new AuthService(
       dataSource as unknown as DataSource,
-      {
-        app: { emailVerificationUrl: 'http://localhost:3000/verify-email' },
-      } as unknown as AppConfig,
       usersService as unknown as UsersService,
       ledgerService as unknown as LedgerService,
       eventBus as unknown as EventBusService,
@@ -208,18 +204,17 @@ describe('AuthService.register', () => {
         'user-1',
         'email_verification',
         expect.any(Number),
+        'numeric',
       );
 
       const published = eventBus.publish.mock.calls[0]?.[0] as {
         name: string;
-        payload: { userId: string; email: string; verificationUrl: string };
+        payload: { userId: string; email: string; code: string };
       };
       expect(published.name).toBe('email_verification_otp');
       expect(published.payload.userId).toBe('user-1');
       expect(published.payload.email).toBe('ada@example.com');
-      expect(published.payload.verificationUrl).toContain(
-        'token=raw-verification-token',
-      );
+      expect(published.payload.code).toBe('raw-verification-token');
     });
 
     // publish() only enqueues — a downstream send failure happens later,
@@ -245,7 +240,6 @@ describe('AuthService.verifyTransactionPin', () => {
     };
     const service = new AuthService(
       {} as unknown as DataSource,
-      {} as unknown as AppConfig,
       {} as UsersService,
       {} as LedgerService,
       {} as EventBusService,

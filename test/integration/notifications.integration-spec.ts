@@ -97,8 +97,6 @@ describe('Notifications module — end-to-end dispatch', () => {
         env: 'test',
         port: 0,
         corsAllowedOrigins: [],
-        emailVerificationUrl: 'http://localhost:3000/verify-email',
-        passwordResetUrl: 'http://localhost:3000/reset-password',
       },
       database: { url: postgres.getConnectionUri() },
       redis: {
@@ -217,7 +215,7 @@ describe('Notifications module — end-to-end dispatch', () => {
         payload: {
           userId: USER_2,
           email: 'user-2@example.com',
-          verificationUrl: 'https://app.cliqpay.example/verify-email?token=abc',
+          code: '123456',
           expiresInMinutes: 10,
         },
         occurredAt: new Date(),
@@ -237,7 +235,7 @@ describe('Notifications module — end-to-end dispatch', () => {
         payload: {
           userId: USER_3,
           email: 'user-3+fail-permanent@example.com',
-          resetUrl: 'https://app.cliqpay.example/reset-password?token=abc',
+          code: '123456',
           expiresInMinutes: 10,
         },
         occurredAt: new Date(),

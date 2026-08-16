@@ -114,8 +114,6 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
       env: 'test',
       port: 0,
       corsAllowedOrigins: [],
-      emailVerificationUrl: 'http://localhost:3000/verify-email',
-      passwordResetUrl: 'http://localhost:3000/reset-password',
     },
     database: { url: postgres.getConnectionUri() },
     redis: {

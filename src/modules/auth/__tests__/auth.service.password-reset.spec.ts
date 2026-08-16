@@ -1,5 +1,4 @@
 import { DataSource } from 'typeorm';
-import { AppConfig } from '../../../config';
 import { DomainEventEnvelope } from '../../../shared/events/domain-events';
 import { AuthService } from '../auth.service';
 import { LedgerService } from '../../ledger/ledger.service';
@@ -122,9 +121,6 @@ describe('AuthService — password reset', () => {
     };
     service = new AuthService(
       dataSource as unknown as DataSource,
-      {
-        app: { passwordResetUrl: 'http://localhost:3000/reset-password' },
-      } as unknown as AppConfig,
       usersService as unknown as UsersService,
       {} as LedgerService,
       eventBus as unknown as EventBusService,
@@ -147,6 +143,7 @@ describe('AuthService — password reset', () => {
         'user-1',
         'password_reset',
         expect.any(Number),
+        'numeric',
       );
       expect(eventBus.dispatchAndAwait).toHaveBeenCalledWith(
         expect.objectContaining({ name: 'password_reset_otp' }),

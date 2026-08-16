@@ -110,15 +110,15 @@ export class AuthController {
     return this.sessionService.logout(dto);
   }
 
-  // Public — the token itself is the proof of identity, no guard needed.
+  // Public — the code itself is the proof of identity, no guard needed.
   @Post('verify-email')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({
-    summary: 'Verify an email address using its verification token',
+    summary: 'Verify an email address using its verification code',
   })
   verifyEmail(@Body() dto: VerifyEmailDto): Promise<void> {
-    return this.authService.verifyEmail(dto.token);
+    return this.authService.verifyEmail(dto.code);
   }
 
   // Authenticated — avoids taking an email/identifier in the body, which
@@ -127,7 +127,7 @@ export class AuthController {
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Resend the email verification link' })
+  @ApiOperation({ summary: 'Resend the email verification code' })
   resendVerificationEmail(@Req() req: AuthenticatedRequest): Promise<void> {
     return this.authService.resendEmailVerification(req.user.userId);
   }
@@ -165,14 +165,14 @@ export class AuthController {
     return this.authService.requestPasswordReset(dto.email);
   }
 
-  // Public — the token itself is the proof, same as verify-email.
+  // Public — the code itself is the proof, same as verify-email.
   @Post('password-reset/complete')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Complete a password reset using its reset token' })
+  @ApiOperation({ summary: 'Complete a password reset using its reset code' })
   completePasswordReset(@Body() dto: CompletePasswordResetDto): Promise<void> {
     return this.authService.completePasswordReset(
-      dto.token,
+      dto.code,
       dto.newPassword,
       dto.revokeOtherSessions,
     );

@@ -13,19 +13,6 @@ const envSchema = z
     PORT: z.coerce.number().int().positive().default(3000),
     CORS_ALLOWED_ORIGINS: z.string().default(''),
 
-    // Base URL the email-verification link points at — the client app reads
-    // the `token` query param and calls POST /auth/verify-email with it.
-    // No frontend exists yet (docs/architecture.md §9), so this defaults to
-    // a placeholder for local dev; production must set a real one.
-    EMAIL_VERIFICATION_URL: z
-      .url()
-      .default('http://localhost:3000/verify-email'),
-
-    // Same reasoning as EMAIL_VERIFICATION_URL above, for the
-    // password-reset link — no frontend exists yet, placeholder default for
-    // local dev.
-    PASSWORD_RESET_URL: z.url().default('http://localhost:3000/reset-password'),
-
     DATABASE_URL: z.string().url(),
 
     REDIS_URL: z.string().url(),
@@ -91,8 +78,7 @@ const envSchema = z
     KORA_WEBHOOK_URL: z.url().optional(),
     // Sent as `redirect_url` — where Kora's hosted checkout sends the
     // customer back to after paying. No frontend exists yet
-    // (docs/architecture.md §9), so this is a placeholder until one does,
-    // same reasoning as EMAIL_VERIFICATION_URL/PASSWORD_RESET_URL above.
+    // (docs/architecture.md §9), so this is a placeholder until one does.
     // The webhook, not this redirect, is what actually completes the
     // funding transaction (§4.2) — this only affects where the customer's
     // browser ends up.
@@ -195,8 +181,6 @@ function buildConfig(env: Env) {
       corsAllowedOrigins: env.CORS_ALLOWED_ORIGINS.split(',')
         .map((origin) => origin.trim())
         .filter(Boolean),
-      emailVerificationUrl: env.EMAIL_VERIFICATION_URL,
-      passwordResetUrl: env.PASSWORD_RESET_URL,
     },
     database: {
       url: env.DATABASE_URL,
