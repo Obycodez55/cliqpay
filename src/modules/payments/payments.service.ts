@@ -412,7 +412,13 @@ function resolveFundingReplay(
 ): FundWalletResponseDto | null {
   switch (replay.outcome) {
     case 'match':
-      return toFundWalletResponse(replay.transaction);
+      return toFundWalletResponse({
+        status: replay.transaction.status,
+        metadata: replay.transaction.metadata as unknown as Record<
+          string,
+          unknown
+        >,
+      });
     case 'foreign':
       throw new ConflictException(
         'This reference has already been used for a different funding request.',
@@ -428,10 +434,17 @@ function resolveFundingReplay(
 
 function toFundWalletResponse(transaction: {
   status: string;
-  metadata: { checkoutUrl: string | null };
+  // Untyped, not the funding-shaped metadata directly — checkIdempotentReplay
+  // is shared across every transaction type (funding, transfers), so its
+  // TypeScript shape can't promise a funding-shaped metadata payload here.
+  // In practice this is only ever called with a funding transaction, since
+  // PaymentsService is the only caller of checkIdempotentReplay with a
+  // funding reference.
+  metadata: Record<string, unknown>;
 }): FundWalletResponseDto {
-  if (transaction.metadata.checkoutUrl) {
-    return { checkoutUrl: transaction.metadata.checkoutUrl };
+  const checkoutUrl = transaction.metadata.checkoutUrl as string | null;
+  if (checkoutUrl) {
+    return { checkoutUrl };
   }
   if (transaction.status === 'failed') {
     // markFundingTransactionFailed set this before a checkout URL ever
