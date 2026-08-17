@@ -3,12 +3,17 @@ import {
   StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import { GenericContainer, StartedTestContainer } from 'testcontainers';
-import { DynamicModule, INestApplication, Module } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule, getRepositoryToken } from '@nestjs/typeorm';
 import { DataSource, Repository } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../src/config';
 import { buildDataSourceOptions } from '../../src/database/data-source.options';
+import {
+  buildTestAppConfig,
+  buildTestConfigModule,
+  buildTestJwtModule,
+} from './support/test-app-config';
 import { EventBusModule } from '../../src/shared/events/event-bus.module';
 import { EventBusService } from '../../src/shared/events/event-bus.service';
 import { NotificationsModule } from '../../src/modules/notifications/notifications.module';
@@ -32,18 +37,6 @@ const USER_5 = '55555555-5555-4555-8555-555555555555';
 const USER_6 = '66666666-6666-4666-8666-666666666666';
 const USER_7 = '77777777-7777-4777-8777-777777777777';
 const USER_8 = '88888888-8888-4888-8888-888888888888';
-
-@Module({})
-class TestConfigModule {}
-
-function buildTestConfigModule(config: AppConfig): DynamicModule {
-  return {
-    module: TestConfigModule,
-    global: true,
-    providers: [{ provide: APP_CONFIG, useValue: config }],
-    exports: [APP_CONFIG],
-  };
-}
 
 async function waitFor(
   predicate: () => boolean,
@@ -92,58 +85,17 @@ describe('Notifications module — end-to-end dispatch', () => {
     await queryRunner.release();
     await setupDataSource.destroy();
 
-    const config: AppConfig = {
-      app: {
-        env: 'test',
-        port: 0,
-        corsAllowedOrigins: [],
-      },
+    const config: AppConfig = buildTestAppConfig({
       database: { url: postgres.getConnectionUri() },
       redis: {
         url: `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`,
       },
-      sentry: { dsn: undefined },
-      rateLimit: { ttlMs: 60_000, limit: 100 },
-      jwt: { secret: 'test-jwt-secret-at-least-32-characters-long' },
-      encryption: {
-        key: '0'.repeat(64),
-      },
-      transactionPin: {
-        pepper: '0'.repeat(64),
-      },
-      notifications: {
-        emailProvider: 'fake',
-        smsProvider: 'fake',
-        pushProvider: 'fake',
-        brevo: {
-          apiKey: undefined,
-          senderEmail: undefined,
-          senderName: undefined,
-        },
-        termii: { apiKey: undefined, senderId: undefined },
-        firebase: {
-          projectId: undefined,
-          clientEmail: undefined,
-          privateKey: undefined,
-        },
-        retentionDays: 180,
-      },
-      payments: {
-        provider: 'fake',
-        kora: {
-          secretKey: undefined,
-          webhookUrl: undefined,
-          redirectUrl: undefined,
-        },
-        reconciliation: { alertEmail: 'ops@cliqpay.test' },
-      },
-      transfers: { platformFee: 0, minAmount: 10_000, maxAmount: 100_000_000 },
-      moneyRequests: { expiryDays: 7, maxPendingPerPair: 3 },
-    };
+    });
 
     const moduleRef = await Test.createTestingModule({
       imports: [
         buildTestConfigModule(config),
+        buildTestJwtModule(),
         TypeOrmModule.forRootAsync({
           inject: [APP_CONFIG],
           useFactory: (cfg: AppConfig) => buildDataSourceOptions(cfg),

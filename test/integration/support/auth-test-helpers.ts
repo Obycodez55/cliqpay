@@ -59,16 +59,6 @@ export function wrongCodeFor(correctCode: string): string {
   return next.toString().padStart(6, '0');
 }
 
-// The verification link is the only `token=` query param in the rendered
-// email — see templates/email/email-verification-otp.hbs.
-export function extractVerificationToken(text: string): string {
-  const match = text.match(/token=([^&\s]+)/);
-  if (!match) {
-    throw new Error(`No verification token found in email text: ${text}`);
-  }
-  return decodeURIComponent(match[1]);
-}
-
 export interface AuthTestHelpers {
   registerUser: (
     overrides?: Record<string, unknown>,
