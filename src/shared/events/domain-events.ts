@@ -131,6 +131,18 @@ export interface MoneyRequestPaidEventPayload {
   moneyRequestId: string;
 }
 
+export const WITHDRAWAL_INITIATED_EVENT = 'withdrawal_initiated';
+
+export interface WithdrawalInitiatedEventPayload {
+  userId: string;
+  email: string;
+  amount: string; // decimal display string (Money.toDecimalString()), not minor units
+  currency: string;
+  bankName: string;
+  accountNumberLast4: string;
+  reference: string; // withdrawal transaction reference — see notifications' WithdrawalInitiatedPayload
+}
+
 export const RECONCILIATION_MISMATCH_EVENT = 'reconciliation_mismatch';
 
 export interface ReconciliationMismatchEventPayload {

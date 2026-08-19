@@ -5,6 +5,8 @@ import { Money } from '../../../shared/primitives/money';
 import {
   InitiatePaymentParams,
   InitiatePaymentResult,
+  InitiatePayoutParams,
+  InitiatePayoutResult,
   PaymentProviderAdapter,
   ResolveBankAccountResult,
   VerifyChargeResult,
@@ -64,6 +66,34 @@ interface KoraResolveBankAccountResponse {
     bank_code: string;
     account_number: string;
     account_name: string;
+  };
+}
+
+// Ground truth: a real sandbox call to POST /transactions/disburse, run
+// during issue #28's design (per the same discipline as ADR-0007/the
+// resolve-bank-account call above) — not guessed from Kora's docs. The
+// accepted case returns HTTP 200 with `data.status: "processing"`:
+//   {"status":true,"message":"Transfer initiated successfully.","data":
+//    {"amount":"1000.00","fee":"30.00","currency":"NGN","status":"processing",
+//     "reference":"...","message":"Payout processing","customer":{...}}}
+// A synchronous rejection (bad bank code, bad account) returns HTTP 409:
+//   {"status":false,"error":"conflict","message":"Invalid bank provided.",
+//    "data":{"status":"failed","message":"Invalid bank provided.","reference":"..."}}
+// Neither response carries a Kora-generated id distinct from the `reference`
+// we sent — re-fetching the same disbursement via its status endpoint
+// (`GET /transactions/{reference}`) confirms the same: only `reference` is
+// echoed back, never a separate id. ADR-0007 originally assumed withdrawals
+// would differ from funding on this point; its Phase 4 correction records
+// this finding — ledger's `postWithdrawal` mirrors `reference` into
+// `providerReference` the same way funding does, not a distinct value.
+interface KoraDisburseResponse {
+  status: boolean;
+  message: string;
+  error?: string;
+  data?: {
+    status: string; // 'processing' | 'failed' | ... — only these two observed
+    message: string;
+    reference: string;
   };
 }
 
@@ -260,6 +290,65 @@ export class KoraAdapter implements PaymentProviderAdapter {
     throw new Error(
       `KoraAdapter: ${response.status} ${body.message ?? 'unknown error'}`,
     );
+  }
+
+  // Any non-2xx other than the documented 409-rejection shape (see
+  // KoraDisburseResponse) is a genuine system failure and still throws, same
+  // as every other adapter method — only a *recognized* synchronous
+  // rejection becomes the typed `rejected` result the caller reverses on.
+  async initiatePayout(
+    params: InitiatePayoutParams,
+  ): Promise<InitiatePayoutResult> {
+    let response: Response;
+    try {
+      response = await fetch(`${KORA_BASE_URL}/transactions/disburse`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.secretKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          reference: params.reference,
+          destination: {
+            type: 'bank_account',
+            amount: params.amount.toDecimalString(),
+            currency: params.amount.currency,
+            narration: `Cliqpay withdrawal ${params.reference}`,
+            bank_account: {
+              bank: params.bankCode,
+              account: params.accountNumber,
+            },
+            customer: { name: params.accountName, email: params.customerEmail },
+          },
+        }),
+        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
+      });
+    } catch (error) {
+      // A network error means Kora's receipt of the request is genuinely
+      // unknown — it may have arrived and started processing. Not a thrown
+      // error: see InitiatePayoutResult's `unknown` case for why treating
+      // this as a rejection would be wrong post-debit.
+      return {
+        status: 'unknown',
+        detail: `network error (${(error as Error).message})`,
+      };
+    }
+
+    const body = (await response.json()) as KoraDisburseResponse;
+
+    if (response.ok && body.status && body.data?.status === 'processing') {
+      return { status: 'accepted' };
+    }
+    if (response.status === 409 && body.data?.status === 'failed') {
+      return { status: 'rejected', reason: body.data.message };
+    }
+    // Any other shape (5xx, an unrecognized 2xx/4xx body) is not a
+    // confirmed rejection either — same `unknown` reasoning as the network
+    // error above.
+    return {
+      status: 'unknown',
+      detail: `${response.status} ${body.message ?? 'unknown error'}`,
+    };
   }
 
   verifyWebhookSignature(rawBody: Buffer, signature: string): boolean {

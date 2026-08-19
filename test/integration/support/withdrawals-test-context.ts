@@ -14,6 +14,7 @@ import {
   buildTestAppConfig,
   buildTestConfigModule,
   buildTestJwtModule,
+  TEST_PIN_PEPPER,
 } from './test-app-config';
 import { CreateUsersAndAccounts1784628665852 } from '../../../src/database/migrations/1784628665852-CreateUsersAndAccounts';
 import { CreateSessions1784642459395 } from '../../../src/database/migrations/1784642459395-CreateSessions';
@@ -32,6 +33,10 @@ import { AddPendingPhoneToUsers1784707276065 } from '../../../src/database/migra
 import { AddTransactionPinLockoutToCredentials1785491931164 } from '../../../src/database/migrations/1785491931164-AddTransactionPinLockoutToCredentials';
 import { CreateNotifications1786812506579 } from '../../../src/database/migrations/1786812506579-CreateNotifications';
 import { CreateBankAccounts1787200000000 } from '../../../src/database/migrations/1787200000000-CreateBankAccounts';
+import { AddWithdrawalReversalTransactionType1787300000000 } from '../../../src/database/migrations/1787300000000-AddWithdrawalReversalTransactionType';
+import { CreateTransactionsAndLedgerEntries1784707276066 } from '../../../src/database/migrations/1784707276066-CreateTransactionsAndLedgerEntries';
+import { AddFundingQueryIndexes1785488695081 } from '../../../src/database/migrations/1785488695081-AddFundingQueryIndexes';
+import { EnforceLedgerEntriesAppendOnly1785491930164 } from '../../../src/database/migrations/1785491930164-EnforceLedgerEntriesAppendOnly';
 import { AuthModule } from '../../../src/modules/auth/auth.module';
 import { AuthService } from '../../../src/modules/auth/auth.service';
 import { MfaService } from '../../../src/modules/auth/mfa.service';
@@ -42,10 +47,15 @@ import { MfaMethod } from '../../../src/modules/auth/entities/mfa-method.entity'
 import { MfaChallenge } from '../../../src/modules/auth/entities/mfa-challenge.entity';
 import { TrustedDevice } from '../../../src/modules/auth/entities/trusted-device.entity';
 import { VerificationCode } from '../../../src/modules/auth/entities/verification-code.entity';
+import { hashTransactionPin } from '../../../src/modules/auth/internal/pin.util';
 import { Account } from '../../../src/modules/ledger/entities/account.entity';
+import { Transaction } from '../../../src/modules/ledger/entities/transaction.entity';
+import { LedgerEntry } from '../../../src/modules/ledger/entities/ledger-entry.entity';
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
+import { LedgerService } from '../../../src/modules/ledger/ledger.service';
 import { User } from '../../../src/modules/users/entities/user.entity';
 import { UsersModule } from '../../../src/modules/users/users.module';
+import { UsersService } from '../../../src/modules/users/users.service';
 import { PaymentsModule } from '../../../src/modules/payments/payments.module';
 import { PAYMENT_PROVIDER_ADAPTER } from '../../../src/modules/payments/adapters/payment-provider.interface';
 import { FakeAdapter } from '../../../src/modules/payments/adapters/fake.adapter';
@@ -62,6 +72,7 @@ import { OtpNotificationProcessor } from '../../../src/modules/notifications/int
 import { ChannelDispatchProcessor } from '../../../src/modules/notifications/internal/channel-dispatch.processor';
 import { FundingPollProcessor } from '../../../src/modules/payments/internal/funding-poll.processor';
 import { ReconciliationProcessor } from '../../../src/modules/payments/internal/reconciliation.processor';
+import { Money } from '../../../src/shared/primitives/money';
 
 // A superset of AuthTestContext's own fields (plus payments/withdrawals'
 // own) so this context can be passed straight into
@@ -74,11 +85,15 @@ export interface WithdrawalsTestContext {
   authService: AuthService;
   mfaService: MfaService;
   sessionService: SessionService;
+  usersService: UsersService;
+  ledgerService: LedgerService;
   withdrawalsService: WithdrawalsService;
   dataSource: DataSource;
   userRepo: Repository<User>;
   credentialRepo: Repository<Credential>;
   accountRepo: Repository<Account>;
+  transactionRepo: Repository<Transaction>;
+  ledgerEntryRepo: Repository<LedgerEntry>;
   sessionRepo: Repository<Session>;
   mfaMethodRepo: Repository<MfaMethod>;
   mfaChallengeRepo: Repository<MfaChallenge>;
@@ -88,16 +103,23 @@ export interface WithdrawalsTestContext {
   fakeAdapter: FakeAdapter;
   emailAdapter: FakeEmailAdapter;
   smsAdapter: FakeSmsAdapter;
+  config: AppConfig;
 }
 
 // Combines auth-test-context's migration/module set (needed for
-// register()/login()/step-up MFA) with PaymentsModule + WithdrawalsModule —
-// withdrawals is the first flow that genuinely needs both auth's step-up
-// and payments' bank-account resolution at once. No ledger migrations
-// beyond CreateUsersAndAccounts (which already carries `accounts`) —
-// issue #27 posts nothing to the ledger, same reasoning as
-// WithdrawalsModule's own comment about not importing LedgerModule yet.
-export async function createWithdrawalsTestContext(): Promise<WithdrawalsTestContext> {
+// register()/login()/step-up MFA) with PaymentsModule + WithdrawalsModule,
+// plus the ledger's transactions/ledger_entries migrations — issue #28 is
+// the first withdrawals work that actually posts to the ledger, so this
+// context is the first one that needs all three at once (payments' provider
+// resolution, auth's step-up/PIN, and ledger's posting).
+export async function createWithdrawalsTestContext(
+  withdrawalConfig: {
+    minAmount?: number;
+    maxAmount?: number;
+    platformFee?: number;
+    providerFee?: number;
+  } = {},
+): Promise<WithdrawalsTestContext> {
   const postgres = await new PostgreSqlContainer('postgres:16-alpine').start();
   const redis = await new GenericContainer('redis:7-alpine')
     .withExposedPorts(6379)
@@ -126,11 +148,15 @@ export async function createWithdrawalsTestContext(): Promise<WithdrawalsTestCon
   await new DropUserForeignKeys1784707276063().up(queryRunner);
   await new AddPendingEmailToUsers1784707276064().up(queryRunner);
   await new AddPendingPhoneToUsers1784707276065().up(queryRunner);
+  await new CreateTransactionsAndLedgerEntries1784707276066().up(queryRunner);
+  await new AddFundingQueryIndexes1785488695081().up(queryRunner);
+  await new EnforceLedgerEntriesAppendOnly1785491930164().up(queryRunner);
   await new AddTransactionPinLockoutToCredentials1785491931164().up(
     queryRunner,
   );
   await new CreateNotifications1786812506579().up(queryRunner);
   await new CreateBankAccounts1787200000000().up(queryRunner);
+  await new AddWithdrawalReversalTransactionType1787300000000().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 
@@ -138,6 +164,12 @@ export async function createWithdrawalsTestContext(): Promise<WithdrawalsTestCon
     database: { url: postgres.getConnectionUri() },
     redis: {
       url: `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`,
+    },
+    withdrawals: {
+      minAmount: withdrawalConfig.minAmount ?? 10_000,
+      maxAmount: withdrawalConfig.maxAmount ?? 100_000_000,
+      platformFee: withdrawalConfig.platformFee ?? 0,
+      providerFee: withdrawalConfig.providerFee ?? 3_000,
     },
   });
 
@@ -177,11 +209,15 @@ export async function createWithdrawalsTestContext(): Promise<WithdrawalsTestCon
     authService: moduleRef.get(AuthService),
     mfaService: moduleRef.get(MfaService),
     sessionService: moduleRef.get(SessionService),
+    usersService: moduleRef.get(UsersService),
+    ledgerService: moduleRef.get(LedgerService),
     withdrawalsService: moduleRef.get(WithdrawalsService),
     dataSource,
     userRepo: dataSource.getRepository(User),
     credentialRepo: dataSource.getRepository(Credential),
     accountRepo: dataSource.getRepository(Account),
+    transactionRepo: dataSource.getRepository(Transaction),
+    ledgerEntryRepo: dataSource.getRepository(LedgerEntry),
     sessionRepo: dataSource.getRepository(Session),
     mfaMethodRepo: dataSource.getRepository(MfaMethod),
     mfaChallengeRepo: dataSource.getRepository(MfaChallenge),
@@ -191,6 +227,7 @@ export async function createWithdrawalsTestContext(): Promise<WithdrawalsTestCon
     fakeAdapter: moduleRef.get(PAYMENT_PROVIDER_ADAPTER),
     emailAdapter: moduleRef.get(EMAIL_SENDER),
     smsAdapter: moduleRef.get(SMS_SENDER),
+    config,
   };
 }
 
@@ -221,4 +258,97 @@ export async function destroyWithdrawalsTestContext(
   await ctx.app?.close();
   await ctx.postgres?.stop();
   await ctx.redis?.stop();
+}
+
+// Directly creates a User + user_wallet Account + Credential with a known
+// PIN, bypassing registration and the step-up MFA set-PIN flow — same
+// reasoning as transfers-test-context.ts's seedTransferUser: exercising
+// registration/step-up isn't what these tests are about.
+export async function seedWithdrawalUser(
+  ctx: WithdrawalsTestContext,
+  overrides: {
+    email: string;
+    phone: string;
+    username: string;
+    pin?: string;
+  },
+): Promise<{ userId: string; walletId: string }> {
+  const pin = overrides.pin ?? '1234';
+  return ctx.dataSource.transaction(async (manager) => {
+    const user = await ctx.usersService.createUser(manager, {
+      email: overrides.email,
+      phone: overrides.phone,
+      username: overrides.username,
+      firstName: 'Ada',
+      lastName: 'Lovelace',
+    });
+    await manager
+      .getRepository(User)
+      .update({ id: user.id }, { emailVerifiedAt: new Date() });
+    const wallet = await ctx.ledgerService.createUserWallet(
+      manager,
+      user.id,
+      'NGN',
+    );
+    const credentialRepo = manager.getRepository(Credential);
+    const credential = credentialRepo.create({
+      userId: user.id,
+      passwordHash: 'unused-in-these-tests',
+      transactionPinHash: await hashTransactionPin(pin, TEST_PIN_PEPPER),
+    });
+    await credentialRepo.save(credential);
+    return { userId: user.id, walletId: wallet.id };
+  });
+}
+
+// Real funding posting (not a raw balance UPDATE) — same reasoning as
+// transfers-test-context.ts's fundWallet.
+export async function fundWallet(
+  ctx: WithdrawalsTestContext,
+  args: { reference: string; walletId: string; netAmountMinor: bigint },
+): Promise<void> {
+  await ctx.ledgerService.createPendingFundingTransaction({
+    reference: args.reference,
+    provider: 'kora',
+    providerReference: args.reference,
+    amount: Money.of(args.netAmountMinor, 'NGN'),
+    recipientWalletId: args.walletId,
+    metadata: { checkoutUrl: null, grossAmount: null },
+  });
+  const result = await ctx.ledgerService.postFunding({
+    reference: args.reference,
+    netAmount: Money.of(args.netAmountMinor, 'NGN'),
+    providerFee: Money.zero('NGN'),
+    providerStatus: 'success',
+  });
+  if (!result) {
+    throw new Error(
+      `fundWallet: postFunding returned null for reference "${args.reference}"`,
+    );
+  }
+}
+
+// Inserts a BankAccount row directly, bypassing the step-up-gated
+// saveBankAccount flow — same "exercising the other flow isn't what these
+// tests are about" reasoning as seedWithdrawalUser above; issue #27's own
+// spec already covers that flow.
+export async function seedBankAccount(
+  ctx: WithdrawalsTestContext,
+  args: {
+    userId: string;
+    bankCode?: string;
+    accountNumber?: string;
+    bankName?: string;
+    accountName?: string;
+  },
+): Promise<BankAccount> {
+  const bankAccount = ctx.bankAccountRepo.create({
+    userId: args.userId,
+    provider: 'kora',
+    bankCode: args.bankCode ?? '033',
+    bankName: args.bankName ?? 'United Bank for Africa',
+    accountNumber: args.accountNumber ?? '0000000000',
+    accountName: args.accountName ?? 'Ada Lovelace',
+  });
+  return ctx.bankAccountRepo.save(bankAccount);
 }

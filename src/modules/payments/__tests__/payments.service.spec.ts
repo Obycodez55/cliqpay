@@ -19,6 +19,7 @@ function mockAdapter(): jest.Mocked<PaymentProviderAdapter> {
     verifyCharge: jest.fn(),
     getBalance: jest.fn(),
     resolveBankAccount: jest.fn(),
+    initiatePayout: jest.fn(),
   };
 }
 

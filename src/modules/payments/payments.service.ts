@@ -22,6 +22,8 @@ import { FundWalletDto } from './dto/fund-wallet.dto';
 import { FundWalletResponseDto } from './dto/fund-wallet-response.dto';
 import {
   InitiatePaymentResult,
+  InitiatePayoutParams,
+  InitiatePayoutResult,
   PAYMENT_PROVIDER_ADAPTER,
   PaymentProviderAdapter,
   ResolveBankAccountResult,
@@ -419,6 +421,14 @@ export class PaymentsService {
     accountNumber: string,
   ): Promise<ResolveBankAccountResult> {
     return this.adapter.resolveBankAccount(bankCode, accountNumber);
+  }
+
+  // Issue #28 — same thin pass-through shape as resolveBankAccount above:
+  // `payments` owns no withdrawal-orchestration state (ADR-0014), so this
+  // hands back the provider's own outcome and lets `withdrawals` decide
+  // what to do with it (reverse on `rejected`).
+  initiatePayout(params: InitiatePayoutParams): Promise<InitiatePayoutResult> {
+    return this.adapter.initiatePayout(params);
   }
 }
 

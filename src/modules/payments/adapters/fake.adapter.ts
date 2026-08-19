@@ -4,6 +4,8 @@ import { Money } from '../../../shared/primitives/money';
 import {
   InitiatePaymentParams,
   InitiatePaymentResult,
+  InitiatePayoutParams,
+  InitiatePayoutResult,
   PaymentProviderAdapter,
   ResolveBankAccountResult,
   VerifyChargeResult,
@@ -20,6 +22,7 @@ const FAKE_SECRET_KEY = 'fake-kora-secret-key';
 @Injectable()
 export class FakeAdapter implements PaymentProviderAdapter {
   readonly initiated: InitiatePaymentParams[] = [];
+  readonly payoutsInitiated: InitiatePayoutParams[] = [];
   private readonly verifyChargeResults = new Map<string, VerifyChargeResult>();
   private readonly balances = new Map<string, Money>();
   private readonly resolveBankAccountResults = new Map<
@@ -109,5 +112,23 @@ export class FakeAdapter implements PaymentProviderAdapter {
       bankName: `Test Bank ${bankCode}`,
       accountName: `Test Account ${accountNumber}`,
     };
+  }
+
+  // Same sentinel convention as resolveBankAccount's "fail" account number
+  // above — a reference containing "reject" exercises the synchronous
+  // rejection path (KoraAdapter's real 409 case) without per-test
+  // configuration; anything else is accepted.
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async initiatePayout(
+    params: InitiatePayoutParams,
+  ): Promise<InitiatePayoutResult> {
+    this.payoutsInitiated.push(params);
+    if (params.reference.includes('reject')) {
+      return { status: 'rejected', reason: 'Invalid bank provided.' };
+    }
+    if (params.reference.includes('unknown')) {
+      return { status: 'unknown', detail: 'simulated network timeout' };
+    }
+    return { status: 'accepted' };
   }
 }

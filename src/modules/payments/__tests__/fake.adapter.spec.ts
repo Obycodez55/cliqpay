@@ -159,4 +159,59 @@ describe('FakeAdapter', () => {
       });
     });
   });
+
+  describe('initiatePayout', () => {
+    it('accepts by default and records what was initiated', async () => {
+      const adapter = new FakeAdapter();
+      const params = {
+        reference: 'cliqpay-payout-1',
+        amount: Money.of(100_000n, 'NGN'),
+        bankCode: '033',
+        accountNumber: '0000000000',
+        accountName: 'Jane Doe',
+        customerEmail: 'jane@example.com',
+      };
+
+      await expect(adapter.initiatePayout(params)).resolves.toEqual({
+        status: 'accepted',
+      });
+      expect(adapter.payoutsInitiated).toEqual([params]);
+    });
+
+    it('rejects deterministically when the reference carries the failure sentinel', async () => {
+      const adapter = new FakeAdapter();
+
+      await expect(
+        adapter.initiatePayout({
+          reference: 'cliqpay-payout-reject-1',
+          amount: Money.of(100_000n, 'NGN'),
+          bankCode: '033',
+          accountNumber: '0000000000',
+          accountName: 'Jane Doe',
+          customerEmail: 'jane@example.com',
+        }),
+      ).resolves.toEqual({
+        status: 'rejected',
+        reason: 'Invalid bank provided.',
+      });
+    });
+
+    it('returns an unknown outcome deterministically when the reference carries the unknown sentinel', async () => {
+      const adapter = new FakeAdapter();
+
+      await expect(
+        adapter.initiatePayout({
+          reference: 'cliqpay-payout-unknown-1',
+          amount: Money.of(100_000n, 'NGN'),
+          bankCode: '033',
+          accountNumber: '0000000000',
+          accountName: 'Jane Doe',
+          customerEmail: 'jane@example.com',
+        }),
+      ).resolves.toEqual({
+        status: 'unknown',
+        detail: 'simulated network timeout',
+      });
+    });
+  });
 });

@@ -33,11 +33,44 @@ export type ResolveBankAccountResult =
   | { status: 'resolved'; bankName: string; accountName: string }
   | { status: 'not_found' };
 
+export interface InitiatePayoutParams {
+  reference: string;
+  amount: Money; // the amount that arrives at the destination bank account
+  bankCode: string;
+  accountNumber: string;
+  accountName: string;
+  customerEmail: string;
+}
+
 /**
- * See docs/architecture.md §3.6. `initiatePayout()`/`verifyKyc()` are not
- * stubbed here; they arrive with the rest of Phase 4/6, not ahead of them
- * (CLAUDE.md's incremental-build rule) — `resolveBankAccount()` is the one
- * Phase 4 method issue #27 actually needs.
+ * A real sandbox disbursement call (issue #28's design, `POST
+ * /merchant/api/v1/transactions/disburse`) confirmed Kora's payout API
+ * synchronously rejects some failures (invalid bank, invalid account) with
+ * an HTTP 409 and `data.status: 'failed'` before any asynchronous
+ * processing begins — a distinct, typed outcome from `accepted`, not a
+ * thrown error, same reasoning as ResolveBankAccountResult's `not_found`.
+ * `accepted` covers the sandbox's `data.status: 'processing'` — final
+ * success/failure only arrives on the payout webhook (#29), which this
+ * type deliberately doesn't model yet.
+ *
+ * `unknown` is distinct from `rejected`: a network error, timeout, or any
+ * response shape that isn't a confirmed accept/reject means Kora may still
+ * have received and be processing the payout. Debit-first (§6 Phase 4)
+ * already moved money out of the wallet before this call — reversing on an
+ * outcome that isn't actually a confirmed rejection risks crediting the
+ * wallet back while the bank transfer still lands, a real double-spend, not
+ * just an over-cautious reversal. A caller must never treat `unknown` the
+ * same as `rejected`.
+ */
+export type InitiatePayoutResult =
+  | { status: 'accepted' }
+  | { status: 'rejected'; reason: string }
+  | { status: 'unknown'; detail: string };
+
+/**
+ * See docs/architecture.md §3.6. `verifyKyc()` is not stubbed here; it
+ * arrives with Phase 6, not ahead of it (CLAUDE.md's incremental-build
+ * rule).
  */
 export interface PaymentProviderAdapter {
   initiatePayment(
@@ -63,6 +96,11 @@ export interface PaymentProviderAdapter {
     bankCode: string,
     accountNumber: string,
   ): Promise<ResolveBankAccountResult>;
+
+  // Issue #28 — called only after LedgerService.postWithdrawal has already
+  // committed (debit-first, docs/architecture.md §6 Phase 4); a `rejected`
+  // result tells the caller to reverse what was just posted.
+  initiatePayout(params: InitiatePayoutParams): Promise<InitiatePayoutResult>;
 }
 
 export const PAYMENT_PROVIDER_ADAPTER = Symbol('PAYMENT_PROVIDER_ADAPTER');

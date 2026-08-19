@@ -118,6 +118,26 @@ const envSchema = z
       .int()
       .positive()
       .default(3),
+
+    // Withdrawal bounds mirror TRANSFER_MIN_AMOUNT/TRANSFER_MAX_AMOUNT's
+    // pattern (docs/architecture.md §6 Phase 4). Platform fee is flat,
+    // config-driven, launches at 0, same as TRANSFER_PLATFORM_FEE.
+    WITHDRAWAL_MIN_AMOUNT: z.coerce
+      .number()
+      .int()
+      .nonnegative()
+      .default(10_000),
+    WITHDRAWAL_MAX_AMOUNT: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(100_000_000),
+    WITHDRAWAL_PLATFORM_FEE: z.coerce.number().int().nonnegative().default(0),
+    WITHDRAWAL_PROVIDER_FEE: z.coerce
+      .number()
+      .int()
+      .nonnegative()
+      .default(3_000),
   })
   .superRefine((env, ctx) => {
     // A provider's own credentials are only required when it's the one
@@ -243,6 +263,12 @@ function buildConfig(env: Env) {
     moneyRequests: {
       expiryDays: env.MONEY_REQUEST_EXPIRY_DAYS,
       maxPendingPerPair: env.MONEY_REQUEST_MAX_PENDING_PER_PAIR,
+    },
+    withdrawals: {
+      minAmount: env.WITHDRAWAL_MIN_AMOUNT,
+      maxAmount: env.WITHDRAWAL_MAX_AMOUNT,
+      platformFee: env.WITHDRAWAL_PLATFORM_FEE,
+      providerFee: env.WITHDRAWAL_PROVIDER_FEE,
     },
   };
 }

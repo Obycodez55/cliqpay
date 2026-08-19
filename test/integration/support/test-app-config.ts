@@ -44,6 +44,12 @@ function defaultTestAppConfig(): AppConfig {
     },
     transfers: { platformFee: 0, minAmount: 10_000, maxAmount: 100_000_000 },
     moneyRequests: { expiryDays: 7, maxPendingPerPair: 3 },
+    withdrawals: {
+      minAmount: 10_000,
+      maxAmount: 100_000_000,
+      platformFee: 0,
+      providerFee: 3_000,
+    },
   };
 }
 

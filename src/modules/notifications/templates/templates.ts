@@ -12,6 +12,7 @@ import {
   SecurityAlertPayload,
   TransferReceivedPayload,
   TransferSentPayload,
+  WithdrawalInitiatedPayload,
 } from '../notification-catalog';
 import { renderEmail } from './render-email';
 
@@ -87,6 +88,10 @@ export const emailTemplates: {
   money_request_paid: (payload: MoneyRequestPaidPayload) => ({
     subject: `${payload.counterpartyUsername} paid your money request`,
     ...renderEmail('money_request_paid', payload),
+  }),
+  withdrawal_initiated: (payload: WithdrawalInitiatedPayload) => ({
+    subject: `Your withdrawal of ${payload.currency} ${payload.amount} is on its way`,
+    ...renderEmail('withdrawal_initiated', payload),
   }),
   reconciliation_mismatch: (payload: ReconciliationMismatchPayload) => ({
     subject: `Reconciliation mismatch: ${payload.provider}/${payload.currency}`,

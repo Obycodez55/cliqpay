@@ -452,4 +452,149 @@ describe('KoraAdapter', () => {
       ).rejects.toThrow(/ECONNRESET/);
     });
   });
+
+  // Shapes below are ground truth from a real sandbox call to
+  // POST /transactions/disburse, run during issue #28's design — see
+  // KoraAdapter.initiatePayout.
+  describe('initiatePayout', () => {
+    it('maps a "processing" disburse response to an accepted outcome', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(200, {
+          status: true,
+          message: 'Transfer initiated successfully.',
+          data: {
+            amount: '1000.00',
+            fee: '30.00',
+            currency: 'NGN',
+            status: 'processing',
+            reference: 'cliqpay-payout-1',
+            message: 'Payout processing',
+            customer: { name: 'Test User', email: 'jane@example.com' },
+          },
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      const result = await adapter.initiatePayout({
+        reference: 'cliqpay-payout-1',
+        amount: Money.of(100000n, 'NGN'),
+        bankCode: '033',
+        accountNumber: '0000000000',
+        accountName: 'Jane Doe',
+        customerEmail: 'jane@example.com',
+      });
+
+      expect(result).toEqual({ status: 'accepted' });
+    });
+
+    it('sends the destination shape disburse expects, amount as a major-unit decimal string', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(200, {
+          status: true,
+          message: 'ok',
+          data: { status: 'processing', message: 'ok', reference: 'r' },
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await adapter.initiatePayout({
+        reference: 'cliqpay-payout-2',
+        amount: Money.of(100000n, 'NGN'),
+        bankCode: '033',
+        accountNumber: '0000000000',
+        accountName: 'Jane Doe',
+        customerEmail: 'jane@example.com',
+      });
+
+      const [url, requestInit] = fetchMock.mock.calls[0] as [
+        string,
+        RequestInit,
+      ];
+      expect(url).toBe(
+        'https://api.korapay.com/merchant/api/v1/transactions/disburse',
+      );
+      expect(JSON.parse(requestInit.body as string)).toEqual({
+        reference: 'cliqpay-payout-2',
+        destination: {
+          type: 'bank_account',
+          amount: '1000.00',
+          currency: 'NGN',
+          narration: 'Cliqpay withdrawal cliqpay-payout-2',
+          bank_account: { bank: '033', account: '0000000000' },
+          customer: { name: 'Jane Doe', email: 'jane@example.com' },
+        },
+      });
+    });
+
+    it('maps a 409 synchronous rejection to a typed rejected outcome, not a thrown error', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(409, {
+          status: false,
+          error: 'conflict',
+          message: 'Invalid bank provided.',
+          data: {
+            status: 'failed',
+            message: 'Invalid bank provided.',
+            reference: 'cliqpay-payout-3',
+          },
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      const result = await adapter.initiatePayout({
+        reference: 'cliqpay-payout-3',
+        amount: Money.of(100000n, 'NGN'),
+        bankCode: '999',
+        accountNumber: '0000000000',
+        accountName: 'Jane Doe',
+        customerEmail: 'jane@example.com',
+      });
+
+      expect(result).toEqual({
+        status: 'rejected',
+        reason: 'Invalid bank provided.',
+      });
+    });
+
+    // A non-ok, non-409 response isn't a confirmed rejection — Kora's
+    // receipt of the payout is genuinely unknown, and debit-first already
+    // moved money out of the wallet, so this must not be a thrown error a
+    // caller could mistake for "safe to reverse" (see InitiatePayoutResult's
+    // `unknown` case).
+    it('maps a non-ok, non-409 response to a typed unknown outcome, not a thrown error', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(401, { status: false, message: 'unauthorized' }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      const result = await adapter.initiatePayout({
+        reference: 'cliqpay-payout-4',
+        amount: Money.of(100000n, 'NGN'),
+        bankCode: '033',
+        accountNumber: '0000000000',
+        accountName: 'Jane Doe',
+        customerEmail: 'jane@example.com',
+      });
+
+      expect(result.status).toBe('unknown');
+      expect((result as { detail: string }).detail).toMatch(/unauthorized/);
+    });
+
+    it('maps a network failure to a typed unknown outcome, not a thrown error', async () => {
+      fetchMock.mockRejectedValue(new Error('ECONNRESET'));
+      const adapter = new KoraAdapter(buildConfig());
+
+      const result = await adapter.initiatePayout({
+        reference: 'cliqpay-payout-5',
+        amount: Money.of(100000n, 'NGN'),
+        bankCode: '033',
+        accountNumber: '0000000000',
+        accountName: 'Jane Doe',
+        customerEmail: 'jane@example.com',
+      });
+
+      expect(result.status).toBe('unknown');
+      expect((result as { detail: string }).detail).toMatch(/ECONNRESET/);
+    });
+  });
 });
