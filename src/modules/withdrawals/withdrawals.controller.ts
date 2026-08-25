@@ -5,21 +5,32 @@ import {
   HttpCode,
   HttpStatus,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiExtraModels,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+  getSchemaPath,
+} from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import {
   AuthenticatedRequest,
   JwtAuthGuard,
 } from '../../common/guards/jwt-auth.guard';
+import { CursorPaginationQueryDto } from '../../common/dto/cursor-pagination-query.dto';
+import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
 import { WithdrawalsService } from './withdrawals.service';
 import { SaveBankAccountDto } from './dto/save-bank-account.dto';
 import { BankAccountResponseDto } from './dto/bank-account-response.dto';
 import { StepUpChallengeResponseDto } from './dto/step-up-challenge-response.dto';
 import { InitiateWithdrawalDto } from './dto/initiate-withdrawal.dto';
 import { InitiateWithdrawalResponseDto } from './dto/initiate-withdrawal-response.dto';
+import { WithdrawalHistoryItemDto } from './dto/withdrawal-history-item.dto';
 
 @ApiTags('Withdrawals')
 @ApiBearerAuth()
@@ -36,6 +47,30 @@ export class WithdrawalsController {
     @Body() dto: InitiateWithdrawalDto,
   ): Promise<InitiateWithdrawalResponseDto> {
     return this.withdrawalsService.initiateWithdrawal(req.user.userId, dto);
+  }
+
+  @Get()
+  @ApiOperation({ summary: "Get the current user's withdrawal history" })
+  @ApiExtraModels(WithdrawalHistoryItemDto)
+  @ApiOkResponse({
+    schema: {
+      properties: {
+        items: {
+          type: 'array',
+          items: { $ref: getSchemaPath(WithdrawalHistoryItemDto) },
+        },
+        nextCursor: { type: 'string', nullable: true },
+      },
+    },
+  })
+  getWithdrawalHistory(
+    @Req() req: AuthenticatedRequest,
+    @Query() query: CursorPaginationQueryDto,
+  ): Promise<PaginatedResult<WithdrawalHistoryItemDto>> {
+    return this.withdrawalsService.getWithdrawalHistory(req.user.userId, {
+      cursor: query.cursor,
+      limit: query.limit,
+    });
   }
 
   // Kept under /withdrawals/bank-accounts/* — this controller's base moved

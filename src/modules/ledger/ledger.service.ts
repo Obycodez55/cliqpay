@@ -18,6 +18,7 @@ import {
   FundingTransactionMetadata,
   Transaction,
   TransactionProvider,
+  TransactionStatus,
   TransactionType,
   WithdrawalReversalTransactionMetadata,
   WithdrawalTransactionMetadata,
@@ -64,6 +65,19 @@ export interface StaleFundingTransaction {
 export interface TransactionHistoryPagination {
   cursor?: string;
   limit: number;
+}
+
+// The row shape `withdrawals` needs for its own history endpoint (issue
+// #30) — `metadata` carries the bank-account snapshot and fee breakdown
+// already recorded at postWithdrawal time (§4.2), so withdrawals decorates
+// its response from this alone, no second query against `bank_accounts`.
+export interface WithdrawalHistoryEntry {
+  id: string;
+  reference: string;
+  status: TransactionStatus;
+  amount: Money;
+  createdAt: Date;
+  metadata: WithdrawalTransactionMetadata;
 }
 
 // Only the fields that define the operation (ADR-0010) — never headers,
@@ -455,6 +469,65 @@ export class LedgerService {
         hasMore && lastRaw
           ? encodeCreatedAtIdCursor({
               createdAt: lastRaw.raw_created_at,
+              id: page[page.length - 1].id,
+            })
+          : null,
+    };
+  }
+
+  // Serves GET /withdrawals (issue #30, ADR-0014). Reads `transactions`
+  // directly rather than joining ledger_entries — a withdrawal produces
+  // several legs (§4.2's 5-leg posting), but only one row in `transactions`
+  // itself, and that row's own `status` already carries the
+  // pending/completed/reversed lifecycle this endpoint needs to show;
+  // joining ledger_entries the way getTransactionHistory does would return
+  // one entry per leg instead of one row per withdrawal. Same
+  // (createdAt, id) DESC keyset pagination as getTransactionHistory, for
+  // the same append-only/high-write reasoning.
+  async getWithdrawalHistory(
+    walletId: string,
+    pagination: TransactionHistoryPagination,
+  ): Promise<PaginatedResult<WithdrawalHistoryEntry>> {
+    const cursor = pagination.cursor
+      ? decodeCreatedAtIdCursor(pagination.cursor)
+      : null;
+
+    const query = this.dataSource
+      .getRepository(Transaction)
+      .createQueryBuilder('transaction')
+      .addSelect('"transaction"."created_at"::text', 'raw_created_at')
+      .where('transaction.senderWalletId = :walletId', { walletId })
+      .andWhere('transaction.type = :type', { type: 'withdrawal' })
+      .orderBy('transaction.createdAt', 'DESC')
+      .addOrderBy('transaction.id', 'DESC')
+      .take(pagination.limit + 1);
+
+    if (cursor) {
+      query.andWhere(
+        '(transaction.createdAt, transaction.id) < (:cursorCreatedAt::timestamptz, :cursorId::uuid)',
+        { cursorCreatedAt: cursor.createdAt, cursorId: cursor.id },
+      );
+    }
+
+    const { entities, raw } = await query.getRawAndEntities<{
+      raw_created_at: string;
+    }>();
+    const hasMore = entities.length > pagination.limit;
+    const page = hasMore ? entities.slice(0, pagination.limit) : entities;
+
+    return {
+      items: page.map((transaction) => ({
+        id: transaction.id,
+        reference: transaction.reference,
+        status: transaction.status,
+        amount: Money.of(transaction.amount, transaction.currency),
+        createdAt: transaction.createdAt,
+        metadata: transaction.metadata as WithdrawalTransactionMetadata,
+      })),
+      nextCursor:
+        hasMore && raw[pagination.limit - 1]
+          ? encodeCreatedAtIdCursor({
+              createdAt: raw[pagination.limit - 1].raw_created_at,
               id: page[page.length - 1].id,
             })
           : null,

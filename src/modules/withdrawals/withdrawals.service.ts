@@ -14,10 +14,12 @@ import {
   IdempotentReplay,
   LedgerService,
   PostWithdrawalResult,
+  TransactionHistoryPagination,
   WithdrawalTransactionMetadata,
 } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
 import { Money } from '../../shared/primitives/money';
+import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
 import {
   WITHDRAWAL_INITIATED_EVENT,
   WithdrawalInitiatedEventPayload,
@@ -33,6 +35,10 @@ import {
 import { StepUpChallengeResponseDto } from './dto/step-up-challenge-response.dto';
 import { InitiateWithdrawalDto } from './dto/initiate-withdrawal.dto';
 import { InitiateWithdrawalResponseDto } from './dto/initiate-withdrawal-response.dto';
+import {
+  WithdrawalHistoryItemDto,
+  toWithdrawalHistoryItem,
+} from './dto/withdrawal-history-item.dto';
 import {
   BankAccountAlreadySavedException,
   BankAccountNotFoundException,
@@ -136,6 +142,25 @@ export class WithdrawalsService {
       order: { createdAt: 'DESC' },
     });
     return bankAccounts.map(toBankAccountResponse);
+  }
+
+  // Issue #30. `withdrawals` owns this history the same way `ledger` owns
+  // general wallet history (ADR-0014), scoped to `type: 'withdrawal'` —
+  // ledger does the actual query (it owns `transactions`), this only
+  // resolves the wallet and decorates the response.
+  async getWithdrawalHistory(
+    userId: string,
+    pagination: TransactionHistoryPagination,
+  ): Promise<PaginatedResult<WithdrawalHistoryItemDto>> {
+    const wallet = await this.ledgerService.getUserWallet(userId);
+    const result = await this.ledgerService.getWithdrawalHistory(
+      wallet.id,
+      pagination,
+    );
+    return {
+      items: result.items.map(toWithdrawalHistoryItem),
+      nextCursor: result.nextCursor,
+    };
   }
 
   // Issue #28. Debit-first (docs/architecture.md §6 Phase 4): postWithdrawal
