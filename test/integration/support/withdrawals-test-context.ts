@@ -6,6 +6,7 @@ import { GenericContainer, StartedTestContainer } from 'testcontainers';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { json, Request, urlencoded } from 'express';
 import { App } from 'supertest/types';
 import { DataSource, Repository } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../../src/config';
@@ -190,7 +191,26 @@ export async function createWithdrawalsTestContext(
     ],
   }).compile();
 
-  const app = moduleRef.createNestApplication<INestApplication<App>>();
+  // bodyParser: false + a manual json() with a `verify` callback — matches
+  // main.ts (and payments-test-context.ts) exactly, so the payout webhook
+  // route's `req.rawBody` is populated here the same way it is in the real
+  // app. Nest's default built-in body parser has no `verify` hook, so
+  // leaving it enabled would silently leave `req.rawBody` undefined and
+  // every webhook signature check would fail regardless of the signature's
+  // actual correctness (issue #29 — this context didn't need raw webhook
+  // bytes before the payout webhook existed).
+  const app = moduleRef.createNestApplication<INestApplication<App>>({
+    bodyParser: false,
+  });
+  app.use(
+    json({
+      limit: '1mb',
+      verify: (req, _res, buf) => {
+        (req as Request).rawBody = Buffer.from(buf);
+      },
+    }),
+  );
+  app.use(urlencoded({ limit: '1mb', extended: true }));
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,

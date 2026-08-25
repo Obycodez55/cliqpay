@@ -12,6 +12,8 @@ import {
   SecurityAlertPayload,
   TransferReceivedPayload,
   TransferSentPayload,
+  WithdrawalCompletedPayload,
+  WithdrawalFailedPayload,
   WithdrawalInitiatedPayload,
 } from '../notification-catalog';
 import { renderEmail } from './render-email';
@@ -92,6 +94,14 @@ export const emailTemplates: {
   withdrawal_initiated: (payload: WithdrawalInitiatedPayload) => ({
     subject: `Your withdrawal of ${payload.currency} ${payload.amount} is on its way`,
     ...renderEmail('withdrawal_initiated', payload),
+  }),
+  withdrawal_completed: (payload: WithdrawalCompletedPayload) => ({
+    subject: `Your withdrawal of ${payload.currency} ${payload.amount} is complete`,
+    ...renderEmail('withdrawal_completed', payload),
+  }),
+  withdrawal_failed: (payload: WithdrawalFailedPayload) => ({
+    subject: `Your withdrawal of ${payload.currency} ${payload.amount} failed`,
+    ...renderEmail('withdrawal_failed', payload),
   }),
   reconciliation_mismatch: (payload: ReconciliationMismatchPayload) => ({
     subject: `Reconciliation mismatch: ${payload.provider}/${payload.currency}`,

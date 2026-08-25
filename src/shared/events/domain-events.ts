@@ -143,6 +143,27 @@ export interface WithdrawalInitiatedEventPayload {
   reference: string; // withdrawal transaction reference — see notifications' WithdrawalInitiatedPayload
 }
 
+export const WITHDRAWAL_COMPLETED_EVENT = 'withdrawal_completed';
+
+export interface WithdrawalCompletedEventPayload {
+  userId: string;
+  email: string;
+  amount: string; // decimal display string (Money.toDecimalString()), not minor units
+  currency: string;
+  reference: string; // withdrawal transaction reference
+}
+
+export const WITHDRAWAL_FAILED_EVENT = 'withdrawal_failed';
+
+export interface WithdrawalFailedEventPayload {
+  userId: string;
+  email: string;
+  amount: string; // decimal display string (Money.toDecimalString()), not minor units
+  currency: string;
+  reference: string; // withdrawal transaction reference
+  reason: string;
+}
+
 export const RECONCILIATION_MISMATCH_EVENT = 'reconciliation_mismatch';
 
 export interface ReconciliationMismatchEventPayload {

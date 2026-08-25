@@ -152,6 +152,22 @@ export interface ReverseWithdrawalResult {
   createdAt: Date;
 }
 
+export interface CompleteWithdrawalParams {
+  reference: string;
+  // The provider-reported payout amount — cross-checked against the
+  // transaction's own recorded amount before completing (issue #29,
+  // docs/architecture.md §7's "no amount trusted from a webhook without
+  // cross-checking" rule).
+  providerReportedAmount: Money;
+}
+
+export interface CompleteWithdrawalResult {
+  transactionId: string;
+  reference: string;
+  userId: string;
+  amount: Money;
+}
+
 /**
  * The one exported surface of the ledger module — see docs/architecture.md
  * §10.
@@ -461,10 +477,19 @@ export class LedgerService {
       // `amount` is immutable after creation (only `status`/`metadata`
       // change post-creation — see createPendingFundingTransaction and the
       // methods around it), so reading it here ahead of the guarded UPDATE
-      // below is safe: it can't race a concurrent writer.
-      const transaction = await manager
-        .getRepository(Transaction)
-        .findOneBy({ reference: facts.reference });
+      // below is safe: it can't race a concurrent writer. Scoped to
+      // `type: 'funding'` — issue #29 put charge and transfer webhooks on
+      // the same signature-verified channel (Kora delivers both to one
+      // dashboard-configured URL), dispatched by the payload's own `event`
+      // field, which isn't itself part of what the signature covers; this
+      // filter is the backstop that keeps a mislabeled/duplicated `event`
+      // from ever making a withdrawal's `reference` resolve here as if it
+      // were a funding transaction (see completeWithdrawal/
+      // reverseWithdrawal's matching `type: 'withdrawal'` filters).
+      const transaction = await manager.getRepository(Transaction).findOneBy({
+        reference: facts.reference,
+        type: 'funding',
+      });
       if (!transaction) {
         this.logger.error(
           `postFunding: no transaction found for reference "${facts.reference}"`,
@@ -1221,5 +1246,73 @@ export class LedgerService {
       amount,
       createdAt: reversal.createdAt,
     };
+  }
+
+  /**
+   * Finalizes a withdrawal the payout webhook reports as successful (issue
+   * #29) — posts no new entries, since postWithdrawal already posted the
+   * full §4.2 leg set debit-first at initiation; this only flips the
+   * transaction from `pending` to its terminal `completed` status. Covers
+   * both `pending` origins the webhook must resolve: a payout Kora
+   * synchronously `accepted`, and one left `pending` after an `unknown`
+   * initiate outcome (see InitiatePayoutResult) — from here they're
+   * identical, just a pending withdrawal that now has a final answer.
+   * Idempotent the same way postFunding/reverseWithdrawal are: the
+   * pending -> completed transition is one atomic guarded UPDATE.
+   *
+   * A provider-reported amount that doesn't match what was actually
+   * requested is *not* completed — unlike postFunding, nothing here can
+   * safely fail the transaction instead, since the debit already happened;
+   * silently completing on an unverified figure risks confirming a payout
+   * that didn't really match what left the wallet. Left pending and logged
+   * loudly for investigation rather than guessed at automatically.
+   */
+  async completeWithdrawal(
+    params: CompleteWithdrawalParams,
+  ): Promise<CompleteWithdrawalResult | null> {
+    return runInTransaction(this.dataSource, async (manager) => {
+      const transaction = await manager.getRepository(Transaction).findOneBy({
+        reference: params.reference,
+        type: 'withdrawal',
+      });
+      if (!transaction) {
+        this.logger.error(
+          `completeWithdrawal: no withdrawal transaction found for reference "${params.reference}"`,
+        );
+        return null;
+      }
+
+      if (params.providerReportedAmount.amount !== transaction.amount) {
+        this.logger.error(
+          `completeWithdrawal: provider-reported amount (${params.providerReportedAmount.toDecimalString()}) does not match the requested amount (${Money.of(transaction.amount, transaction.currency).toDecimalString()}) for reference "${params.reference}" — leaving pending for investigation instead of completing on an unverified amount`,
+        );
+        return null;
+      }
+
+      const updateResult = await manager
+        .createQueryBuilder()
+        .update(Transaction)
+        .set({ status: 'completed' })
+        .where('reference = :reference', { reference: params.reference })
+        .andWhere('status = :pending', { pending: 'pending' })
+        .execute();
+      if (!updateResult.affected) {
+        this.logger.debug(
+          `completeWithdrawal: no pending withdrawal for reference "${params.reference}" — duplicate delivery or already resolved`,
+        );
+        return null;
+      }
+
+      const wallet = await manager
+        .getRepository(Account)
+        .findOneByOrFail({ id: transaction.senderWalletId! });
+
+      return {
+        transactionId: transaction.id,
+        reference: transaction.reference,
+        userId: wallet.userId!,
+        amount: Money.of(transaction.amount, transaction.currency),
+      };
+    });
   }
 }
