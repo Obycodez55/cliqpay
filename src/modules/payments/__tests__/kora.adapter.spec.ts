@@ -597,4 +597,100 @@ describe('KoraAdapter', () => {
       expect((result as { detail: string }).detail).toMatch(/ECONNRESET/);
     });
   });
+
+  // Same GET /transactions/{reference} envelope confirmed for the
+  // 'processing' case during #28's design (see KoraDisburseResponse /
+  // KoraPayoutStatusResponse comments) — the 'success'/'failed' terminal
+  // shapes here are not independently re-confirmed against a live sandbox
+  // response (a live disbursement is a real-money action this environment's
+  // tooling refuses), so these mirror verifyCharge's mapping and Kora's
+  // documented shape rather than an observed one.
+  describe('verifyPayout', () => {
+    it('maps a "success" status to a success outcome with the settled amount', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(200, {
+          status: true,
+          message: 'ok',
+          data: {
+            reference: 'cliqpay-payout-1',
+            status: 'success',
+            amount: '1000.00',
+            currency: 'NGN',
+            message: 'Transfer successful',
+          },
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      const result = await adapter.verifyPayout('cliqpay-payout-1');
+
+      expect(result).toEqual({
+        status: 'success',
+        amount: Money.of(100000n, 'NGN'),
+      });
+    });
+
+    it('maps a "failed" status to a failed outcome carrying the provider\'s reason', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(200, {
+          status: true,
+          message: 'ok',
+          data: {
+            reference: 'cliqpay-payout-2',
+            status: 'failed',
+            amount: '1000.00',
+            currency: 'NGN',
+            message: 'Beneficiary account closed',
+          },
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.verifyPayout('cliqpay-payout-2')).resolves.toEqual({
+        status: 'failed',
+        reason: 'Beneficiary account closed',
+      });
+    });
+
+    it('maps Kora\'s "processing" status to a pending outcome', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(200, {
+          status: true,
+          message: 'ok',
+          data: {
+            reference: 'cliqpay-payout-3',
+            status: 'processing',
+            amount: '1000.00',
+            currency: 'NGN',
+            message: 'Payout processing',
+          },
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.verifyPayout('cliqpay-payout-3')).resolves.toEqual({
+        status: 'pending',
+      });
+    });
+
+    it('throws on a non-ok response', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(404, { status: false, message: 'not found' }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.verifyPayout('cliqpay-payout-4')).rejects.toThrow(
+        /not found/,
+      );
+    });
+
+    it('throws a descriptive error on a network failure', async () => {
+      fetchMock.mockRejectedValue(new Error('ECONNRESET'));
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.verifyPayout('cliqpay-payout-5')).rejects.toThrow(
+        /ECONNRESET/,
+      );
+    });
+  });
 });

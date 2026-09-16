@@ -45,6 +45,7 @@ import { NotificationEventsProcessor } from '../../../src/modules/notifications/
 import { OtpNotificationProcessor } from '../../../src/modules/notifications/internal/otp.processor';
 import { ChannelDispatchProcessor } from '../../../src/modules/notifications/internal/channel-dispatch.processor';
 import { FundingPollProcessor } from '../../../src/modules/payments/internal/funding-poll.processor';
+import { WithdrawalPollProcessor } from '../../../src/modules/payments/internal/withdrawal-poll.processor';
 import { ReconciliationProcessor } from '../../../src/modules/payments/internal/reconciliation.processor';
 
 export interface PaymentsTestContext {
@@ -184,6 +185,7 @@ async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
     OtpNotificationProcessor,
     ChannelDispatchProcessor,
     FundingPollProcessor,
+    WithdrawalPollProcessor,
     ReconciliationProcessor,
   ];
   await Promise.all(

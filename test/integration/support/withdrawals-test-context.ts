@@ -65,6 +65,7 @@ import { User } from '../../../src/modules/users/entities/user.entity';
 import { UsersModule } from '../../../src/modules/users/users.module';
 import { UsersService } from '../../../src/modules/users/users.service';
 import { PaymentsModule } from '../../../src/modules/payments/payments.module';
+import { PaymentsService } from '../../../src/modules/payments/payments.service';
 import { PAYMENT_PROVIDER_ADAPTER } from '../../../src/modules/payments/adapters/payment-provider.interface';
 import { FakeAdapter } from '../../../src/modules/payments/adapters/fake.adapter';
 import { WithdrawalsModule } from '../../../src/modules/withdrawals/withdrawals.module';
@@ -79,6 +80,7 @@ import { NotificationEventsProcessor } from '../../../src/modules/notifications/
 import { OtpNotificationProcessor } from '../../../src/modules/notifications/internal/otp.processor';
 import { ChannelDispatchProcessor } from '../../../src/modules/notifications/internal/channel-dispatch.processor';
 import { FundingPollProcessor } from '../../../src/modules/payments/internal/funding-poll.processor';
+import { WithdrawalPollProcessor } from '../../../src/modules/payments/internal/withdrawal-poll.processor';
 import { ReconciliationProcessor } from '../../../src/modules/payments/internal/reconciliation.processor';
 import { Money } from '../../../src/shared/primitives/money';
 
@@ -95,6 +97,7 @@ export interface WithdrawalsTestContext {
   sessionService: SessionService;
   usersService: UsersService;
   ledgerService: LedgerService;
+  paymentsService: PaymentsService;
   withdrawalsService: WithdrawalsService;
   dataSource: DataSource;
   userRepo: Repository<User>;
@@ -239,6 +242,7 @@ export async function createWithdrawalsTestContext(
     sessionService: moduleRef.get(SessionService),
     usersService: moduleRef.get(UsersService),
     ledgerService: moduleRef.get(LedgerService),
+    paymentsService: moduleRef.get(PaymentsService),
     withdrawalsService: moduleRef.get(WithdrawalsService),
     dataSource,
     userRepo: dataSource.getRepository(User),
@@ -267,6 +271,7 @@ async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
     OtpNotificationProcessor,
     ChannelDispatchProcessor,
     FundingPollProcessor,
+    WithdrawalPollProcessor,
     ReconciliationProcessor,
   ];
   await Promise.all(

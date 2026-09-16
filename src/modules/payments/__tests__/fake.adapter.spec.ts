@@ -214,4 +214,27 @@ describe('FakeAdapter', () => {
       });
     });
   });
+
+  describe('verifyPayout', () => {
+    it('defaults to pending for a reference with no configured result', async () => {
+      const adapter = new FakeAdapter();
+
+      await expect(adapter.verifyPayout('cliqpay-payout-1')).resolves.toEqual({
+        status: 'pending',
+      });
+    });
+
+    it('returns whatever result was configured for that reference', async () => {
+      const adapter = new FakeAdapter();
+      adapter.setVerifyPayoutResult('cliqpay-payout-1', {
+        status: 'success',
+        amount: Money.of(500000n, 'NGN'),
+      });
+
+      await expect(adapter.verifyPayout('cliqpay-payout-1')).resolves.toEqual({
+        status: 'success',
+        amount: Money.of(500000n, 'NGN'),
+      });
+    });
+  });
 });

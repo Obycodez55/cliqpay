@@ -9,6 +9,7 @@ import {
   PaymentProviderAdapter,
   ResolveBankAccountResult,
   VerifyChargeResult,
+  VerifyPayoutResult,
 } from './payment-provider.interface';
 import { maybeThrowFakePaymentFailure } from '../internal/errors';
 import { extractTopLevelJsonField } from '../internal/raw-json';
@@ -24,6 +25,7 @@ export class FakeAdapter implements PaymentProviderAdapter {
   readonly initiated: InitiatePaymentParams[] = [];
   readonly payoutsInitiated: InitiatePayoutParams[] = [];
   private readonly verifyChargeResults = new Map<string, VerifyChargeResult>();
+  private readonly verifyPayoutResults = new Map<string, VerifyPayoutResult>();
   private readonly balances = new Map<string, Money>();
   private readonly resolveBankAccountResults = new Map<
     string,
@@ -130,5 +132,18 @@ export class FakeAdapter implements PaymentProviderAdapter {
       return { status: 'unknown', detail: 'simulated network timeout' };
     }
     return { status: 'accepted' };
+  }
+
+  // Test-only configuration for the withdrawal poll path (issue #31) — same
+  // shape as setVerifyChargeResult: a reference with no configured result
+  // defaults to `pending`, the safe default of leaving an unconfigured
+  // stale transaction alone rather than force-resolving it.
+  setVerifyPayoutResult(reference: string, result: VerifyPayoutResult): void {
+    this.verifyPayoutResults.set(reference, result);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async verifyPayout(reference: string): Promise<VerifyPayoutResult> {
+    return this.verifyPayoutResults.get(reference) ?? { status: 'pending' };
   }
 }

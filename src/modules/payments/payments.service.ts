@@ -32,6 +32,7 @@ import {
   PaymentProviderAdapter,
   ResolveBankAccountResult,
   VerifyChargeResult,
+  VerifyPayoutResult,
 } from './adapters/payment-provider.interface';
 import { isUniqueViolation } from '../../database/postgres-errors.util';
 import { extractTopLevelJsonField } from './internal/raw-json';
@@ -50,6 +51,7 @@ import {
 const NGN = 'NGN'; // Funding is NGN-only for now — see issue #12.
 
 const STALE_FUNDING_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+const STALE_WITHDRAWAL_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 
 // Ground truth: docs/adr/0007 — confirmed against a real webhook Kora
 // delivered during the Phase 2 e2e pass, not just docs. Only the fields
@@ -474,6 +476,69 @@ export class PaymentsService {
     }
 
     await this.publishFundingCompletedEvent(result);
+  }
+
+  // The withdrawal self-verify poll job (issue #31, mirrors #14's funding
+  // poll) — recovers a withdrawal left `pending` because Kora's payout
+  // webhook never arrived.
+  async pollStaleWithdrawalTransactions(): Promise<void> {
+    const staleTransactions =
+      await this.ledgerService.findStaleWithdrawalTransactions(
+        new Date(Date.now() - STALE_WITHDRAWAL_THRESHOLD_MS),
+      );
+
+    for (const transaction of staleTransactions) {
+      await this.pollWithdrawalTransaction(transaction);
+    }
+  }
+
+  private async pollWithdrawalTransaction(transaction: {
+    reference: string;
+  }): Promise<void> {
+    let verifyResult: VerifyPayoutResult;
+    try {
+      verifyResult = await this.adapter.verifyPayout(transaction.reference);
+    } catch (error) {
+      this.logger.error(
+        `pollStaleWithdrawalTransactions: verifyPayout failed for reference "${transaction.reference}" (${(error as Error).message}) — will retry on the next poll run`,
+      );
+      return;
+    }
+
+    if (verifyResult.status === 'pending') {
+      // Still processing at the provider — leave it pending for a later
+      // poll run rather than force-resolving it.
+      this.logger.debug(
+        `pollStaleWithdrawalTransactions: reference "${transaction.reference}" still pending at provider`,
+      );
+      return;
+    }
+
+    if (verifyResult.status === 'failed') {
+      const result = await this.ledgerService.reverseWithdrawal({
+        reference: transaction.reference,
+        reason: verifyResult.reason,
+      });
+      if (!result) {
+        // The webhook (or an earlier poll tick) already resolved this —
+        // no-op, not a duplicate reversal.
+        return;
+      }
+      await this.publishWithdrawalFailedEvent(result, verifyResult.reason);
+      return;
+    }
+
+    const result = await this.ledgerService.completeWithdrawal({
+      reference: transaction.reference,
+      providerReportedAmount: verifyResult.amount,
+    });
+    if (!result) {
+      // The webhook (or an earlier poll tick) already resolved this, or the
+      // provider-reported amount didn't cross-check — either way, nothing
+      // further to publish here.
+      return;
+    }
+    await this.publishWithdrawalCompletedEvent(result);
   }
 
   // The external reconciliation job (issue #15, docs/architecture.md §4.4)

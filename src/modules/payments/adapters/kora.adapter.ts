@@ -10,6 +10,7 @@ import {
   PaymentProviderAdapter,
   ResolveBankAccountResult,
   VerifyChargeResult,
+  VerifyPayoutResult,
 } from './payment-provider.interface';
 import { extractTopLevelJsonField } from '../internal/raw-json';
 
@@ -94,6 +95,38 @@ interface KoraDisburseResponse {
     status: string; // 'processing' | 'failed' | ... — only these two observed
     message: string;
     reference: string;
+  };
+}
+
+// Ground truth for GET /transactions/{reference} on a payout: the same
+// endpoint and `data` envelope ADR-0007's Phase 4 correction already
+// captured from a real sandbox call made during issue #28's design, while
+// that disbursement was still `processing`:
+//   {"status":true,"message":"Transfer initiated successfully.","data":
+//    {"amount":"1000.00","fee":"30.00","currency":"NGN","status":"processing",
+//     "reference":"...","message":"Payout processing","customer":{...}}}
+// A follow-up live sandbox call to re-confirm the terminal `success`/`failed`
+// shapes specifically for this issue was blocked in this environment (any
+// live Kora disbursement call is treated as a real-money action and refused
+// by this session's tooling, not something a sandbox flag can opt out of
+// here) — so the terminal shapes are taken on the strength of that same
+// captured envelope plus Kora's docs (developers.korapay.com/docs/payouts),
+// not independently re-observed the way ADR-0007's other corrections were.
+// `amount` stays the decimal-string form already confirmed above; `status`
+// mirrors the charge endpoint's terminal values ("success"/"failed"), and a
+// failed payout's `message` field is read as the failure reason, the same
+// field this same envelope already carries for `processing`. Flagged for
+// confirmation against a real terminal response before this handles
+// production traffic — see the withdrawal-poll implementation notes.
+interface KoraPayoutStatusResponse {
+  status: boolean;
+  message: string;
+  data?: {
+    status: string; // 'success' | 'failed' | 'processing' | ...
+    message: string;
+    reference: string;
+    amount: string;
+    currency: string;
   };
 }
 
@@ -349,6 +382,42 @@ export class KoraAdapter implements PaymentProviderAdapter {
       status: 'unknown',
       detail: `${response.status} ${body.message ?? 'unknown error'}`,
     };
+  }
+
+  // The self-verify poll path for withdrawals (issue #31) — called only for
+  // payouts whose webhook never arrived within the normal window, mirroring
+  // verifyCharge's role and status mapping for funding.
+  async verifyPayout(reference: string): Promise<VerifyPayoutResult> {
+    let response: Response;
+    try {
+      response = await fetch(`${KORA_BASE_URL}/transactions/${reference}`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${this.secretKey}` },
+        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
+      });
+    } catch (error) {
+      throw new Error(
+        `KoraAdapter: network error (${(error as Error).message})`,
+      );
+    }
+
+    const body = (await response.json()) as KoraPayoutStatusResponse;
+    if (!response.ok || !body.status || !body.data) {
+      throw new Error(
+        `KoraAdapter: ${response.status} ${body.message ?? 'unknown error'}`,
+      );
+    }
+
+    if (body.data.status === 'success') {
+      return {
+        status: 'success',
+        amount: Money.fromDecimalString(body.data.amount, body.data.currency),
+      };
+    }
+    if (body.data.status === 'failed') {
+      return { status: 'failed', reason: body.data.message };
+    }
+    return { status: 'pending' };
   }
 
   verifyWebhookSignature(rawBody: Buffer, signature: string): boolean {

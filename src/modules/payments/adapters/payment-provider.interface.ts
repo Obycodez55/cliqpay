@@ -68,6 +68,20 @@ export type InitiatePayoutResult =
   | { status: 'unknown'; detail: string };
 
 /**
+ * The self-verify poll path for withdrawals (issue #31, mirrors
+ * VerifyChargeResult for funding) — called for `transactions` rows whose
+ * payout webhook never arrived within the normal window. `success` carries
+ * the provider-reported settled amount, cross-checked by
+ * LedgerService.completeWithdrawal the same way the webhook path is;
+ * `failed` carries a human-readable reason for the reversal's audit trail,
+ * same as the webhook's `message` field.
+ */
+export type VerifyPayoutResult =
+  | { status: 'success'; amount: Money }
+  | { status: 'failed'; reason: string }
+  | { status: 'pending' };
+
+/**
  * See docs/architecture.md §3.6. `verifyKyc()` is not stubbed here; it
  * arrives with Phase 6, not ahead of it (CLAUDE.md's incremental-build
  * rule).
@@ -101,6 +115,11 @@ export interface PaymentProviderAdapter {
   // committed (debit-first, docs/architecture.md §6 Phase 4); a `rejected`
   // result tells the caller to reverse what was just posted.
   initiatePayout(params: InitiatePayoutParams): Promise<InitiatePayoutResult>;
+
+  // The self-verify poll path for withdrawals (issue #31) — called only for
+  // `transactions` rows whose payout webhook never arrived within the
+  // normal window, mirroring verifyCharge's role for funding.
+  verifyPayout(reference: string): Promise<VerifyPayoutResult>;
 }
 
 export const PAYMENT_PROVIDER_ADAPTER = Symbol('PAYMENT_PROVIDER_ADAPTER');

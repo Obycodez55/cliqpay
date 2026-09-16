@@ -62,6 +62,14 @@ export interface StaleFundingTransaction {
   currency: string;
 }
 
+// Same narrowing reasoning as StaleFundingTransaction above — `payments`
+// (the only caller) only needs the reference to poll on for a withdrawal;
+// completeWithdrawal/reverseWithdrawal both read amount/currency back off
+// the transaction's own stored row rather than taking it from the caller.
+export interface StaleWithdrawalTransaction {
+  reference: string;
+}
+
 export interface TransactionHistoryPagination {
   cursor?: string;
   limit: number;
@@ -367,6 +375,26 @@ export class LedgerService {
     return transactions.map((transaction) => ({
       reference: transaction.reference,
       currency: transaction.currency,
+    }));
+  }
+
+  // Feeds the withdrawal self-verify poll job (issue #31) — same shape as
+  // findStaleFundingTransactions above, scoped to withdrawals instead of
+  // funding.
+  async findStaleWithdrawalTransactions(
+    olderThan: Date,
+  ): Promise<StaleWithdrawalTransaction[]> {
+    const transactions = await this.dataSource.getRepository(Transaction).find({
+      where: {
+        status: 'pending',
+        provider: 'kora',
+        type: 'withdrawal',
+        createdAt: LessThan(olderThan),
+      },
+      select: { reference: true },
+    });
+    return transactions.map((transaction) => ({
+      reference: transaction.reference,
     }));
   }
 
