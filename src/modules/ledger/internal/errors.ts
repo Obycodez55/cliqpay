@@ -5,7 +5,7 @@ export class InsufficientFundsException extends DomainException {
   readonly code = 'INSUFFICIENT_FUNDS';
   constructor() {
     super(
-      'Insufficient funds to complete this transfer',
+      'Insufficient funds to complete this transaction',
       HttpStatus.UNPROCESSABLE_ENTITY,
     );
   }
