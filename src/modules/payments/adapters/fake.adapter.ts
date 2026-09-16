@@ -4,8 +4,12 @@ import { Money } from '../../../shared/primitives/money';
 import {
   InitiatePaymentParams,
   InitiatePaymentResult,
+  InitiatePayoutParams,
+  InitiatePayoutResult,
   PaymentProviderAdapter,
+  ResolveBankAccountResult,
   VerifyChargeResult,
+  VerifyPayoutResult,
 } from './payment-provider.interface';
 import { maybeThrowFakePaymentFailure } from '../internal/errors';
 import { extractTopLevelJsonField } from '../internal/raw-json';
@@ -19,8 +23,14 @@ const FAKE_SECRET_KEY = 'fake-kora-secret-key';
 @Injectable()
 export class FakeAdapter implements PaymentProviderAdapter {
   readonly initiated: InitiatePaymentParams[] = [];
+  readonly payoutsInitiated: InitiatePayoutParams[] = [];
   private readonly verifyChargeResults = new Map<string, VerifyChargeResult>();
+  private readonly verifyPayoutResults = new Map<string, VerifyPayoutResult>();
   private readonly balances = new Map<string, Money>();
+  private readonly resolveBankAccountResults = new Map<
+    string,
+    ResolveBankAccountResult
+  >();
 
   // async with nothing to await, deliberately: the sentinel throw below has
   // to reach a caller doing `.catch()` without `await` as a rejection, which
@@ -66,5 +76,74 @@ export class FakeAdapter implements PaymentProviderAdapter {
   // eslint-disable-next-line @typescript-eslint/require-await
   async getBalance(currency: string): Promise<Money> {
     return this.balances.get(currency) ?? Money.zero(currency);
+  }
+
+  // Test-only configuration for resolveBankAccount — same shape as
+  // setVerifyChargeResult above.
+  setResolveBankAccountResult(
+    bankCode: string,
+    accountNumber: string,
+    result: ResolveBankAccountResult,
+  ): void {
+    this.resolveBankAccountResults.set(`${bankCode}:${accountNumber}`, result);
+  }
+
+  // Unconfigured pairs default to a deterministic resolved result rather
+  // than pending/zero's "safe do-nothing" default — most integration tests
+  // saving a bank account don't care about the resolved name, only that
+  // resolution succeeds, so forcing per-test configuration everywhere would
+  // just be friction. An account number containing "fail" is the same
+  // sentinel convention as maybeThrowFakePaymentFailure, for tests that do
+  // need the not_found path without configuring it explicitly.
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async resolveBankAccount(
+    bankCode: string,
+    accountNumber: string,
+  ): Promise<ResolveBankAccountResult> {
+    const configured = this.resolveBankAccountResults.get(
+      `${bankCode}:${accountNumber}`,
+    );
+    if (configured) {
+      return configured;
+    }
+    if (accountNumber.includes('fail')) {
+      return { status: 'not_found' };
+    }
+    return {
+      status: 'resolved',
+      bankName: `Test Bank ${bankCode}`,
+      accountName: `Test Account ${accountNumber}`,
+    };
+  }
+
+  // Same sentinel convention as resolveBankAccount's "fail" account number
+  // above — a reference containing "reject" exercises the synchronous
+  // rejection path (KoraAdapter's real 409 case) without per-test
+  // configuration; anything else is accepted.
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async initiatePayout(
+    params: InitiatePayoutParams,
+  ): Promise<InitiatePayoutResult> {
+    this.payoutsInitiated.push(params);
+    if (params.reference.includes('reject')) {
+      return { status: 'rejected', reason: 'Invalid bank provided.' };
+    }
+    if (params.reference.includes('unknown')) {
+      return { status: 'unknown', detail: 'simulated network timeout' };
+    }
+    return { status: 'accepted' };
+  }
+
+  // Test-only configuration for the withdrawal poll path (issue #31) — same
+  // shape as setVerifyChargeResult: a reference with no configured result
+  // defaults to `pending`, the safe default of leaving an unconfigured
+  // stale transaction alone rather than force-resolving it.
+  setVerifyPayoutResult(reference: string, result: VerifyPayoutResult): void {
+    this.verifyPayoutResults.set(reference, result);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async verifyPayout(reference: string): Promise<VerifyPayoutResult> {
+    return this.verifyPayoutResults.get(reference) ?? { status: 'pending' };
   }
 }

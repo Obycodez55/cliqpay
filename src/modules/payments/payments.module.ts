@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { JwtModule } from '@nestjs/jwt';
 import { BullModule } from '@nestjs/bullmq';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { EventBusModule } from '../../shared/events/event-bus.module';
@@ -17,6 +16,10 @@ import {
   FUNDING_POLL_QUEUE,
   FundingPollProcessor,
 } from './internal/funding-poll.processor';
+import {
+  WITHDRAWAL_POLL_QUEUE,
+  WithdrawalPollProcessor,
+} from './internal/withdrawal-poll.processor';
 import {
   RECONCILIATION_QUEUE,
   ReconciliationProcessor,
@@ -38,12 +41,17 @@ const PAYMENT_ADAPTERS = {
     LedgerModule,
     UsersModule,
     EventBusModule,
-    JwtModule.registerAsync({
-      inject: [APP_CONFIG],
-      useFactory: (config: AppConfig) => ({ secret: config.jwt.secret }),
-    }),
     BullModule.registerQueue({
       name: FUNDING_POLL_QUEUE,
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5_000 },
+        removeOnComplete: { age: 3_600, count: 100 },
+        removeOnFail: { age: 86_400, count: 500 },
+      },
+    }),
+    BullModule.registerQueue({
+      name: WITHDRAWAL_POLL_QUEUE,
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: 'exponential', delay: 5_000 },
@@ -65,6 +73,7 @@ const PAYMENT_ADAPTERS = {
   providers: [
     PaymentsService,
     FundingPollProcessor,
+    WithdrawalPollProcessor,
     ReconciliationProcessor,
     {
       provide: PAYMENT_PROVIDER_ADAPTER,

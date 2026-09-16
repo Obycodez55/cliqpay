@@ -1,6 +1,8 @@
-# Cliqpay — Project Documentation (v10)
+# Cliqpay — Project Documentation (v11)
 
 > Cliqpay is a production-grade peer-to-peer payment platform. A Venmo-equivalent for Africa — built on NestJS, PostgreSQL, TypeORM, currently integrated with Kora.
+
+> **v11 changes:** Phase 4's end-of-phase audit surfaced two gaps the v10 design pass missed. `bank_accounts.account_number` shipped as plaintext despite §7's encryption-at-rest requirement — fixed with an encrypted `account_number_ciphertext` column plus a deterministic `account_number_hash` for the uniqueness constraint ciphertext can't back (ADR-0015; §5). And nothing resolved a withdrawal left `pending` by a dropped payout webhook — Phase 2's funding self-verify poll (issue #14) had no Phase 4 counterpart; added as `verifyPayout()`/the withdrawal poll job, same shape and timing as funding's (§6 Phase 4). Also recorded: `InitiatePayoutResult`'s three-way `accepted`/`rejected`/`unknown` outcome, found during #28's own review — an `unknown` result (network error, unrecognized response) is never treated as a confirmed rejection, since debit-first already moved money before the provider call and reversing on an unconfirmed outcome risks a double-credit.
 
 > **v10 changes:** Phase 4 design pass — a new `withdrawals` module owning `bank_accounts` and payout orchestration, since neither `payments` (owns no tables) nor `ledger` (zero peer-dependency) nor `transfers` (user-to-user only, per ADR-0011) can take it (ADR-0014); bank-account save requires provider-resolved account names and step-up MFA; debit-first posting with a single compensating-transaction failure path covering both synchronous provider rejection and async webhook failure; withdrawal bounds and PIN/idempotency rules mirror Phase 3's transfer pattern; platform fee launches at ₦0 but — unlike transfers — all 5 ledger legs always post regardless, since `provider_fee` is real settled money. Also: `bank_accounts` (§5).
 
@@ -379,18 +381,22 @@ notifications
   read_at           timestamptz nullable
   created_at        timestamptz
 
--- [v10] Phase 4 — owned by `withdrawals` (see ADR-0014)
+-- [v10, v11] Phase 4 — owned by `withdrawals` (see ADR-0014). [v11]
+-- `account_number` shipped as plaintext in v10 despite §7 requiring bank
+-- account numbers encrypted at rest — found in the end-of-phase audit, not
+-- at design time. `account_number_ciphertext` replaces it; see ADR-0015.
 bank_accounts
-  id                uuid PK
-  user_id           uuid                -- cross-module reference, no FK
-  provider          varchar             -- same CHECK-constraint pattern as accounts.provider
-  bank_code         varchar             -- provider's bank code
-  bank_name         varchar             -- provider-returned, human-facing
-  account_number    varchar
-  account_name      varchar             -- provider-resolved at save time; never client-supplied
-  created_at        timestamptz
+  id                        uuid PK
+  user_id                   uuid                -- cross-module reference, no FK
+  provider                  varchar             -- same CHECK-constraint pattern as accounts.provider
+  bank_code                 varchar             -- provider's bank code
+  bank_name                 varchar             -- provider-returned, human-facing
+  account_number_ciphertext varchar             -- [v11] AES-256-GCM, see ADR-0015
+  account_number_hash       varchar             -- [v11] deterministic HMAC, backs the uniqueness constraint below
+  account_name              varchar             -- provider-resolved at save time; never client-supplied
+  created_at                timestamptz
 
-  -- unique (user_id, provider, bank_code, account_number)
+  -- unique (user_id, provider, bank_code, account_number_hash)
 
 ```
 
@@ -514,14 +520,15 @@ Each phase exits with a working, production-quality slice of the system. No phas
 - **[v10]** Eligibility and bounds mirror Phase 3's transfer bounds: NGN only, minimum ₦100, configurable maximum as an interim ceiling until Phase 6 tier limits replace it
 - **[v10]** Platform fee is flat, config-driven, launching at ₦0 like the transfer fee — but unlike a zero-fee transfer, all 5 ledger legs in §4.2's Withdrawal posting always post regardless of the platform fee's value, since `provider_fee` is real settled money either way and isn't conditionally omittable the way `fee_income` is
 - **[v10]** Posting is debit-first: `ledger.postWithdrawal()` posts the full balanced entry set and commits *before* `payments` calls `KoraAdapter.initiatePayout()`. Every failure path — a synchronous provider rejection or an async webhook failure — reverses through the same compensating transaction (§7); there is no separate no-op path for synchronous rejection
-- Initiate withdrawal via `KoraAdapter.initiatePayout()`
-- Webhook for payout success/failure
-- Ledger entries for withdrawal, including expense/recovery pair
-- **[v2]** Handle failed payouts via a **compensating transaction** (new transaction + new ledger entries reversing the effect) — never mutate or delete the original entries
+- **[v11]** `initiatePayout()`'s result is three-way, not two: `accepted` / `rejected` / `unknown`. `unknown` (a network error or an unrecognized response) is never treated as `rejected` — found during review, a confirmed rejection is the only outcome that reverses the just-posted debit; reversing on an outcome that isn't actually confirmed risks crediting the wallet back while Kora may still be processing the payout against the bank. An `unknown` withdrawal is left `pending` for the webhook or poll job below to resolve
+- Webhook for payout success/failure, on the same signature-verified endpoint the funding webhook uses — Kora delivers every event type to one dashboard-configured URL, dispatched internally by the payload's `event` field
+- Ledger entries for withdrawal — the full 5-leg set from §4.2, posted once at initiation; the webhook only flips `status` (`completed`) or reverses (`reversed`), it never posts new legs on success
+- **[v2, v10]** Handle failed payouts via a **compensating transaction** (new transaction + new ledger entries reversing the effect) — never mutate or delete the original entries. One reversal path serves both the synchronous-rejection and webhook-failure cases
+- **[v11]** Stale-withdrawal poll job (mirrors Phase 2's funding self-verify poll, issue #14) — a withdrawal can be left `pending` by a dropped webhook exactly like a funding transaction can; found missing in the end-of-phase audit, since nothing in this phase's original design called for it. `PaymentProviderAdapter.verifyPayout()` mirrors `verifyCharge()`'s three-way `success`/`failed`/`pending` shape; same 10-minute staleness threshold and 5-minute poll interval as funding, and reuses `completeWithdrawal()`/`reverseWithdrawal()` rather than posting new logic. The terminal `success`/`failed` response shapes are inferred from Kora's docs and an observed `processing` response, not an independently captured live terminal response — a real disbursement is a real-money action, so this needs confirming against a real settled/failed sandbox payout before relying on it in production, the same way ADR-0007 confirmed the funding webhook's real shape
 - Withdrawal history
 - Email notification on withdrawal initiated and completed
 
-**Key concepts:** Payout APIs, failure handling, compensating transactions, reconciliation
+**Key concepts:** Payout APIs, failure handling, compensating transactions, reconciliation, self-verify polling
 
 ---
 

@@ -16,22 +16,32 @@ import {
   FundingCompletedEventPayload,
   RECONCILIATION_MISMATCH_EVENT,
   ReconciliationMismatchEventPayload,
+  WITHDRAWAL_COMPLETED_EVENT,
+  WithdrawalCompletedEventPayload,
+  WITHDRAWAL_FAILED_EVENT,
+  WithdrawalFailedEventPayload,
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
 import { FundWalletDto } from './dto/fund-wallet.dto';
 import { FundWalletResponseDto } from './dto/fund-wallet-response.dto';
 import {
   InitiatePaymentResult,
+  InitiatePayoutParams,
+  InitiatePayoutResult,
   PAYMENT_PROVIDER_ADAPTER,
   PaymentProviderAdapter,
+  ResolveBankAccountResult,
   VerifyChargeResult,
+  VerifyPayoutResult,
 } from './adapters/payment-provider.interface';
 import { isUniqueViolation } from '../../database/postgres-errors.util';
 import { extractTopLevelJsonField } from './internal/raw-json';
 import {
+  CompleteWithdrawalResult,
   IdempotentReplay,
   PostFundingFacts,
   PostFundingResult,
+  ReverseWithdrawalResult,
 } from '../ledger/ledger.service';
 import {
   ACTIVE_RECONCILIATION_PAIRS,
@@ -41,6 +51,7 @@ import {
 const NGN = 'NGN'; // Funding is NGN-only for now — see issue #12.
 
 const STALE_FUNDING_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+const STALE_WITHDRAWAL_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 
 // Ground truth: docs/adr/0007 — confirmed against a real webhook Kora
 // delivered during the Phase 2 e2e pass, not just docs. Only the fields
@@ -76,6 +87,54 @@ function validateWebhookData(parsed: unknown): KoraChargeWebhookData {
     throw new BadRequestException('Malformed webhook payload');
   }
   return { reference, status, amount: String(amount), fee: String(fee) };
+}
+
+// Ground truth: developers.korapay.com/docs/webhooks (issue #29) confirms
+// the payload envelope is `{ event: "transfer.success" | "transfer.failed",
+// data: { reference, amount, fee, currency, status, ... } }` — the same
+// `data` shape as charge events (see KoraChargeWebhookData above), just
+// under `transfer.*` rather than `charge.*`. A real sandbox disbursement
+// (POST /merchant/api/v1/transactions/disburse, then GET
+// /merchant/api/v1/transactions/{reference}) run for this issue separately
+// confirmed ADR-0007's Phase 4 correction still holds for the `data` shape
+// itself — `reference` is exactly what we sent, `amount` a decimal string
+// ("1000.00"), terminal `status` values "success"/"failed". The actual
+// webhook *delivery* couldn't be captured in this environment (no publicly
+// reachable receiver was available here) — the `data` shape is taken on
+// the strength of the docs and the matching status-endpoint response, not
+// a directly observed webhook, unlike ADR-0007's funding webhook capture.
+// Flagged for confirmation against a real captured delivery before this
+// handles production traffic.
+interface KoraPayoutWebhookData {
+  reference: string;
+  status: string;
+  amount: string | number;
+  message?: string;
+}
+
+function validatePayoutWebhookData(parsed: unknown): KoraPayoutWebhookData {
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new BadRequestException('Malformed webhook payload');
+  }
+  const { reference, status, amount, message } = parsed as Record<
+    string,
+    unknown
+  >;
+  if (
+    typeof reference !== 'string' ||
+    reference.length === 0 ||
+    typeof status !== 'string' ||
+    status.length === 0 ||
+    (typeof amount !== 'string' && typeof amount !== 'number')
+  ) {
+    throw new BadRequestException('Malformed webhook payload');
+  }
+  return {
+    reference,
+    status,
+    amount,
+    message: typeof message === 'string' ? message : undefined,
+  };
 }
 
 /**
@@ -185,11 +244,14 @@ export class PaymentsService {
 
   // Signature verified against the raw bytes Kora actually signed (see
   // KoraAdapter.verifyWebhookSignature) — invalid signature never reaches
-  // the ledger, never changes transaction status (ADR-0008, issue #13).
-  // Everything past that point is provider-fact mapping only: this owns no
-  // accounting knowledge, LedgerService.postFunding decides what these
-  // facts post to.
-  async handleFundingWebhook(
+  // the ledger, never changes any transaction's status (ADR-0008, issue
+  // #13). Kora delivers every event (charges, transfers, refunds) to this
+  // one dashboard-configured URL — confirmed against developers.korapay.com/
+  // docs/webhooks during issue #29's design, which corrects an earlier,
+  // wrong assumption that payouts would arrive on a separate endpoint —
+  // there's nowhere else to route them, so this is the single entry point
+  // and it dispatches on the payload's own `event` field.
+  async handleKoraWebhook(
     rawBody: Buffer,
     signature: string | undefined,
   ): Promise<void> {
@@ -208,21 +270,52 @@ export class PaymentsService {
     // other: extractTopLevelJsonField always resolves the first match,
     // native JSON.parse always keeps the last, and those two disagreeing is
     // exactly the gap that let a signature validate one payload while a
-    // different one got posted.
+    // different one got posted. `event` (below) doesn't need this same
+    // exact-slice care — it only selects which branch runs, it's never
+    // itself treated as a financial fact, and each branch's own lookup is
+    // additionally scoped by transaction `type` (see postFunding/
+    // completeWithdrawal/reverseWithdrawal), so a wrongly- or duplicately-
+    // labeled `event` can only ever fail to match rather than misapply one
+    // event's facts as another's.
     const rawData = extractTopLevelJsonField(rawBody, 'data');
     if (!rawData) {
       throw new UnauthorizedException('Invalid webhook signature');
     }
-    // A signature can be valid over a "data" object shaped nothing like
-    // what's expected (or invalid JSON entirely) — that's a malformed
-    // request (400), not a server bug (500), and must not throw an
-    // uncaught TypeError partway through processing.
-    let parsed: unknown;
+    let envelope: unknown;
+    let parsedData: unknown;
     try {
-      parsed = JSON.parse(rawData.toString('utf8'));
+      envelope = JSON.parse(rawBody.toString('utf8'));
+      parsedData = JSON.parse(rawData.toString('utf8'));
     } catch {
       throw new BadRequestException('Malformed webhook payload');
     }
+    const event =
+      typeof envelope === 'object' &&
+      envelope !== null &&
+      typeof (envelope as Record<string, unknown>).event === 'string'
+        ? ((envelope as Record<string, unknown>).event as string)
+        : undefined;
+
+    if (event === 'transfer.success' || event === 'transfer.failed') {
+      return this.processPayoutWebhookData(parsedData);
+    }
+    if (event === 'charge.success' || event === 'charge.failed') {
+      return this.processFundingWebhookData(parsedData);
+    }
+    // Other known events (refund.*) aren't a modeled feature yet
+    // (CLAUDE.md's incremental-build rule) — logged and ignored rather than
+    // guessed at. An absent/unrecognized `event` on what both existing
+    // callers (Kora's real webhook, this repo's own tests) always send is
+    // treated the same way, not defaulted to either handler.
+    this.logger.debug(
+      `handleKoraWebhook: unrecognized or missing event "${String(event)}" — ignoring`,
+    );
+  }
+
+  // Everything past signature verification is provider-fact mapping only:
+  // this owns no accounting knowledge, LedgerService.postFunding decides
+  // what these facts post to.
+  private async processFundingWebhookData(parsed: unknown): Promise<void> {
     const data = validateWebhookData(parsed);
 
     // Matches KoraAdapter.verifyCharge's three-way mapping exactly: only
@@ -234,7 +327,7 @@ export class PaymentsService {
     // reports a terminal outcome.
     if (data.status !== 'success' && data.status !== 'failed') {
       this.logger.debug(
-        `handleFundingWebhook: non-terminal status "${data.status}" for reference "${data.reference}" — leaving pending`,
+        `processFundingWebhookData: non-terminal status "${data.status}" for reference "${data.reference}" — leaving pending`,
       );
       return;
     }
@@ -268,6 +361,62 @@ export class PaymentsService {
     }
 
     await this.publishFundingCompletedEvent(result);
+  }
+
+  // Issue #29. Resolves whichever of the two `pending` origins the
+  // withdrawal is sitting in (a synchronously `accepted` payout, or one
+  // left `pending` after an `unknown` initiate outcome — see
+  // InitiatePayoutResult) — from the webhook's perspective both are just a
+  // pending withdrawal transaction that now has a final answer, so there's
+  // one code path here, not two.
+  private async processPayoutWebhookData(parsed: unknown): Promise<void> {
+    const data = validatePayoutWebhookData(parsed);
+
+    if (data.status !== 'success' && data.status !== 'failed') {
+      this.logger.debug(
+        `processPayoutWebhookData: non-terminal status "${data.status}" for reference "${data.reference}" — leaving pending`,
+      );
+      return;
+    }
+
+    if (data.status === 'failed') {
+      // reverseWithdrawal reads the reversal amount from the original
+      // transaction's own stored metadata, never from this webhook payload
+      // — nothing here needs (or trusts) a reported amount for the failure
+      // path, unlike the success path below.
+      const reason = data.message ?? 'Payout failed';
+      const result = await this.ledgerService.reverseWithdrawal({
+        reference: data.reference,
+        reason,
+      });
+      if (!result) {
+        // Duplicate delivery of an already-resolved transaction — no-op.
+        return;
+      }
+      await this.publishWithdrawalFailedEvent(result, reason);
+      return;
+    }
+
+    let providerAmount: Money;
+    try {
+      providerAmount = Money.fromDecimalString(String(data.amount), NGN);
+    } catch (error) {
+      throw new BadRequestException(
+        `Malformed webhook payload: ${(error as Error).message}`,
+      );
+    }
+
+    const result = await this.ledgerService.completeWithdrawal({
+      reference: data.reference,
+      providerReportedAmount: providerAmount,
+    });
+    if (!result) {
+      // Duplicate delivery, an unresolved reference, or a mismatched
+      // amount left pending for investigation (see
+      // LedgerService.completeWithdrawal) — either way, nothing to publish.
+      return;
+    }
+    await this.publishWithdrawalCompletedEvent(result);
   }
 
   async pollStaleFundingTransactions(): Promise<void> {
@@ -327,6 +476,69 @@ export class PaymentsService {
     }
 
     await this.publishFundingCompletedEvent(result);
+  }
+
+  // The withdrawal self-verify poll job (issue #31, mirrors #14's funding
+  // poll) — recovers a withdrawal left `pending` because Kora's payout
+  // webhook never arrived.
+  async pollStaleWithdrawalTransactions(): Promise<void> {
+    const staleTransactions =
+      await this.ledgerService.findStaleWithdrawalTransactions(
+        new Date(Date.now() - STALE_WITHDRAWAL_THRESHOLD_MS),
+      );
+
+    for (const transaction of staleTransactions) {
+      await this.pollWithdrawalTransaction(transaction);
+    }
+  }
+
+  private async pollWithdrawalTransaction(transaction: {
+    reference: string;
+  }): Promise<void> {
+    let verifyResult: VerifyPayoutResult;
+    try {
+      verifyResult = await this.adapter.verifyPayout(transaction.reference);
+    } catch (error) {
+      this.logger.error(
+        `pollStaleWithdrawalTransactions: verifyPayout failed for reference "${transaction.reference}" (${(error as Error).message}) — will retry on the next poll run`,
+      );
+      return;
+    }
+
+    if (verifyResult.status === 'pending') {
+      // Still processing at the provider — leave it pending for a later
+      // poll run rather than force-resolving it.
+      this.logger.debug(
+        `pollStaleWithdrawalTransactions: reference "${transaction.reference}" still pending at provider`,
+      );
+      return;
+    }
+
+    if (verifyResult.status === 'failed') {
+      const result = await this.ledgerService.reverseWithdrawal({
+        reference: transaction.reference,
+        reason: verifyResult.reason,
+      });
+      if (!result) {
+        // The webhook (or an earlier poll tick) already resolved this —
+        // no-op, not a duplicate reversal.
+        return;
+      }
+      await this.publishWithdrawalFailedEvent(result, verifyResult.reason);
+      return;
+    }
+
+    const result = await this.ledgerService.completeWithdrawal({
+      reference: transaction.reference,
+      providerReportedAmount: verifyResult.amount,
+    });
+    if (!result) {
+      // The webhook (or an earlier poll tick) already resolved this, or the
+      // provider-reported amount didn't cross-check — either way, nothing
+      // further to publish here.
+      return;
+    }
+    await this.publishWithdrawalCompletedEvent(result);
   }
 
   // The external reconciliation job (issue #15, docs/architecture.md §4.4)
@@ -407,6 +619,73 @@ export class PaymentsService {
         `publishFundingCompletedEvent: funding posted successfully for user "${result.userId}", but publishing the completion notification failed (${(error as Error).message}) — this will not be retried`,
       );
     }
+  }
+
+  private async publishWithdrawalCompletedEvent(
+    result: CompleteWithdrawalResult,
+  ): Promise<void> {
+    try {
+      const user = await this.usersService.findById(result.userId);
+      await this.eventBus.publish<string, WithdrawalCompletedEventPayload>({
+        name: WITHDRAWAL_COMPLETED_EVENT,
+        payload: {
+          userId: result.userId,
+          email: user.email,
+          amount: result.amount.toDecimalString(),
+          currency: result.amount.currency,
+          reference: result.reference,
+        },
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `publishWithdrawalCompletedEvent: withdrawal completed successfully (reference "${result.reference}"), but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
+  }
+
+  private async publishWithdrawalFailedEvent(
+    result: ReverseWithdrawalResult,
+    reason: string,
+  ): Promise<void> {
+    try {
+      const user = await this.usersService.findById(result.userId);
+      await this.eventBus.publish<string, WithdrawalFailedEventPayload>({
+        name: WITHDRAWAL_FAILED_EVENT,
+        payload: {
+          userId: result.userId,
+          email: user.email,
+          amount: result.amount.toDecimalString(),
+          currency: result.amount.currency,
+          reference: result.reference,
+          reason,
+        },
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `publishWithdrawalFailedEvent: withdrawal reversal posted successfully (reference "${result.reference}"), but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
+  }
+
+  // Issue #27 — a thin pass-through to the adapter: `payments` owns no
+  // `bank_accounts` table (ADR-0008), so this hands back the provider's own
+  // resolved facts and lets the caller (`withdrawals`) decide what to do
+  // with them.
+  resolveBankAccount(
+    bankCode: string,
+    accountNumber: string,
+  ): Promise<ResolveBankAccountResult> {
+    return this.adapter.resolveBankAccount(bankCode, accountNumber);
+  }
+
+  // Issue #28 — same thin pass-through shape as resolveBankAccount above:
+  // `payments` owns no withdrawal-orchestration state (ADR-0014), so this
+  // hands back the provider's own outcome and lets `withdrawals` decide
+  // what to do with it (reverse on `rejected`).
+  initiatePayout(params: InitiatePayoutParams): Promise<InitiatePayoutResult> {
+    return this.adapter.initiatePayout(params);
   }
 }
 

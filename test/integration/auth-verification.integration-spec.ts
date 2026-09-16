@@ -8,7 +8,6 @@ import {
 import {
   createAuthTestHelpers,
   extractSixDigitCode,
-  extractVerificationToken,
 } from './support/auth-test-helpers';
 
 jest.setTimeout(120_000);
@@ -41,29 +40,29 @@ describe('email verification', () => {
     expect(code.expiresAt.getTime()).toBeGreaterThan(Date.now());
 
     const sent = await helpers.waitForVerificationEmail(user.email);
-    expect(sent.text).toContain('token=');
+    expect(extractSixDigitCode(sent.text)).toMatch(/^\d{6}$/);
   });
 
-  it('verifies with a valid token, sets emailVerifiedAt, and rejects reuse of the same token', async () => {
+  it('verifies with a valid code, sets emailVerifiedAt, and rejects reuse of the same code', async () => {
     const { user } = await helpers.registerUser({
       email: 'verify-ok@example.com',
       username: 'verify_ok',
       phone: '+2348066666602',
     });
     const sent = await helpers.waitForVerificationEmail(user.email);
-    const token = extractVerificationToken(sent.text);
+    const code = extractSixDigitCode(sent.text);
 
-    await ctx.authService.verifyEmail(token);
+    await ctx.authService.verifyEmail(code);
 
     const verified = await ctx.userRepo.findOneByOrFail({ id: user.id });
     expect(verified.emailVerifiedAt).toBeInstanceOf(Date);
 
-    await expect(ctx.authService.verifyEmail(token)).rejects.toBeInstanceOf(
+    await expect(ctx.authService.verifyEmail(code)).rejects.toBeInstanceOf(
       VerificationCodeInvalidException,
     );
   });
 
-  it('rejects an unrecognized token without setting emailVerifiedAt', async () => {
+  it('rejects an unrecognized code without setting emailVerifiedAt', async () => {
     const { user } = await helpers.registerUser({
       email: 'verify-bad@example.com',
       username: 'verify_bad',
@@ -71,7 +70,7 @@ describe('email verification', () => {
     });
 
     await expect(
-      ctx.authService.verifyEmail('never-issued-token'),
+      ctx.authService.verifyEmail('never-issued-code'),
     ).rejects.toBeInstanceOf(VerificationCodeInvalidException);
 
     const unverified = await ctx.userRepo.findOneByOrFail({ id: user.id });
@@ -94,11 +93,11 @@ describe('email verification', () => {
     const sent = await helpers.waitForVerificationEmail(
       'verify-http@example.com',
     );
-    const token = extractVerificationToken(sent.text);
+    const code = extractSixDigitCode(sent.text);
 
     await request(ctx.app.getHttpServer())
       .post('/auth/verify-email')
-      .send({ token })
+      .send({ code })
       .expect(200);
 
     const verified = await ctx.userRepo.findOneByOrFail({
@@ -115,10 +114,10 @@ describe('email verification', () => {
     expect(tokens.tokenType).toBe('Bearer');
   });
 
-  it('rejects an invalid/expired token over HTTP with a clear error, distinct from a malformed request', async () => {
+  it('rejects an invalid/expired code over HTTP with a clear error, distinct from a malformed request', async () => {
     await request(ctx.app.getHttpServer())
       .post('/auth/verify-email')
-      .send({ token: 'not-a-real-token' })
+      .send({ code: 'not-a-real-code' })
       .expect(410);
   });
 
@@ -177,12 +176,10 @@ describe('email verification', () => {
 
     // The most recently issued code (from the successful resend, not the
     // original registration send) still verifies correctly.
-    const latestToken = extractVerificationToken(
-      ctx.emailAdapter.sent.at(-1)!.text,
-    );
+    const latestCode = extractSixDigitCode(ctx.emailAdapter.sent.at(-1)!.text);
     await request(ctx.app.getHttpServer())
       .post('/auth/verify-email')
-      .send({ token: latestToken })
+      .send({ code: latestCode })
       .expect(200);
   });
 
@@ -193,8 +190,8 @@ describe('email verification', () => {
       phone: '+2348066666606',
     });
     const sent = await helpers.waitForVerificationEmail(user.email);
-    const token = extractVerificationToken(sent.text);
-    await ctx.authService.verifyEmail(token);
+    const code = extractSixDigitCode(sent.text);
+    await ctx.authService.verifyEmail(code);
 
     const { tokens } = await helpers.loginAndVerify(
       'already-verified@example.com',

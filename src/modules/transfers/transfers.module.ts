@@ -1,7 +1,5 @@
 import { Module } from '@nestjs/common';
-import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { APP_CONFIG, AppConfig } from '../../config';
 import { EventBusModule } from '../../shared/events/event-bus.module';
 import { LedgerModule } from '../ledger/ledger.module';
 import { UsersModule } from '../users/users.module';
@@ -19,10 +17,6 @@ import { MoneyRequest } from './entities/money-request.entity';
     AuthModule,
     EventBusModule,
     TypeOrmModule.forFeature([MoneyRequest]),
-    JwtModule.registerAsync({
-      inject: [APP_CONFIG],
-      useFactory: (config: AppConfig) => ({ secret: config.jwt.secret }),
-    }),
   ],
   controllers: [TransfersController, MoneyRequestsController],
   // MoneyRequestsService is internal to this module, same as

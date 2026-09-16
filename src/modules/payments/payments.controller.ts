@@ -68,12 +68,18 @@ export class PaymentsController {
   // a burst of legitimate retries after an outage (Kora replaying a queued
   // backlog) would otherwise get 429'd into a multi-hour drain.
   @Throttle({ default: { limit: 300, ttl: 60_000 } })
-  @ApiOperation({ summary: "Kora's funding webhook receiver" })
+  // Kora delivers every event type — charges, transfers/payouts (issue
+  // #29), refunds — to this one dashboard-configured URL (confirmed against
+  // developers.korapay.com/docs/webhooks; there's no per-event or
+  // per-request notification_url for payouts, unlike charges' own
+  // notification_url field). PaymentsService.handleKoraWebhook dispatches
+  // on the payload's `event` field internally.
+  @ApiOperation({ summary: "Kora's webhook receiver (charges and payouts)" })
   handleKoraWebhook(
     @Req() req: Request,
     @Headers('x-korapay-signature') signature: string | undefined,
   ): Promise<void> {
-    return this.paymentsService.handleFundingWebhook(
+    return this.paymentsService.handleKoraWebhook(
       req.rawBody ?? Buffer.alloc(0),
       signature,
     );

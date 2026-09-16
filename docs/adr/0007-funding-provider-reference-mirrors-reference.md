@@ -56,6 +56,49 @@ return a distinct provider-side reference — so this deviation is specific
 to the funding/charge flow, not a correction to the schema or column
 itself.
 
+**[Correction, Phase 4 issue #28]** The withdrawals claim above was wrong.
+A real sandbox disbursement call (`POST
+/merchant/api/v1/transactions/disburse`, then `GET
+/merchant/api/v1/transactions/{reference}`) was run during issue #28's
+design, before this ADR's assumption was built against. Both the
+initiate response and the status response:
+
+```json
+{
+  "status": true,
+  "message": "Transfer initiated successfully.",
+  "data": {
+    "amount": "1000.00",
+    "fee": "30.00",
+    "currency": "NGN",
+    "status": "processing",
+    "reference": "cliqpay-test-1787042169",
+    "message": "Payout processing",
+    "customer": { "name": "Test User", "email": "testuser@gmail.com" }
+  }
+}
+```
+
+carry only `reference` — exactly what we sent, echoed back — the same
+shape as funding's verify response above. There is no distinct
+Kora-generated payout id anywhere in either response. Payouts turn out to
+follow the same pattern this ADR documents for funding, not a different
+one; `LedgerService.postWithdrawal` mirrors `reference` into
+`provider_reference` at creation, identically to `createPendingFundingTransaction`.
+
+One more divergence worth recording alongside this: the `fee` Kora reports
+is not stable across the two calls above for the *same* disbursement — a
+second sandbox call at the same amount returned `"fee": "30.00"` on
+initiate but `32.25` (unquoted number, not a decimal string) on the
+status endpoint moments later. Kora's disbursement fee is evidently an
+estimate at initiate time, finalized only once the payout settles — not
+a value this backend can treat as known and fixed at request time. Since
+`postWithdrawal` posts the provider-fee ledger leg *before* the payout
+call is ever made (debit-first, docs/architecture.md §6 Phase 4), issue
+#28 uses a flat, config-driven `WITHDRAWAL_PROVIDER_FEE` estimate for that
+leg instead of Kora's per-request figure; reconciling the posted estimate
+against Kora's actual settled fee is not yet built.
+
 ## Decision
 
 For `transactions` of `type = 'funding'`, `provider_reference` is set to the
@@ -72,6 +115,12 @@ populated so:
   withdrawals but not funding
 - any future tooling/reporting that queries by `provider_reference` doesn't
   need a special case for funding rows
+
+**[Extended, Phase 4 issue #28]** The same rule now applies to `type =
+'withdrawal'` transactions, for the same reason — see the correction
+above. `LedgerService.postWithdrawal` sets `provider_reference` to
+`reference` at creation, the same way `createPendingFundingTransaction`
+does for funding.
 
 ## Alternatives considered
 
@@ -91,13 +140,16 @@ populated so:
 
 - `KoraAdapter.initiatePayment()` doesn't need to parse anything out of the
   checkout URL — it only needs to return the URL itself and the reference
-  we already generated.
-- If Kora's charge API is ever found to return a genuine distinct
-  transaction ID in some other endpoint or webhook variant not exercised by
-  this sandbox test, `provider_reference` can start being set from that
-  value instead — no schema change, since the column already exists and is
-  populated; only the value it's populated with would change.
-- The contract test suite (`test/contract/`) should assert the shape
-  documented here (no distinct ID in the charge-verify response) so a
-  future Kora API change that *adds* one is caught rather than silently
+  we already generated. Likewise `KoraAdapter.initiatePayout()` (issue #28)
+  parses nothing out of the disburse response beyond `data.status` — there's
+  no distinct id to extract there either.
+- If Kora's charge or disbursement API is ever found to return a genuine
+  distinct transaction ID in some other endpoint or webhook variant not
+  exercised by these sandbox calls, `provider_reference` can start being set
+  from that value instead — no schema change, since the column already
+  exists and is populated; only the value it's populated with would change.
+- The contract test suite (`test/contract/`) should assert the shapes
+  documented here (no distinct ID in either the charge-verify or the
+  disbursement response, and the disbursement fee's initiate-vs-status
+  instability) so a future Kora API change is caught rather than silently
   assumed away.

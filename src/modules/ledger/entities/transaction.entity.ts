@@ -15,6 +15,12 @@ export type TransactionType =
   | 'funding'
   | 'p2p_transfer'
   | 'withdrawal'
+  // The compensating transaction for a withdrawal whose payout didn't go
+  // through — its own row, `reversesTransactionId` pointing at the original
+  // withdrawal, same shape as `chargeback` reversing a funding transaction
+  // (docs/architecture.md §4.2, §7). Reused by both this issue's synchronous
+  // rejection path and #29's async webhook-failure path.
+  | 'withdrawal_reversal'
   | 'chargeback'
   | 'profit_withdrawal'
   | 'bill_split'
@@ -58,6 +64,29 @@ export interface TransferTransactionMetadata {
   platformFee: { amount: string; currency: string };
 }
 
+// §4.2's Withdrawal posting example: `metadata: { bank_account, net_amount }`.
+// `bankAccount` is a snapshot at request time (id + the fields a client
+// needs to display "sent to"), not a live join — bank_accounts belongs to
+// `withdrawals`, not `ledger` (ADR-0014), so this is the one place ledger
+// carries withdrawal-specific facts it was handed, same reasoning as
+// TransferTransactionMetadata.platformFee above.
+export interface WithdrawalTransactionMetadata {
+  bankAccount: {
+    id: string;
+    bankCode: string;
+    bankName: string;
+    accountNumber: string;
+    accountName: string;
+  };
+  netAmount: { amount: string; currency: string };
+  platformFee: { amount: string; currency: string };
+  providerFee: { amount: string; currency: string };
+}
+
+export interface WithdrawalReversalTransactionMetadata {
+  reason: string;
+}
+
 /**
  * Metadata is shaped per transaction type, not a free-form bag — `payments`
  * writing an untyped field here and casting it back on read is exactly the
@@ -66,7 +95,9 @@ export interface TransferTransactionMetadata {
  */
 export type TransactionMetadata =
   | FundingTransactionMetadata
-  | TransferTransactionMetadata;
+  | TransferTransactionMetadata
+  | WithdrawalTransactionMetadata
+  | WithdrawalReversalTransactionMetadata;
 
 /**
  * See docs/architecture.md §5. `sender_wallet_id`/`recipient_wallet_id` are

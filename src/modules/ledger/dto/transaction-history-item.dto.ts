@@ -39,6 +39,7 @@ export class TransactionHistoryItemDto {
       'funding',
       'p2p_transfer',
       'withdrawal',
+      'withdrawal_reversal',
       'chargeback',
       'profit_withdrawal',
       'bill_split',

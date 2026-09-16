@@ -7,7 +7,6 @@ import {
 import {
   createAuthTestHelpers,
   extractSixDigitCode,
-  extractVerificationToken,
   SECURITY_ALERT_SUBJECT,
   SIGN_IN_CODE_SUBJECT,
   waitFor,
@@ -15,11 +14,10 @@ import {
 
 jest.setTimeout(120_000);
 
-// Reuses the shared helpers throughout — extractSixDigitCode for the
-// step-up challenge (same MFA machinery/email template as login),
-// extractVerificationToken for the new-address confirmation code (same
-// 'email_verification' purpose), latestEmailWithSubject to find the
-// old-address security alert.
+// Reuses the shared helpers throughout — extractSixDigitCode for both the
+// step-up challenge (same MFA machinery/email template as login) and the
+// new-address confirmation code (same 'email_verification' purpose),
+// latestEmailWithSubject to find the old-address security alert.
 describe('change email', () => {
   let ctx: AuthTestContext;
   let helpers: ReturnType<typeof createAuthTestHelpers>;
@@ -90,7 +88,7 @@ describe('change email', () => {
     const sent = await helpers.waitForVerificationEmail(
       'change-email-new@example.com',
     );
-    const confirmCode = extractVerificationToken(sent.text);
+    const confirmCode = extractSixDigitCode(sent.text);
 
     await request(ctx.app.getHttpServer())
       .post('/auth/change-email/confirm')
@@ -238,7 +236,7 @@ describe('change email', () => {
     const sent = await helpers.waitForVerificationEmail(
       'change-email-bad-confirm-new@example.com',
     );
-    const confirmCode = extractVerificationToken(sent.text);
+    const confirmCode = extractSixDigitCode(sent.text);
 
     await request(ctx.app.getHttpServer())
       .post('/auth/change-email/confirm')
@@ -312,7 +310,7 @@ describe('change email', () => {
     const sent = await helpers.waitForVerificationEmail(
       'change-email-revoke-true-new@example.com',
     );
-    const confirmCode = extractVerificationToken(sent.text);
+    const confirmCode = extractSixDigitCode(sent.text);
 
     await request(ctx.app.getHttpServer())
       .post('/auth/change-email/confirm')
@@ -360,7 +358,7 @@ describe('change email', () => {
     const sent = await helpers.waitForVerificationEmail(
       'change-email-revoke-false-new@example.com',
     );
-    const confirmCode = extractVerificationToken(sent.text);
+    const confirmCode = extractSixDigitCode(sent.text);
 
     await request(ctx.app.getHttpServer())
       .post('/auth/change-email/confirm')

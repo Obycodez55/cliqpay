@@ -86,6 +86,10 @@ export default tseslint.config(
           pattern: 'src/modules/transfers/**',
         },
         {
+          type: 'withdrawals-module',
+          pattern: 'src/modules/withdrawals/**',
+        },
+        {
           type: 'peripheral-module',
           pattern:
             'src/modules/{kyc,fraud,social,billsplit,scheduling,notifications}',
@@ -138,6 +142,18 @@ export default tseslint.config(
               message:
                 '`users` must never import from `auth` — `auth` depends on `users`, never the reverse, specifically to avoid a cycle (see docs/adr/0005-users-auth-split.md).',
             },
+            {
+              from: { element: { type: 'withdrawals-module' } },
+              disallow: { to: { element: { type: 'peripheral-module' } } },
+              message:
+                'Core modules (ledger, payments, auth, users, transfers, withdrawals) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10 and docs/adr/0014-withdrawals-module-boundary.md.',
+            },
+            {
+              from: { element: { type: 'withdrawals-module' } },
+              disallow: { to: { element: { type: 'transfers-module' } } },
+              message:
+                '`withdrawals` must never import from `transfers` — see docs/adr/0014-withdrawals-module-boundary.md.',
+            },
           ],
         },
       ],
@@ -181,6 +197,10 @@ export default tseslint.config(
             },
             {
               target: { type: 'transfers-module' },
+              allow: '*.(service|module).ts',
+            },
+            {
+              target: { type: 'withdrawals-module' },
               allow: '*.(service|module).ts',
             },
             {

@@ -18,6 +18,9 @@ function mockAdapter(): jest.Mocked<PaymentProviderAdapter> {
     verifyWebhookSignature: jest.fn().mockReturnValue(true),
     verifyCharge: jest.fn(),
     getBalance: jest.fn(),
+    resolveBankAccount: jest.fn(),
+    initiatePayout: jest.fn(),
+    verifyPayout: jest.fn(),
   };
 }
 
@@ -41,7 +44,7 @@ function webhookBody(overrides: Partial<Record<string, unknown>> = {}) {
   );
 }
 
-describe('PaymentsService.handleFundingWebhook', () => {
+describe('PaymentsService.handleKoraWebhook (charge events)', () => {
   let ledgerService: jest.Mocked<Pick<LedgerService, 'postFunding'>>;
   let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
@@ -74,7 +77,7 @@ describe('PaymentsService.handleFundingWebhook', () => {
     adapter.verifyWebhookSignature.mockReturnValue(false);
 
     await expect(
-      service.handleFundingWebhook(webhookBody(), 'bad-signature'),
+      service.handleKoraWebhook(webhookBody(), 'bad-signature'),
     ).rejects.toThrow(UnauthorizedException);
 
     expect(ledgerService.postFunding).not.toHaveBeenCalled();
@@ -82,7 +85,7 @@ describe('PaymentsService.handleFundingWebhook', () => {
 
   it('rejects a missing signature before touching the ledger', async () => {
     await expect(
-      service.handleFundingWebhook(webhookBody(), undefined),
+      service.handleKoraWebhook(webhookBody(), undefined),
     ).rejects.toThrow(UnauthorizedException);
 
     expect(ledgerService.postFunding).not.toHaveBeenCalled();
@@ -94,7 +97,7 @@ describe('PaymentsService.handleFundingWebhook', () => {
       email: 'user@example.com',
     } as Awaited<ReturnType<UsersService['findById']>>);
 
-    await service.handleFundingWebhook(webhookBody(), 'sig');
+    await service.handleKoraWebhook(webhookBody(), 'sig');
 
     expect(eventBus.publish).toHaveBeenCalledTimes(1);
     const published = eventBus.publish.mock.calls[0][0] as {
@@ -114,7 +117,7 @@ describe('PaymentsService.handleFundingWebhook', () => {
   it('does not publish when postFunding reports a duplicate or unresolved delivery', async () => {
     ledgerService.postFunding.mockResolvedValue(null);
 
-    await service.handleFundingWebhook(webhookBody(), 'sig');
+    await service.handleKoraWebhook(webhookBody(), 'sig');
 
     expect(usersService.findById).not.toHaveBeenCalled();
     expect(eventBus.publish).not.toHaveBeenCalled();
@@ -125,7 +128,7 @@ describe('PaymentsService.handleFundingWebhook', () => {
   // which would make Kora retry — landing on postFunding's idempotency
   // guard (already `completed`) before ever reaching this code again,
   // permanently and silently dropping the notification despite the money
-  // having posted correctly. See payments.service.ts's handleFundingWebhook.
+  // having posted correctly. See payments.service.ts's processFundingWebhookData.
   it('does not throw when publishing the completion notification fails, since the funding already posted', async () => {
     ledgerService.postFunding.mockResolvedValue(postFundingResult);
     usersService.findById.mockResolvedValue({
@@ -134,7 +137,7 @@ describe('PaymentsService.handleFundingWebhook', () => {
     eventBus.publish.mockRejectedValue(new Error('redis unavailable'));
 
     await expect(
-      service.handleFundingWebhook(webhookBody(), 'sig'),
+      service.handleKoraWebhook(webhookBody(), 'sig'),
     ).resolves.toBeUndefined();
 
     expect(eventBus.publish).toHaveBeenCalled();
@@ -145,7 +148,7 @@ describe('PaymentsService.handleFundingWebhook', () => {
     usersService.findById.mockRejectedValue(new Error('db blip'));
 
     await expect(
-      service.handleFundingWebhook(webhookBody(), 'sig'),
+      service.handleKoraWebhook(webhookBody(), 'sig'),
     ).resolves.toBeUndefined();
 
     expect(eventBus.publish).not.toHaveBeenCalled();

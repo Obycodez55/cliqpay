@@ -18,14 +18,19 @@ import {
   FundingTransactionMetadata,
   Transaction,
   TransactionProvider,
+  TransactionStatus,
   TransactionType,
+  WithdrawalReversalTransactionMetadata,
+  WithdrawalTransactionMetadata,
 } from './entities/transaction.entity';
 import { InsufficientFundsException } from './internal/errors';
 
 // Re-exported through the module's one door (this file) — `payments` needs
-// the type for its active-(provider, currency)-pairs list (issue #15), and
-// cross-module code only ever reaches ledger through LedgerService.
-export type { TransactionProvider };
+// TransactionProvider for its active-(provider, currency)-pairs list (issue
+// #15), `withdrawals` needs WithdrawalTransactionMetadata to read a replayed
+// withdrawal's stored bank-account/fee facts (issue #28) — cross-module code
+// only ever reaches ledger through LedgerService.
+export type { TransactionProvider, WithdrawalTransactionMetadata };
 
 export interface CreatePendingFundingTransactionData {
   reference: string;
@@ -57,9 +62,30 @@ export interface StaleFundingTransaction {
   currency: string;
 }
 
+// Same narrowing reasoning as StaleFundingTransaction above — `payments`
+// (the only caller) only needs the reference to poll on for a withdrawal;
+// completeWithdrawal/reverseWithdrawal both read amount/currency back off
+// the transaction's own stored row rather than taking it from the caller.
+export interface StaleWithdrawalTransaction {
+  reference: string;
+}
+
 export interface TransactionHistoryPagination {
   cursor?: string;
   limit: number;
+}
+
+// The row shape `withdrawals` needs for its own history endpoint (issue
+// #30) — `metadata` carries the bank-account snapshot and fee breakdown
+// already recorded at postWithdrawal time (§4.2), so withdrawals decorates
+// its response from this alone, no second query against `bank_accounts`.
+export interface WithdrawalHistoryEntry {
+  id: string;
+  reference: string;
+  status: TransactionStatus;
+  amount: Money;
+  createdAt: Date;
+  metadata: WithdrawalTransactionMetadata;
 }
 
 // Only the fields that define the operation (ADR-0010) — never headers,
@@ -104,6 +130,64 @@ export interface PostTransferResult {
   amount: Money;
   platformFee: Money;
   createdAt: Date;
+}
+
+export interface WithdrawalBankAccountSnapshot {
+  id: string;
+  bankCode: string;
+  bankName: string;
+  accountNumber: string;
+  accountName: string;
+}
+
+export interface PostWithdrawalParams {
+  reference: string;
+  walletId: string;
+  provider: TransactionProvider;
+  amount: Money;
+  platformFee: Money;
+  providerFee: Money;
+  bankAccount: WithdrawalBankAccountSnapshot;
+}
+
+export interface PostWithdrawalResult {
+  transactionId: string;
+  reference: string;
+  userId: string;
+  amount: Money;
+  platformFee: Money;
+  providerFee: Money;
+  createdAt: Date;
+}
+
+export interface ReverseWithdrawalParams {
+  reference: string;
+  reason: string;
+}
+
+export interface ReverseWithdrawalResult {
+  reversalTransactionId: string;
+  originalTransactionId: string;
+  reference: string;
+  userId: string;
+  amount: Money;
+  createdAt: Date;
+}
+
+export interface CompleteWithdrawalParams {
+  reference: string;
+  // The provider-reported payout amount — cross-checked against the
+  // transaction's own recorded amount before completing (issue #29,
+  // docs/architecture.md §7's "no amount trusted from a webhook without
+  // cross-checking" rule).
+  providerReportedAmount: Money;
+}
+
+export interface CompleteWithdrawalResult {
+  transactionId: string;
+  reference: string;
+  userId: string;
+  amount: Money;
 }
 
 /**
@@ -294,6 +378,26 @@ export class LedgerService {
     }));
   }
 
+  // Feeds the withdrawal self-verify poll job (issue #31) — same shape as
+  // findStaleFundingTransactions above, scoped to withdrawals instead of
+  // funding.
+  async findStaleWithdrawalTransactions(
+    olderThan: Date,
+  ): Promise<StaleWithdrawalTransaction[]> {
+    const transactions = await this.dataSource.getRepository(Transaction).find({
+      where: {
+        status: 'pending',
+        provider: 'kora',
+        type: 'withdrawal',
+        createdAt: LessThan(olderThan),
+      },
+      select: { reference: true },
+    });
+    return transactions.map((transaction) => ({
+      reference: transaction.reference,
+    }));
+  }
+
   // Feeds the external reconciliation job (issue #15) — a plain read of
   // `float_<ccy>`'s cached balance, ledger's own table, so `payments` gets
   // just the Money it needs to compare against the provider's reported
@@ -399,6 +503,65 @@ export class LedgerService {
     };
   }
 
+  // Serves GET /withdrawals (issue #30, ADR-0014). Reads `transactions`
+  // directly rather than joining ledger_entries — a withdrawal produces
+  // several legs (§4.2's 5-leg posting), but only one row in `transactions`
+  // itself, and that row's own `status` already carries the
+  // pending/completed/reversed lifecycle this endpoint needs to show;
+  // joining ledger_entries the way getTransactionHistory does would return
+  // one entry per leg instead of one row per withdrawal. Same
+  // (createdAt, id) DESC keyset pagination as getTransactionHistory, for
+  // the same append-only/high-write reasoning.
+  async getWithdrawalHistory(
+    walletId: string,
+    pagination: TransactionHistoryPagination,
+  ): Promise<PaginatedResult<WithdrawalHistoryEntry>> {
+    const cursor = pagination.cursor
+      ? decodeCreatedAtIdCursor(pagination.cursor)
+      : null;
+
+    const query = this.dataSource
+      .getRepository(Transaction)
+      .createQueryBuilder('transaction')
+      .addSelect('"transaction"."created_at"::text', 'raw_created_at')
+      .where('transaction.senderWalletId = :walletId', { walletId })
+      .andWhere('transaction.type = :type', { type: 'withdrawal' })
+      .orderBy('transaction.createdAt', 'DESC')
+      .addOrderBy('transaction.id', 'DESC')
+      .take(pagination.limit + 1);
+
+    if (cursor) {
+      query.andWhere(
+        '(transaction.createdAt, transaction.id) < (:cursorCreatedAt::timestamptz, :cursorId::uuid)',
+        { cursorCreatedAt: cursor.createdAt, cursorId: cursor.id },
+      );
+    }
+
+    const { entities, raw } = await query.getRawAndEntities<{
+      raw_created_at: string;
+    }>();
+    const hasMore = entities.length > pagination.limit;
+    const page = hasMore ? entities.slice(0, pagination.limit) : entities;
+
+    return {
+      items: page.map((transaction) => ({
+        id: transaction.id,
+        reference: transaction.reference,
+        status: transaction.status,
+        amount: Money.of(transaction.amount, transaction.currency),
+        createdAt: transaction.createdAt,
+        metadata: transaction.metadata as WithdrawalTransactionMetadata,
+      })),
+      nextCursor:
+        hasMore && raw[pagination.limit - 1]
+          ? encodeCreatedAtIdCursor({
+              createdAt: raw[pagination.limit - 1].raw_created_at,
+              id: page[page.length - 1].id,
+            })
+          : null,
+    };
+  }
+
   /**
    * The single place funding ledger entries are ever posted (docs/adr/0008)
    * — `payments`' webhook handler and #14's poll job both call this with
@@ -415,10 +578,19 @@ export class LedgerService {
       // `amount` is immutable after creation (only `status`/`metadata`
       // change post-creation — see createPendingFundingTransaction and the
       // methods around it), so reading it here ahead of the guarded UPDATE
-      // below is safe: it can't race a concurrent writer.
-      const transaction = await manager
-        .getRepository(Transaction)
-        .findOneBy({ reference: facts.reference });
+      // below is safe: it can't race a concurrent writer. Scoped to
+      // `type: 'funding'` — issue #29 put charge and transfer webhooks on
+      // the same signature-verified channel (Kora delivers both to one
+      // dashboard-configured URL), dispatched by the payload's own `event`
+      // field, which isn't itself part of what the signature covers; this
+      // filter is the backstop that keeps a mislabeled/duplicated `event`
+      // from ever making a withdrawal's `reference` resolve here as if it
+      // were a funding transaction (see completeWithdrawal/
+      // reverseWithdrawal's matching `type: 'withdrawal'` filters).
+      const transaction = await manager.getRepository(Transaction).findOneBy({
+        reference: facts.reference,
+        type: 'funding',
+      });
       if (!transaction) {
         this.logger.error(
           `postFunding: no transaction found for reference "${facts.reference}"`,
@@ -787,5 +959,472 @@ export class LedgerService {
       platformFee: params.platformFee,
       createdAt: transaction.createdAt,
     };
+  }
+
+  /**
+   * The single place withdrawal ledger entries are ever posted (ADR-0014,
+   * §4.2's Withdrawal example) — `withdrawals` owns PIN verification,
+   * idempotency, and bank-account ownership; this only knows how to move
+   * money out of a wallet plus both fee legs. Posts directly to `pending`,
+   * not `completed` — unlike a transfer, a withdrawal isn't done until Kora
+   * confirms the payout (webhook, #29), but the posting itself must still
+   * commit *before* that call happens (debit-first, docs/architecture.md §6
+   * Phase 4), so `pending` is this method's only valid terminal status.
+   * `providerReference` mirrors `reference` at creation, the same choice
+   * ADR-0007 made for funding — a real sandbox payout call (during this
+   * issue's design) found Kora's disbursement API echoes back only the
+   * reference we sent, with no distinct provider-side id anywhere in either
+   * the initiate or status response; ADR-0007's Phase 4 correction covers
+   * this in full.
+   */
+  async postWithdrawal(
+    params: PostWithdrawalParams,
+  ): Promise<PostWithdrawalResult> {
+    return runInTransaction(this.dataSource, (manager) =>
+      this.postWithdrawalEntries(manager, params),
+    );
+  }
+
+  private async postWithdrawalEntries(
+    manager: EntityManager,
+    params: PostWithdrawalParams,
+  ): Promise<PostWithdrawalResult> {
+    const accountRepo = manager.getRepository(Account);
+    const currency = params.amount.currency;
+
+    // Same ascending-account_id/pessimistic_write shape as
+    // postFundingEntries/postTransferEntries — five accounts this time
+    // (wallet plus all four system accounts), since unlike a transfer's
+    // conditional fee_income leg, every one of them always posts here.
+    const accounts = await accountRepo
+      .createQueryBuilder('account')
+      .where(
+        new Brackets((qb) => {
+          qb.where('account.id = :walletId', { walletId: params.walletId })
+            .orWhere(
+              '(account.role = :float AND account.provider = :provider AND account.currency = :currency AND account.userId IS NULL)',
+              { float: 'float', provider: params.provider, currency },
+            )
+            .orWhere(
+              '(account.role = :feeIncome AND account.provider IS NULL AND account.currency = :currency AND account.userId IS NULL)',
+              { feeIncome: 'fee_income', currency },
+            )
+            .orWhere(
+              '(account.role = :feeExpense AND account.provider = :provider AND account.currency = :currency AND account.userId IS NULL)',
+              {
+                feeExpense: 'fee_expense',
+                provider: params.provider,
+                currency,
+              },
+            )
+            .orWhere(
+              '(account.role = :feeRecovery AND account.provider = :provider AND account.currency = :currency AND account.userId IS NULL)',
+              {
+                feeRecovery: 'fee_recovery',
+                provider: params.provider,
+                currency,
+              },
+            );
+        }),
+      )
+      .orderBy('account.id', 'ASC')
+      .setLock('pessimistic_write')
+      .getMany();
+
+    const wallet = accounts.find((a) => a.id === params.walletId);
+    const float = accounts.find((a) => a.role === 'float');
+    const feeIncome = accounts.find((a) => a.role === 'fee_income');
+    const feeExpense = accounts.find((a) => a.role === 'fee_expense');
+    const feeRecovery = accounts.find((a) => a.role === 'fee_recovery');
+    if (!wallet || !float || !feeIncome || !feeExpense || !feeRecovery) {
+      throw new Error(
+        `postWithdrawal: missing one of wallet/float/fee_income/fee_expense/fee_recovery accounts for reference "${params.reference}"`,
+      );
+    }
+
+    const walletDebit = params.amount
+      .add(params.platformFee)
+      .add(params.providerFee);
+    const floatCredit = params.amount.add(params.providerFee);
+
+    // Checked only after the accounts above are locked, never before
+    // (CLAUDE.md) — same TOCTOU reasoning as postTransferEntries.
+    if (Money.of(wallet.balance, wallet.currency).lessThan(walletDebit)) {
+      throw new InsufficientFundsException();
+    }
+
+    const transactionRepo = manager.getRepository(Transaction);
+    const transaction = await transactionRepo.save(
+      transactionRepo.create({
+        reference: params.reference,
+        provider: params.provider,
+        providerReference: params.reference,
+        type: 'withdrawal',
+        status: 'pending',
+        reversesTransactionId: null,
+        amount: params.amount.amount,
+        currency,
+        senderWalletId: wallet.id,
+        recipientWalletId: null,
+        metadata: {
+          bankAccount: params.bankAccount,
+          netAmount: params.amount.toJSON(),
+          platformFee: params.platformFee.toJSON(),
+          providerFee: params.providerFee.toJSON(),
+        } satisfies WithdrawalTransactionMetadata,
+      }),
+    );
+
+    const newWalletBalance = Money.of(wallet.balance, wallet.currency).subtract(
+      walletDebit,
+    );
+    const newFloatBalance = Money.of(float.balance, float.currency).add(
+      floatCredit,
+    );
+    const newFeeIncomeBalance = Money.of(
+      feeIncome.balance,
+      feeIncome.currency,
+    ).add(params.platformFee);
+    const newFeeExpenseBalance = Money.of(
+      feeExpense.balance,
+      feeExpense.currency,
+    ).add(params.providerFee);
+    const newFeeRecoveryBalance = Money.of(
+      feeRecovery.balance,
+      feeRecovery.currency,
+    ).add(params.providerFee);
+
+    wallet.balance = newWalletBalance.amount;
+    float.balance = newFloatBalance.amount;
+    feeIncome.balance = newFeeIncomeBalance.amount;
+    feeExpense.balance = newFeeExpenseBalance.amount;
+    feeRecovery.balance = newFeeRecoveryBalance.amount;
+    await accountRepo.save([wallet, float, feeIncome, feeExpense, feeRecovery]);
+
+    const entryRepo = manager.getRepository(LedgerEntry);
+    await entryRepo.save([
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: wallet.id,
+        direction: 'debit',
+        amount: walletDebit.amount,
+        runningBalance: newWalletBalance.amount,
+      }),
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: float.id,
+        direction: 'credit',
+        amount: floatCredit.amount,
+        runningBalance: newFloatBalance.amount,
+      }),
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: feeIncome.id,
+        direction: 'credit',
+        amount: params.platformFee.amount,
+        runningBalance: newFeeIncomeBalance.amount,
+      }),
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: feeExpense.id,
+        direction: 'debit',
+        amount: params.providerFee.amount,
+        runningBalance: newFeeExpenseBalance.amount,
+      }),
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: feeRecovery.id,
+        direction: 'credit',
+        amount: params.providerFee.amount,
+        runningBalance: newFeeRecoveryBalance.amount,
+      }),
+    ]);
+
+    return {
+      transactionId: transaction.id,
+      reference: transaction.reference,
+      userId: wallet.userId!,
+      amount: params.amount,
+      platformFee: params.platformFee,
+      providerFee: params.providerFee,
+      createdAt: transaction.createdAt,
+    };
+  }
+
+  /**
+   * The one reversal path for a withdrawal that didn't go through — called
+   * both by this issue's synchronous-rejection case and by #29's async
+   * webhook-failure case, so it's keyed on the original withdrawal's
+   * `reference`, not any call-site-specific state. A compensating
+   * transaction, never a mutation of the original entries (§7): posts a new
+   * `withdrawal_reversal` row with `reversesTransactionId` pointing at the
+   * original, with the mirror-image legs of postWithdrawalEntries. Idempotent
+   * the same way postFunding is — the pending -> reversed transition is one
+   * atomic guarded UPDATE, so a duplicate call (both failure paths racing,
+   * or a retried webhook) finds 0 rows affected on the second call and
+   * returns null without posting a second reversal.
+   */
+  async reverseWithdrawal(
+    params: ReverseWithdrawalParams,
+  ): Promise<ReverseWithdrawalResult | null> {
+    return runInTransaction(this.dataSource, async (manager) => {
+      const transactionRepo = manager.getRepository(Transaction);
+      const original = await transactionRepo.findOneBy({
+        reference: params.reference,
+        type: 'withdrawal',
+      });
+      if (!original) {
+        this.logger.error(
+          `reverseWithdrawal: no withdrawal transaction found for reference "${params.reference}"`,
+        );
+        return null;
+      }
+
+      const updateResult = await manager
+        .createQueryBuilder()
+        .update(Transaction)
+        .set({ status: 'reversed' })
+        .where('reference = :reference', { reference: params.reference })
+        .andWhere('status = :pending', { pending: 'pending' })
+        .execute();
+      if (!updateResult.affected) {
+        this.logger.debug(
+          `reverseWithdrawal: no pending withdrawal for reference "${params.reference}" — already reversed or resolved`,
+        );
+        return null;
+      }
+
+      return this.reverseWithdrawalEntries(manager, original, params.reason);
+    });
+  }
+
+  private async reverseWithdrawalEntries(
+    manager: EntityManager,
+    original: Transaction,
+    reason: string,
+  ): Promise<ReverseWithdrawalResult> {
+    const accountRepo = manager.getRepository(Account);
+    const currency = original.currency;
+    const provider = original.provider!;
+    const metadata = original.metadata as WithdrawalTransactionMetadata;
+
+    const accounts = await accountRepo
+      .createQueryBuilder('account')
+      .where(
+        new Brackets((qb) => {
+          qb.where('account.id = :walletId', {
+            walletId: original.senderWalletId,
+          })
+            .orWhere(
+              '(account.role = :float AND account.provider = :provider AND account.currency = :currency AND account.userId IS NULL)',
+              { float: 'float', provider, currency },
+            )
+            .orWhere(
+              '(account.role = :feeIncome AND account.provider IS NULL AND account.currency = :currency AND account.userId IS NULL)',
+              { feeIncome: 'fee_income', currency },
+            )
+            .orWhere(
+              '(account.role = :feeExpense AND account.provider = :provider AND account.currency = :currency AND account.userId IS NULL)',
+              { feeExpense: 'fee_expense', provider, currency },
+            )
+            .orWhere(
+              '(account.role = :feeRecovery AND account.provider = :provider AND account.currency = :currency AND account.userId IS NULL)',
+              { feeRecovery: 'fee_recovery', provider, currency },
+            );
+        }),
+      )
+      .orderBy('account.id', 'ASC')
+      .setLock('pessimistic_write')
+      .getMany();
+
+    const wallet = accounts.find((a) => a.id === original.senderWalletId);
+    const float = accounts.find((a) => a.role === 'float');
+    const feeIncome = accounts.find((a) => a.role === 'fee_income');
+    const feeExpense = accounts.find((a) => a.role === 'fee_expense');
+    const feeRecovery = accounts.find((a) => a.role === 'fee_recovery');
+    if (!wallet || !float || !feeIncome || !feeExpense || !feeRecovery) {
+      throw new Error(
+        `reverseWithdrawal: missing one of wallet/float/fee_income/fee_expense/fee_recovery accounts for reference "${original.reference}"`,
+      );
+    }
+
+    const amount = Money.of(BigInt(metadata.netAmount.amount), currency);
+    const platformFee = Money.of(BigInt(metadata.platformFee.amount), currency);
+    const providerFee = Money.of(BigInt(metadata.providerFee.amount), currency);
+    const walletCredit = amount.add(platformFee).add(providerFee);
+    const floatDebit = amount.add(providerFee);
+
+    const newWalletBalance = Money.of(wallet.balance, currency).add(
+      walletCredit,
+    );
+    const newFloatBalance = Money.of(float.balance, currency).subtract(
+      floatDebit,
+    );
+    const newFeeIncomeBalance = Money.of(feeIncome.balance, currency).subtract(
+      platformFee,
+    );
+    const newFeeExpenseBalance = Money.of(feeExpense.balance, currency).add(
+      providerFee,
+    );
+    const newFeeRecoveryBalance = Money.of(
+      feeRecovery.balance,
+      currency,
+    ).subtract(providerFee);
+
+    wallet.balance = newWalletBalance.amount;
+    float.balance = newFloatBalance.amount;
+    feeIncome.balance = newFeeIncomeBalance.amount;
+    feeExpense.balance = newFeeExpenseBalance.amount;
+    feeRecovery.balance = newFeeRecoveryBalance.amount;
+    await accountRepo.save([wallet, float, feeIncome, feeExpense, feeRecovery]);
+
+    const transactionRepo = manager.getRepository(Transaction);
+    // Deterministic from the original's own (unique) reference, not a fresh
+    // UUID — makes a duplicate reversal attempt collide on
+    // UQ_transactions_reference as a second line of defense, even though the
+    // status-guarded UPDATE above already prevents reaching this point twice
+    // in the normal case.
+    const reversal = await transactionRepo.save(
+      transactionRepo.create({
+        reference: `${original.reference}-reversal`,
+        provider,
+        providerReference: null,
+        type: 'withdrawal_reversal',
+        status: 'completed',
+        reversesTransactionId: original.id,
+        amount: amount.amount,
+        currency,
+        senderWalletId: null,
+        recipientWalletId: wallet.id,
+        metadata: { reason } satisfies WithdrawalReversalTransactionMetadata,
+      }),
+    );
+
+    const entryRepo = manager.getRepository(LedgerEntry);
+    await entryRepo.save([
+      entryRepo.create({
+        transactionId: reversal.id,
+        accountId: wallet.id,
+        direction: 'credit',
+        amount: walletCredit.amount,
+        runningBalance: newWalletBalance.amount,
+      }),
+      entryRepo.create({
+        transactionId: reversal.id,
+        accountId: float.id,
+        direction: 'debit',
+        amount: floatDebit.amount,
+        runningBalance: newFloatBalance.amount,
+      }),
+      entryRepo.create({
+        transactionId: reversal.id,
+        accountId: feeIncome.id,
+        direction: 'debit',
+        amount: platformFee.amount,
+        runningBalance: newFeeIncomeBalance.amount,
+      }),
+      entryRepo.create({
+        transactionId: reversal.id,
+        accountId: feeExpense.id,
+        direction: 'credit',
+        amount: providerFee.amount,
+        runningBalance: newFeeExpenseBalance.amount,
+      }),
+      entryRepo.create({
+        transactionId: reversal.id,
+        accountId: feeRecovery.id,
+        direction: 'debit',
+        amount: providerFee.amount,
+        runningBalance: newFeeRecoveryBalance.amount,
+      }),
+    ]);
+
+    return {
+      reversalTransactionId: reversal.id,
+      originalTransactionId: original.id,
+      reference: original.reference,
+      userId: wallet.userId!,
+      amount,
+      createdAt: reversal.createdAt,
+    };
+  }
+
+  /**
+   * Finalizes a withdrawal the payout webhook reports as successful (issue
+   * #29) — posts no new entries, since postWithdrawal already posted the
+   * full §4.2 leg set debit-first at initiation; this only flips the
+   * transaction from `pending` to its terminal `completed` status. Covers
+   * both `pending` origins the webhook must resolve: a payout Kora
+   * synchronously `accepted`, and one left `pending` after an `unknown`
+   * initiate outcome (see InitiatePayoutResult) — from here they're
+   * identical, just a pending withdrawal that now has a final answer.
+   * Idempotent the same way postFunding/reverseWithdrawal are: the
+   * pending -> completed transition is one atomic guarded UPDATE.
+   *
+   * A provider-reported amount that doesn't match what was actually
+   * requested is *not* completed — unlike postFunding, nothing here can
+   * safely fail the transaction instead, since the debit already happened;
+   * silently completing on an unverified figure risks confirming a payout
+   * that didn't really match what left the wallet. Left pending and logged
+   * loudly for investigation rather than guessed at automatically.
+   */
+  async completeWithdrawal(
+    params: CompleteWithdrawalParams,
+  ): Promise<CompleteWithdrawalResult | null> {
+    return runInTransaction(this.dataSource, async (manager) => {
+      const transaction = await manager.getRepository(Transaction).findOneBy({
+        reference: params.reference,
+        type: 'withdrawal',
+      });
+      if (!transaction) {
+        this.logger.error(
+          `completeWithdrawal: no withdrawal transaction found for reference "${params.reference}"`,
+        );
+        return null;
+      }
+
+      if (params.providerReportedAmount.amount !== transaction.amount) {
+        this.logger.error(
+          `completeWithdrawal: provider-reported amount (${params.providerReportedAmount.toDecimalString()}) does not match the requested amount (${Money.of(transaction.amount, transaction.currency).toDecimalString()}) for reference "${params.reference}" — leaving pending for investigation instead of completing on an unverified amount`,
+        );
+        return null;
+      }
+
+      const updateResult = await manager
+        .createQueryBuilder()
+        .update(Transaction)
+        .set({ status: 'completed' })
+        .where('reference = :reference', { reference: params.reference })
+        .andWhere('status = :pending', { pending: 'pending' })
+        .execute();
+      if (!updateResult.affected) {
+        if (transaction.status === 'reversed') {
+          // Not an ordinary duplicate: the provider is now reporting
+          // success for a withdrawal this system already reversed as a
+          // confirmed failure — a genuine contradiction worth operational
+          // attention, not silent noise indistinguishable from a routine
+          // redelivered webhook.
+          this.logger.error(
+            `completeWithdrawal: success reported for reference "${params.reference}", but this transaction was already reversed — provider and ledger disagree on outcome, needs investigation`,
+          );
+        } else {
+          this.logger.debug(
+            `completeWithdrawal: no pending withdrawal for reference "${params.reference}" — duplicate delivery or already resolved`,
+          );
+        }
+        return null;
+      }
+
+      const wallet = await manager
+        .getRepository(Account)
+        .findOneByOrFail({ id: transaction.senderWalletId! });
+
+      return {
+        transactionId: transaction.id,
+        reference: transaction.reference,
+        userId: wallet.userId!,
+        amount: Money.of(transaction.amount, transaction.currency),
+      };
+    });
   }
 }

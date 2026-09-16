@@ -1,7 +1,9 @@
 import { Module } from '@nestjs/common';
+import { JwtModule } from '@nestjs/jwt';
 import { TerminusModule } from '@nestjs/terminus';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { APP_CONFIG, AppConfig } from './config';
 import { ConfigModule } from './config/config.module';
 import { DatabaseModule } from './database/database.module';
 import { LoggerModule } from './logger/logger.module';
@@ -15,6 +17,7 @@ import { UsersModule } from './modules/users/users.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { TransfersModule } from './modules/transfers/transfers.module';
+import { WithdrawalsModule } from './modules/withdrawals/withdrawals.module';
 
 @Module({
   imports: [
@@ -25,12 +28,18 @@ import { TransfersModule } from './modules/transfers/transfers.module';
     RateLimitModule,
     RedisModule,
     EventBusModule,
+    JwtModule.registerAsync({
+      global: true,
+      inject: [APP_CONFIG],
+      useFactory: (config: AppConfig) => ({ secret: config.jwt.secret }),
+    }),
     NotificationsModule,
     LedgerModule,
     UsersModule,
     AuthModule,
     PaymentsModule,
     TransfersModule,
+    WithdrawalsModule,
     TerminusModule,
   ],
   controllers: [AppController],

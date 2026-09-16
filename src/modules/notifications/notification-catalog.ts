@@ -98,6 +98,37 @@ export interface MoneyRequestPaidPayload {
   moneyRequestId: string;
 }
 
+export interface WithdrawalInitiatedPayload {
+  userId: string;
+  email: string;
+  amount: string;
+  currency: string;
+  bankName: string;
+  accountNumberLast4: string;
+  // The withdrawal transaction's own reference — same dedupe-key reasoning
+  // as FundingCompletedPayload above.
+  reference: string;
+}
+
+export interface WithdrawalCompletedPayload {
+  userId: string;
+  email: string;
+  amount: string;
+  currency: string;
+  // The withdrawal transaction's own reference — same dedupe-key reasoning
+  // as FundingCompletedPayload above.
+  reference: string;
+}
+
+export interface WithdrawalFailedPayload {
+  userId: string;
+  email: string;
+  amount: string;
+  currency: string;
+  reference: string;
+  reason: string;
+}
+
 export interface ReconciliationMismatchPayload {
   email: string;
   provider: string;
@@ -120,6 +151,9 @@ export interface NotificationPayloadMap {
   money_request_created: MoneyRequestCreatedPayload;
   money_request_declined: MoneyRequestDeclinedPayload;
   money_request_paid: MoneyRequestPaidPayload;
+  withdrawal_initiated: WithdrawalInitiatedPayload;
+  withdrawal_completed: WithdrawalCompletedPayload;
+  withdrawal_failed: WithdrawalFailedPayload;
   reconciliation_mismatch: ReconciliationMismatchPayload;
 }
 
@@ -159,6 +193,14 @@ export const NOTIFICATION_CATALOG = {
   money_request_created: { channels: ['email', 'push', 'in_app'] },
   money_request_declined: { channels: ['email', 'push', 'in_app'] },
   money_request_paid: { channels: ['email', 'push', 'in_app'] },
+  // Email only for this issue (#28) — push/in_app follow the same pattern
+  // as transfer_sent if a later issue asks for them; not scaffolded ahead
+  // of that need.
+  withdrawal_initiated: { channels: ['email'] },
+  // Email only for this issue (#29) — same reasoning as withdrawal_initiated
+  // above.
+  withdrawal_completed: { channels: ['email'] },
+  withdrawal_failed: { channels: ['email'] },
   reconciliation_mismatch: { channels: ['email'] },
 } as const satisfies NotificationCatalogShape;
 

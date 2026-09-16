@@ -7,7 +7,7 @@ import {
 } from './support/auth-test-context';
 import {
   createAuthTestHelpers,
-  extractVerificationToken,
+  extractSixDigitCode,
 } from './support/auth-test-helpers';
 
 jest.setTimeout(120_000);
@@ -37,7 +37,7 @@ describe('password reset', () => {
       .send({ email: user.email })
       .expect(200);
     const sent = await helpers.waitForPasswordResetEmail(user.email);
-    expect(sent.text).toContain('token=');
+    expect(extractSixDigitCode(sent.text)).toMatch(/^\d{6}$/);
 
     await request(ctx.app.getHttpServer())
       .post('/auth/password-reset/request')
@@ -74,7 +74,7 @@ describe('password reset', () => {
     expect(ctx.emailAdapter.sent.length).toBe(emailsBefore);
   });
 
-  it('completes a reset with a valid token: new password works, old one does not, and the token is single-use', async () => {
+  it('completes a reset with a valid code: new password works, old one does not, and the code is single-use', async () => {
     const { user } = await helpers.registerUser({
       email: 'reset-complete@example.com',
       username: 'reset_complete_user',
@@ -86,12 +86,12 @@ describe('password reset', () => {
       .send({ email: user.email })
       .expect(200);
     const sent = await helpers.waitForPasswordResetEmail(user.email);
-    const token = extractVerificationToken(sent.text);
+    const code = extractSixDigitCode(sent.text);
 
     await request(ctx.app.getHttpServer())
       .post('/auth/password-reset/complete')
       .send({
-        token,
+        code,
         newPassword: 'a-brand-new-passphrase',
         revokeOtherSessions: false,
       })
@@ -110,18 +110,18 @@ describe('password reset', () => {
     await request(ctx.app.getHttpServer())
       .post('/auth/password-reset/complete')
       .send({
-        token,
+        code,
         newPassword: 'yet-another-passphrase',
         revokeOtherSessions: false,
       })
       .expect(410);
   });
 
-  it('rejects an unrecognized token over HTTP with a clear error, distinct from a malformed request', async () => {
+  it('rejects an unrecognized code over HTTP with a clear error, distinct from a malformed request', async () => {
     await request(ctx.app.getHttpServer())
       .post('/auth/password-reset/complete')
       .send({
-        token: 'never-issued-token',
+        code: 'never-issued-code',
         newPassword: 'a-brand-new-passphrase',
         revokeOtherSessions: false,
       })
@@ -132,7 +132,7 @@ describe('password reset', () => {
     await request(ctx.app.getHttpServer())
       .post('/auth/password-reset/complete')
       .send({
-        token: 'irrelevant-token',
+        code: 'irrelevant-code',
         newPassword: 'a-brand-new-passphrase',
       })
       .expect(400);
@@ -156,12 +156,12 @@ describe('password reset', () => {
       .send({ email: user.email })
       .expect(200);
     const sent = await helpers.waitForPasswordResetEmail(user.email);
-    const token = extractVerificationToken(sent.text);
+    const code = extractSixDigitCode(sent.text);
 
     await request(ctx.app.getHttpServer())
       .post('/auth/password-reset/complete')
       .send({
-        token,
+        code,
         newPassword: 'a-brand-new-passphrase',
         revokeOtherSessions: true,
       })
@@ -187,12 +187,12 @@ describe('password reset', () => {
       .send({ email: user.email })
       .expect(200);
     const sent = await helpers.waitForPasswordResetEmail(user.email);
-    const token = extractVerificationToken(sent.text);
+    const code = extractSixDigitCode(sent.text);
 
     await request(ctx.app.getHttpServer())
       .post('/auth/password-reset/complete')
       .send({
-        token,
+        code,
         newPassword: 'a-brand-new-passphrase',
         revokeOtherSessions: false,
       })

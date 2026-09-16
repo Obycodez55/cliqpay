@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
-import { JwtModule } from '@nestjs/jwt';
 import { TypeOrmModule, getRepositoryToken } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
@@ -72,12 +71,6 @@ const PUSH_ADAPTERS = {
 // everything on fakes (EMAIL_PROVIDER=fake etc., the .env.example default).
 @Module({
   imports: [
-    // Only the notifications list/unread-count/mark-read endpoints need
-    // this — every other provider here is queue-driven, not HTTP.
-    JwtModule.registerAsync({
-      inject: [APP_CONFIG],
-      useFactory: (config: AppConfig) => ({ secret: config.jwt.secret }),
-    }),
     TypeOrmModule.forFeature([PushToken, Notification]),
     BullModule.registerQueue({ name: DOMAIN_EVENTS_QUEUE }),
     BullModule.registerQueue({ name: PRIORITY_DISPATCH_QUEUE }),
