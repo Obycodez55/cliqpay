@@ -1370,9 +1370,20 @@ export class LedgerService {
         .andWhere('status = :pending', { pending: 'pending' })
         .execute();
       if (!updateResult.affected) {
-        this.logger.debug(
-          `completeWithdrawal: no pending withdrawal for reference "${params.reference}" — duplicate delivery or already resolved`,
-        );
+        if (transaction.status === 'reversed') {
+          // Not an ordinary duplicate: the provider is now reporting
+          // success for a withdrawal this system already reversed as a
+          // confirmed failure — a genuine contradiction worth operational
+          // attention, not silent noise indistinguishable from a routine
+          // redelivered webhook.
+          this.logger.error(
+            `completeWithdrawal: success reported for reference "${params.reference}", but this transaction was already reversed — provider and ledger disagree on outcome, needs investigation`,
+          );
+        } else {
+          this.logger.debug(
+            `completeWithdrawal: no pending withdrawal for reference "${params.reference}" — duplicate delivery or already resolved`,
+          );
+        }
         return null;
       }
 

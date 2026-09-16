@@ -48,6 +48,12 @@ import {
   WithdrawalAmountTooSmallException,
   WithdrawalPayoutFailedException,
 } from './internal/errors';
+import {
+  decryptSecret,
+  encryptSecret,
+  encryptionKeyFromHex,
+  hmacHex,
+} from '../../shared/crypto/secrets.util';
 
 // Structural, not imported from payments/adapters — that path isn't a
 // cross-module entry point (only PaymentsService itself is), same reasoning
@@ -59,6 +65,17 @@ type ResolveBankAccountResult = Awaited<
 const NGN = 'NGN'; // Withdrawals are NGN-only for now — same as transfers (issue #28).
 const PROVIDER = 'kora'; // Same single-active-provider assumption payments.service.ts's fundWallet makes.
 
+// `ledger`'s transactions.metadata is at-rest storage too, and has no
+// operational need for the full number once the payout call has already
+// been made with it — only the masked form goes into the snapshot ledger
+// stores, so a second plaintext copy doesn't sit outside bank_accounts'
+// encrypted column.
+function maskAccountNumber(accountNumber: string): string {
+  return (
+    '*'.repeat(Math.max(accountNumber.length - 4, 0)) + accountNumber.slice(-4)
+  );
+}
+
 /**
  * The one exported surface of the withdrawals module — see
  * docs/architecture.md §10 and ADR-0014. Owns `bank_accounts`; reaches
@@ -68,6 +85,7 @@ const PROVIDER = 'kora'; // Same single-active-provider assumption payments.serv
 @Injectable()
 export class WithdrawalsService {
   private readonly logger = new Logger(WithdrawalsService.name);
+  private readonly encryptionKey: Buffer;
 
   constructor(
     @InjectRepository(BankAccount)
@@ -78,7 +96,21 @@ export class WithdrawalsService {
     private readonly usersService: UsersService,
     private readonly eventBus: EventBusService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
-  ) {}
+  ) {
+    this.encryptionKey = encryptionKeyFromHex(config.encryption.key);
+  }
+
+  // docs/architecture.md §7 requires bank account numbers encrypted at
+  // rest — `accountNumberCiphertext` holds the recoverable value,
+  // `accountNumberHash` a deterministic HMAC used only for the uniqueness
+  // constraint (a fresh IV means two encryptions of the same number never
+  // match, so the ciphertext itself can't back that check).
+  private decryptAccountNumber(bankAccount: BankAccount): string {
+    return decryptSecret(
+      bankAccount.accountNumberCiphertext,
+      this.encryptionKey,
+    );
+  }
 
   // Step 1 of 2 — fires unconditionally regardless of trusted-device status
   // (docs/architecture.md §3.8 lists "bank accounts" among the changes
@@ -115,7 +147,11 @@ export class WithdrawalsService {
       provider: PROVIDER,
       bankCode: dto.bankCode,
       bankName: resolved.bankName,
-      accountNumber: dto.accountNumber,
+      accountNumberCiphertext: encryptSecret(
+        dto.accountNumber,
+        this.encryptionKey,
+      ),
+      accountNumberHash: hmacHex(dto.accountNumber, this.encryptionKey),
       accountName: resolved.accountName,
     });
 
@@ -123,14 +159,17 @@ export class WithdrawalsService {
       await this.bankAccountRepo.save(bankAccount);
     } catch (error) {
       if (
-        isUniqueViolation(error, 'UQ_bank_accounts_user_provider_bank_account')
+        isUniqueViolation(
+          error,
+          'UQ_bank_accounts_user_provider_bank_account_hash',
+        )
       ) {
         throw new BankAccountAlreadySavedException();
       }
       throw error;
     }
 
-    return toBankAccountResponse(bankAccount);
+    return toBankAccountResponse(bankAccount, dto.accountNumber);
   }
 
   // No "default" flag (issue #27) — every saved account is returned,
@@ -141,7 +180,12 @@ export class WithdrawalsService {
       where: { userId },
       order: { createdAt: 'DESC' },
     });
-    return bankAccounts.map(toBankAccountResponse);
+    return bankAccounts.map((bankAccount) =>
+      toBankAccountResponse(
+        bankAccount,
+        this.decryptAccountNumber(bankAccount),
+      ),
+    );
   }
 
   // Issue #30. `withdrawals` owns this history the same way `ledger` owns
@@ -233,6 +277,8 @@ export class WithdrawalsService {
     // PIN again, mirroring TransfersService.executeTransfer.
     await this.authService.verifyTransactionPin(userId, dto.pin);
 
+    const accountNumber = this.decryptAccountNumber(bankAccount);
+
     let posted: PostWithdrawalResult;
     try {
       posted = await this.ledgerService.postWithdrawal({
@@ -246,7 +292,7 @@ export class WithdrawalsService {
           id: bankAccount.id,
           bankCode: bankAccount.bankCode,
           bankName: bankAccount.bankName,
-          accountNumber: bankAccount.accountNumber,
+          accountNumber: maskAccountNumber(accountNumber),
           accountName: bankAccount.accountName,
         },
       });
@@ -280,7 +326,7 @@ export class WithdrawalsService {
       reference: dto.reference,
       amount,
       bankCode: bankAccount.bankCode,
-      accountNumber: bankAccount.accountNumber,
+      accountNumber,
       accountName: bankAccount.accountName,
       customerEmail: user.email,
     });
@@ -298,7 +344,12 @@ export class WithdrawalsService {
       );
     }
 
-    await this.publishWithdrawalInitiatedEvent(posted, bankAccount, user);
+    await this.publishWithdrawalInitiatedEvent(
+      posted,
+      bankAccount,
+      accountNumber,
+      user,
+    );
 
     return {
       reference: posted.reference,
@@ -365,6 +416,7 @@ export class WithdrawalsService {
   private async publishWithdrawalInitiatedEvent(
     result: PostWithdrawalResult,
     bankAccount: BankAccount,
+    accountNumber: string,
     user: { email: string },
   ): Promise<void> {
     try {
@@ -376,7 +428,7 @@ export class WithdrawalsService {
           amount: result.amount.toDecimalString(),
           currency: result.amount.currency,
           bankName: bankAccount.bankName,
-          accountNumberLast4: bankAccount.accountNumber.slice(-4),
+          accountNumberLast4: accountNumber.slice(-4),
           reference: result.reference,
         },
         occurredAt: new Date(),

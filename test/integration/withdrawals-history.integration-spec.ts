@@ -126,10 +126,13 @@ describe('GET /withdrawals', () => {
     for (const item of body.items) {
       expect(item.status).toBe('pending');
       expect(item.providerFee).toEqual({ amount: '3000', currency: 'NGN' });
+      // The number in ledger's stored metadata is masked (only the entity's
+      // encrypted column holds the full value) — see
+      // WithdrawalsService.maskAccountNumber.
       expect(item.bankAccount).toEqual({
         bankCode: sender.bankAccount.bankCode,
         bankName: sender.bankAccount.bankName,
-        accountNumber: sender.bankAccount.accountNumber,
+        accountNumber: '******0002',
         accountName: sender.bankAccount.accountName,
       });
     }

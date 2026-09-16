@@ -15,8 +15,14 @@ import {
   buildTestAppConfig,
   buildTestConfigModule,
   buildTestJwtModule,
+  TEST_ENCRYPTION_KEY,
   TEST_PIN_PEPPER,
 } from './test-app-config';
+import {
+  encryptSecret,
+  encryptionKeyFromHex,
+  hmacHex,
+} from '../../../src/shared/crypto/secrets.util';
 import { CreateUsersAndAccounts1784628665852 } from '../../../src/database/migrations/1784628665852-CreateUsersAndAccounts';
 import { CreateSessions1784642459395 } from '../../../src/database/migrations/1784642459395-CreateSessions';
 import { CreatePushTokens1784616220824 } from '../../../src/database/migrations/1784616220824-CreatePushTokens';
@@ -35,6 +41,7 @@ import { AddTransactionPinLockoutToCredentials1785491931164 } from '../../../src
 import { CreateNotifications1786812506579 } from '../../../src/database/migrations/1786812506579-CreateNotifications';
 import { CreateBankAccounts1787200000000 } from '../../../src/database/migrations/1787200000000-CreateBankAccounts';
 import { AddWithdrawalReversalTransactionType1787300000000 } from '../../../src/database/migrations/1787300000000-AddWithdrawalReversalTransactionType';
+import { EncryptBankAccountNumbers1787400000000 } from '../../../src/database/migrations/1787400000000-EncryptBankAccountNumbers';
 import { CreateTransactionsAndLedgerEntries1784707276066 } from '../../../src/database/migrations/1784707276066-CreateTransactionsAndLedgerEntries';
 import { AddFundingQueryIndexes1785488695081 } from '../../../src/database/migrations/1785488695081-AddFundingQueryIndexes';
 import { EnforceLedgerEntriesAppendOnly1785491930164 } from '../../../src/database/migrations/1785491930164-EnforceLedgerEntriesAppendOnly';
@@ -158,6 +165,7 @@ export async function createWithdrawalsTestContext(
   await new CreateNotifications1786812506579().up(queryRunner);
   await new CreateBankAccounts1787200000000().up(queryRunner);
   await new AddWithdrawalReversalTransactionType1787300000000().up(queryRunner);
+  await new EncryptBankAccountNumbers1787400000000().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 
@@ -352,6 +360,10 @@ export async function fundWallet(
 // saveBankAccount flow — same "exercising the other flow isn't what these
 // tests are about" reasoning as seedWithdrawalUser above; issue #27's own
 // spec already covers that flow.
+// Returns the plaintext `accountNumber` alongside the saved entity — the
+// entity itself only ever holds the ciphertext (docs/architecture.md §7),
+// and tests need the plaintext to assert against API responses without
+// each one reaching for the encryption key itself.
 export async function seedBankAccount(
   ctx: WithdrawalsTestContext,
   args: {
@@ -361,14 +373,18 @@ export async function seedBankAccount(
     bankName?: string;
     accountName?: string;
   },
-): Promise<BankAccount> {
+): Promise<BankAccount & { accountNumber: string }> {
+  const accountNumber = args.accountNumber ?? '0000000000';
+  const encryptionKey = encryptionKeyFromHex(TEST_ENCRYPTION_KEY);
   const bankAccount = ctx.bankAccountRepo.create({
     userId: args.userId,
     provider: 'kora',
     bankCode: args.bankCode ?? '033',
     bankName: args.bankName ?? 'United Bank for Africa',
-    accountNumber: args.accountNumber ?? '0000000000',
+    accountNumberCiphertext: encryptSecret(accountNumber, encryptionKey),
+    accountNumberHash: hmacHex(accountNumber, encryptionKey),
     accountName: args.accountName ?? 'Ada Lovelace',
   });
-  return ctx.bankAccountRepo.save(bankAccount);
+  const saved = await ctx.bankAccountRepo.save(bankAccount);
+  return Object.assign(saved, { accountNumber });
 }

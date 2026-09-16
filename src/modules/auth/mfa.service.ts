@@ -20,14 +20,16 @@ import {
   TotpAlreadyEnrolledException,
 } from './internal/errors';
 import {
-  decryptSecret,
-  encryptSecret,
-  encryptionKeyFromHex,
   generateNumericCode,
   generateOpaqueToken,
   hashOpaqueToken,
 } from './internal/secrets.util';
 import { DeviceMetadata } from './internal/device-metadata.util';
+import {
+  decryptSecret,
+  encryptSecret,
+  encryptionKeyFromHex,
+} from '../../shared/crypto/secrets.util';
 
 const TOTP_ISSUER = 'Cliqpay';
 const CHALLENGE_TTL_MS = 10 * 60 * 1000; // 10 minutes
