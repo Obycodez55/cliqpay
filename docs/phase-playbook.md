@@ -68,6 +68,16 @@ Before considering the phase done, run every scenario as a real client would —
 - If test setup requires destroying and recreating a test account mid-run (e.g. a lost password), that's fine — this data is disposable — but don't fabricate state via direct DB writes to skip a step; only reset state that's already been proven once via a real request (e.g. clearing a lockout counter after the lockout itself was already confirmed via real failed-login requests).
 - Produce the final report as a published artifact: one line per scenario (pass/fail), a findings section with actual request/response evidence for anything unexpected, and an explicit list of anything skipped and why.
 
+## 9. Merge to master and follow the CI run through to green
+
+Opening the PR and merging it isn't the finish line — watch the CI run the merge actually triggers (`gh run list --branch master`, `gh run watch <id>`) rather than assuming a clean local test pass means a clean CI run. Environments differ (real env vars vs. local `.env`, a fresh checkout vs. an evolved working tree), and CI is the last gate before the next phase builds on top of this one.
+
+While you're looking at CI, check history for anything still unresolved — not just the run you triggered. `gh run list --limit N` across both workflows, and pull the log (`gh run view <id> --log-failed`) on anything that isn't a clean success. A failure superseded by a later green run on the same root cause is resolved, not a live gap — but confirm that from the actual logs, don't assume it self-healed. Phase 4's merge surfaced two categories worth knowing the shape of:
+- A run that fails outright with a clear error — usually already fixed by a later commit (check the workflow file's current state and comments for the fix, then confirm a subsequent run on master is green).
+- A run that never fails but hangs to GitHub's own execution ceiling (6 hours) — worse, because nothing alerts on it and it burns real Actions minutes silently. If neither workflow sets `timeout-minutes` on its job, a single hang like this can recur with no earlier warning. Set one, sized a comfortable multiple of the normal run time, not tuned to the incident.
+
+**Take note of:** this step exists because "the PR merged" and "the branch is releasable" are different claims — only CI passing on master actually supports the second one.
+
 ## Summary checklist
 
 1. `/grill-me` the phase design against `docs/architecture.md` → pin down concrete numbers, write ADRs for real decisions.
@@ -78,3 +88,4 @@ Before considering the phase done, run every scenario as a real client would —
 6. Fix real findings, Critical first, with test coverage.
 7. Housekeeping pass: comment noise, test file size, documentation drift — with real before/after numbers.
 8. `/e2e-test-local` against a fresh environment, fake providers unless real ones already work, report as an artifact with explicit skips and environment findings called out.
+9. Merge to master, then follow the triggered CI run to green — don't assume it from a clean local pass. Scan recent CI history for anything unresolved while you're there; add `timeout-minutes` to any job that doesn't have one if you find a hang instead of a clean failure.

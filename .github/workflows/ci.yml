@@ -11,6 +11,11 @@ on:
 jobs:
   lint-build-test:
     runs-on: ubuntu-latest
+    # A normal run finishes in ~3 minutes. Without this, a hung step (a
+    # leaked connection, a promise Jest never resolves) runs until GitHub's
+    # own 6-hour ceiling kills it instead of failing fast — happened once,
+    # 2026-08-16, run 31976835118, never diagnosed since it never recurred.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 

@@ -11,6 +11,9 @@ on:
 jobs:
   contract-and-fuzz:
     runs-on: ubuntu-latest
+    # Same reasoning as the CI workflow's timeout-minutes — fail fast on a
+    # hang instead of silently running until GitHub's 6-hour ceiling.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
