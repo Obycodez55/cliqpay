@@ -1,6 +1,8 @@
-# Cliqpay — Project Documentation (v11)
+# Cliqpay — Project Documentation (v12)
 
 > Cliqpay is a production-grade peer-to-peer payment platform. A Venmo-equivalent for Africa — built on NestJS, PostgreSQL, TypeORM, currently integrated with Kora.
+
+> **v12 changes:** Phase 5 design pass (chargebacks & disputes). Kora's webhook system doesn't model chargebacks/disputes at all (confirmed against its docs — only `charge.*`/`transfer.*`/`refund.*` events exist), which invalidated the original "provider webhook handling" assumption — chargebacks are admin-triggered instead, via a new internal shared-secret-gated endpoint (no `AdminUser` model exists yet; see §9). A new `disputes` module owns ingestion and lifecycle, keeping `ledger`'s zero-peer-dependency property intact (ADR-0016) — `ledger` gains `postChargeback()`, `users` gains `isFrozen` plus `freeze()`/`unfreeze()`. Freeze is strictly negative-balance-triggered (not `≤ 0`) and lifts only via dispute resolution, never automatically from a balance-restoring top-up — the freeze represents an unresolved dispute, not an arithmetic state. Resolution is two-way: `upheld` leaves the debt standing (→ collections), `resolved` posts a second compensating transaction re-crediting the user. Also: `disputes` table, partial-chargeback amount capping against the original transaction, `dispute_reference` as a dedicated dedupe key (§5); Paystack's real dispute-webhook support (`charge.dispute.*`) noted but deliberately not adopted for this alone (issue #33).
 
 > **v11 changes:** Phase 4's end-of-phase audit surfaced two gaps the v10 design pass missed. `bank_accounts.account_number` shipped as plaintext despite §7's encryption-at-rest requirement — fixed with an encrypted `account_number_ciphertext` column plus a deterministic `account_number_hash` for the uniqueness constraint ciphertext can't back (ADR-0015; §5). And nothing resolved a withdrawal left `pending` by a dropped payout webhook — Phase 2's funding self-verify poll (issue #14) had no Phase 4 counterpart; added as `verifyPayout()`/the withdrawal poll job, same shape and timing as funding's (§6 Phase 4). Also recorded: `InitiatePayoutResult`'s three-way `accepted`/`rejected`/`unknown` outcome, found during #28's own review — an `unknown` result (network error, unrecognized response) is never treated as a confirmed rejection, since debit-first already moved money before the provider call and reversing on an unconfirmed outcome risks a double-credit.
 
@@ -257,21 +259,23 @@ transaction.provider_reference: <Kora's payout reference>
 
 ---
 
-#### Chargeback / Reversal — **[v2, new]**
+#### Chargeback / Reversal — **[v2, new; v12 posting detail]**
 
 *A bank reverses a previously-completed funding transaction, after the user may have already spent part or all of it.*
 
-This is always a **compensating transaction**, never a mutation of the original entries (ledger entries are append-only — see §7). It has its own row in `transactions`, with `type = chargeback`, `reverses_transaction_id` pointing at the original funding transaction, and the same `provider` value as the original.
+This is always a **compensating transaction**, never a mutation of the original entries (ledger entries are append-only — see §7). It has its own row in `transactions`, with `type = chargeback`, `reverses_transaction_id` pointing at the original funding transaction, and the same `provider` value as the original. **[v12]** Posted via `ledger.postChargeback()` — the one posting method in the system that deliberately does not enforce a sufficient-balance check, since going negative is the entire point (see [ADR-0016](adr/0016-disputes-module-boundary.md)). Partial chargebacks are allowed; the amount is capped against `original_net_amount` minus whatever has already been charged back against the same `reverses_transaction_id`.
 
 ```
-DEBIT  user_wallet  original_net_amount
-CREDIT float_ngn    original_net_amount
+DEBIT  user_wallet  amount
+CREDIT float_ngn    amount
 
 metadata: { dispute_reference }
 
 ```
 
-If the user has already spent some of the funded amount, `user_wallet` legitimately goes **negative** — that negative balance is the user's real debt to Cliqpay, and should be surfaced explicitly (see Phase 5) rather than treated as an error state.
+If the user has already spent some of the funded amount, `user_wallet` legitimately goes **negative** — that negative balance is the user's real debt to Cliqpay, and should be surfaced explicitly (see Phase 5) rather than treated as an error state. **[v12]** The freeze threshold is strictly `< 0`, not `≤ 0` — a chargeback that exactly zeroes the balance leaves nothing owed, so nothing to hold the account against.
+
+**[v12] Dispute resolution can reverse this a second time.** If a dispute resolves in Cliqpay's favor (the bank/card network overturns its own ruling), a second compensating transaction posts in the opposite direction — `DEBIT float_ngn / CREDIT user_wallet` for the same amount — restoring the balance and, once non-negative, lifting the freeze. If the dispute is instead upheld, no further posting happens; the negative balance stands and the account surfaces in the collections view. See §6 Phase 5 and ADR-0016 for the full lifecycle.
 
 ---
 
@@ -398,6 +402,22 @@ bank_accounts
 
   -- unique (user_id, provider, bank_code, account_number_hash)
 
+-- [v12] Phase 5 — owned by `disputes` (see ADR-0016). `user_id` is
+-- deliberately not stored — derivable via chargeback_transaction_id ->
+-- accounts.user_id, and storing it redundantly risks drift (same reasoning
+-- as sender_wallet_id/recipient_wallet_id being denormalized-not-authoritative
+-- elsewhere in this schema).
+disputes
+  id                        uuid PK
+  chargeback_transaction_id uuid                -- cross-module reference into ledger's transactions, no FK
+  dispute_reference         varchar unique      -- dedupe key; a repeat submission is rejected, not re-posted
+  status                    enum (open | resolved | upheld)
+  amount                    bigint              -- minor units, matches the chargeback transaction's amount
+  currency                  varchar
+  resolved_at               timestamptz nullable
+  created_at                timestamptz
+  updated_at                timestamptz
+
 ```
 
 > **[v9] Note on** `money_requests.status`**:** there is deliberately no
@@ -405,6 +425,15 @@ bank_accounts
 > enforced at pay time inside the posting transaction — so any query
 > surfacing requests must apply the `expires_at` predicate. Reading `status`
 > alone is wrong. See [ADR-0012](adr/0012-money-requests.md).
+
+> **[v12] Note on** `users.isFrozen`**:** boolean, default `false`, added by
+> Phase 5 but not Phase-5-specific — Phase 11's fraud work reuses it
+> directly (a `confirmed` fraud flag sets the same column; see §6 Phase 11).
+> Set only via `users`' `freeze()`/`unfreeze()` methods, called by
+> `disputes` (never automatically from a balance crossing zero via ordinary
+> funding — see §6 Phase 5 and [ADR-0016](adr/0016-disputes-module-boundary.md)).
+> `transfers` and `withdrawals` check it at the same call site as their
+> existing PIN/eligibility checks; funding and receiving P2P ignore it.
 
 > **[v9] Note on** `notifications`**:** rows are deleted after 180 days by a
 > scheduled job. This does **not** contradict the append-only rule — that
@@ -532,17 +561,23 @@ Each phase exits with a working, production-quality slice of the system. No phas
 
 ---
 
-### Phase 5 — Chargebacks & Disputes — **[v2, new]**
+### Phase 5 — Chargebacks & Disputes — **[v2, new; v12 design pass]**
 
 **Goal:** A funded transaction can be clawed back after the fact, even if the user already spent it, without the system silently losing track of the resulting debt.
 
-- Provider chargeback/dispute webhook handling
-- Chargeback recorded as a compensating transaction against the original funding (`reverses_transaction_id`)
+> **[v12] Chargeback ingestion is admin-triggered, not provider-webhook-driven.** The original assumption ("provider chargeback/dispute webhook handling") didn't survive contact with Kora's actual API — its webhook system has no chargeback/dispute event at all, only `charge.*`/`transfer.*`/`refund.*` (confirmed against Kora's docs during design). In the real world a chargeback reaches Cliqpay's ops team out-of-band — a settlement-statement line item, a merchant-dashboard notice, an email from Kora — and a human records it. Paystack, by contrast, does model this over webhooks (`charge.dispute.create`/`remind`/`resolve`), but adopting Paystack now solely to get that is out of scope for this phase — tracked separately as [issue #33](https://github.com/Obycodez55/cliqpay/issues/33), not gating Phase 5.
+>
+> **A new `disputes` module** owns ingestion, the freeze/unfreeze orchestration, and dispute-status tracking — neither `payments` (no provider call to make; owns no tables) nor `ledger` (would need to import `users` for the freeze call, breaking its zero-peer-dependency property) can take it. See [ADR-0016](adr/0016-disputes-module-boundary.md) for the full reasoning, mirroring how ADR-0011/0014 carved out `transfers`/`withdrawals`.
+
+- **[v12]** Chargeback-recording endpoint, gated by a new shared-secret internal guard (`config.internal.apiSecret` + an `X-Internal-Secret` header check) — no `AdminUser` model exists yet (§9 defers that to an unscheduled future admin panel; building one now for a single endpoint would be scaffolding ahead of need). Input: the original transaction's reference, an amount (partial chargebacks allowed, capped against `original_net_amount` minus any prior chargebacks on the same transaction), and a `dispute_reference` — unique-constrained as the dedupe key, so a re-submitted notice is rejected rather than double-posted
+- Chargeback recorded as a compensating transaction against the original funding (`reverses_transaction_id`), posted via `ledger.postChargeback()` — see §4.2's Chargeback/Reversal subsection for the posting detail, including the deliberate absence of a sufficient-balance check
 - Wallet balance may legitimately go negative — this represents real user debt, not an error state
-- Flag/freeze account when balance goes negative from a chargeback — block new outbound spend until resolved
-- Dispute status tracking (`disputed` → resolved/upheld)
-- Basic collections view — list of users with outstanding negative balances and the originating transaction
-- Email notification to user on chargeback received and on account restriction
+- **[v12]** Flag/freeze account (`users.isFrozen`) when balance goes **strictly negative** (`< 0`, not `≤ 0`) from a chargeback — a chargeback that exactly zeroes the balance leaves nothing owed, so nothing to hold the account against. Freeze blocks outbound spend (`transfers`, `withdrawals` — one pre-check each against `UsersService`, same call site as their existing PIN/eligibility checks) but not inbound (funding, receiving P2P), since blocking funding would make the debt undischargeable except through collections
+- **[v12]** Freeze is a **dispute-lifecycle state, not a balance-threshold state** — it lifts only through dispute resolution, never automatically from a top-up that restores the balance to ≥ 0. A user can pay their own debt down while remaining frozen if the underlying dispute is still open; conflating the two would let a user buy back spend access mid-investigation, defeating the point of freezing
+- **[v12]** Dispute status tracking via a new `disputes` table (`open` → `resolved` | `upheld` — see §5), separate from `transactions.status`'s existing `disputed` value, which tracks the *funding transaction's* net state (`completed` → `disputed` on chargeback → `reversed` on `upheld`, or back to `completed` on `resolved`) rather than the dispute's own paperwork state
+- **[v12]** Resolution is two-way, not a status label alone: `upheld` leaves the negative balance and freeze standing (→ collections); `resolved` (dispute overturned in Cliqpay's favor) posts a **second** compensating transaction re-crediting the user and lifts the freeze once balance is non-negative
+- Basic collections view — list of users with outstanding negative balances and the originating transaction; **[v12]** internal endpoint, same shared-secret guard, no pagination/filtering for this phase
+- Email notification to user on chargeback received and on account restriction — **[v12]** two separate domain events (`CHARGEBACK_RECEIVED_EVENT`, `ACCOUNT_FROZEN_EVENT`), since a chargeback doesn't always freeze (balance may stay ≥ 0)
 
 **Key concepts:** Compensating transactions, negative-balance handling, dispute lifecycle
 
