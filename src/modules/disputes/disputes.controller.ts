@@ -4,6 +4,8 @@ import { InternalSecretGuard } from '../../common/guards/internal-secret.guard';
 import { DisputesService } from './disputes.service';
 import { RecordChargebackDto } from './dto/record-chargeback.dto';
 import { RecordChargebackResponseDto } from './dto/record-chargeback-response.dto';
+import { ResolveDisputeDto } from './dto/resolve-dispute.dto';
+import { ResolveDisputeResponseDto } from './dto/resolve-dispute-response.dto';
 
 // Internal/ops surface, not user-facing — gated by InternalSecretGuard
 // (X-Internal-Secret header), never JwtAuthGuard. See
@@ -24,5 +26,16 @@ export class DisputesController {
     @Body() dto: RecordChargebackDto,
   ): Promise<RecordChargebackResponseDto> {
     return this.disputesService.recordChargeback(dto);
+  }
+
+  @Post('resolve')
+  @ApiOperation({
+    summary:
+      "Resolve a dispute — upheld (bank's ruling stands) or resolved in Cliqpay's favor (re-credits the user)",
+  })
+  resolveDispute(
+    @Body() dto: ResolveDisputeDto,
+  ): Promise<ResolveDisputeResponseDto> {
+    return this.disputesService.resolveDispute(dto);
   }
 }

@@ -33,3 +33,35 @@ export class OriginalTransactionNotDisputableException extends DomainException {
     );
   }
 }
+
+export class DisputeNotFoundException extends DomainException {
+  readonly code = 'DISPUTE_NOT_FOUND';
+  constructor() {
+    super('No dispute found for the given reference', HttpStatus.NOT_FOUND);
+  }
+}
+
+// Reachable for a dispute already 'resolved' or 'upheld' — a dispute
+// resolves exactly once (issue #36).
+export class DisputeAlreadyResolvedException extends DomainException {
+  readonly code = 'DISPUTE_ALREADY_RESOLVED';
+  constructor() {
+    super(
+      'This dispute has already been resolved and cannot be resolved again',
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
+// Resolution always reverses the full recorded chargeback amount, never a
+// partial one — this is the request-time confirmation of that, checked
+// against the dispute's own row (issue #36).
+export class DisputeResolutionAmountMismatchException extends DomainException {
+  readonly code = 'DISPUTE_RESOLUTION_AMOUNT_MISMATCH';
+  constructor(expectedAmount: string) {
+    super(
+      `Resolution amount must match the dispute's recorded amount (${expectedAmount})`,
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}

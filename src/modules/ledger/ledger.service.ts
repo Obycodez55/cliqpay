@@ -225,6 +225,32 @@ export interface PostChargebackResult {
   createdAt: Date;
 }
 
+// The row shape `disputes` needs to post a dispute resolved in Cliqpay's
+// favor (issue #36) — no `walletId`/`reference` the way PostChargebackParams
+// takes them: the wallet, provider, and currency are all re-derived from the
+// locked chargeback transaction row itself (same "don't trust the caller's
+// own computation" reasoning as postChargebackEntries' amount cap), and the
+// reversal's own reference is deterministic from the chargeback's (see
+// reverseWithdrawal's `-reversal` suffix for the same pattern).
+export interface PostChargebackResolutionParams {
+  chargebackTransactionId: string;
+  amount: Money;
+}
+
+export interface PostChargebackResolutionResult {
+  transactionId: string;
+  reference: string;
+  reversesTransactionId: string;
+  userId: string;
+  amount: Money;
+  newWalletBalance: Money;
+  createdAt: Date;
+}
+
+export interface UpholdChargebackResult {
+  originalTransactionId: string;
+}
+
 /**
  * The one exported surface of the ledger module — see docs/architecture.md
  * §10.
@@ -1675,6 +1701,164 @@ export class LedgerService {
       amount: params.amount,
       newWalletBalance,
       createdAt: transaction.createdAt,
+    };
+  }
+
+  // Called by `disputes.resolveDispute`'s `upheld` branch (issue #36) — the
+  // bank's ruling stands, so no money moves; this only flips the *original*
+  // funding transaction's status to `reversed` (§4.2, ADR-0016), on `ledger`'s
+  // own table, same "ledger's own bookkeeping, not dispute-domain knowledge"
+  // reasoning as postChargebackEntries flipping it to `disputed`. Always
+  // called inside the caller's own transaction (DisputesService.resolveDispute
+  // already holds a lock on the `disputes` row for the whole operation, which
+  // is what serializes a concurrent resolution attempt on the same dispute —
+  // no standalone variant exists because nothing calls this outside that
+  // shape).
+  async upholdChargebackWithinTransaction(
+    manager: EntityManager,
+    chargebackTransactionId: string,
+  ): Promise<UpholdChargebackResult> {
+    const chargeback = await manager
+      .getRepository(Transaction)
+      .findOneByOrFail({ id: chargebackTransactionId, type: 'chargeback' });
+
+    await manager
+      .getRepository(Transaction)
+      .update(
+        { id: chargeback.reversesTransactionId! },
+        { status: 'reversed' },
+      );
+
+    return { originalTransactionId: chargeback.reversesTransactionId! };
+  }
+
+  // Called by `disputes.resolveDispute`'s `resolved` branch (issue #36) — the
+  // dispute is overturned in Cliqpay's favor, so this posts the second,
+  // opposite-direction compensating transaction (§4.2): `DEBIT float_ngn /
+  // CREDIT user_wallet` for the full chargeback amount, restoring the
+  // balance it took. Same locked/atomic shape as postChargebackEntries
+  // (lock the reversed row first, then wallet+float ascending by account_id,
+  // then post) for the same concurrency-safety reasons, but no amount-cap
+  // logic — this isn't a new chargeback, and DisputesService.resolveDispute
+  // already validated the amount against the dispute's own recorded amount
+  // under its own lock on the `disputes` row before this is ever called.
+  async postChargebackResolutionWithinTransaction(
+    manager: EntityManager,
+    params: PostChargebackResolutionParams,
+  ): Promise<PostChargebackResolutionResult> {
+    return this.postChargebackResolutionEntries(manager, params);
+  }
+
+  private async postChargebackResolutionEntries(
+    manager: EntityManager,
+    params: PostChargebackResolutionParams,
+  ): Promise<PostChargebackResolutionResult> {
+    const chargeback = await manager
+      .getRepository(Transaction)
+      .createQueryBuilder('transaction')
+      .where('transaction.id = :id', { id: params.chargebackTransactionId })
+      .setLock('pessimistic_write')
+      .getOneOrFail();
+
+    const accountRepo = manager.getRepository(Account);
+    const accounts = await accountRepo
+      .createQueryBuilder('account')
+      .where(
+        new Brackets((qb) => {
+          qb.where('account.id = :walletId', {
+            walletId: chargeback.senderWalletId,
+          }).orWhere(
+            '(account.role = :float AND account.provider = :provider AND account.currency = :currency AND account.userId IS NULL)',
+            {
+              float: 'float',
+              provider: chargeback.provider,
+              currency: params.amount.currency,
+            },
+          );
+        }),
+      )
+      .orderBy('account.id', 'ASC')
+      .setLock('pessimistic_write')
+      .getMany();
+
+    const wallet = accounts.find((a) => a.id === chargeback.senderWalletId);
+    const float = accounts.find((a) => a.role === 'float');
+    if (!wallet || !float) {
+      throw new Error(
+        `postChargebackResolution: missing one of wallet/float accounts for chargeback transaction "${params.chargebackTransactionId}"`,
+      );
+    }
+
+    const newWalletBalance = Money.of(wallet.balance, wallet.currency).add(
+      params.amount,
+    );
+    const newFloatBalance = Money.of(float.balance, float.currency).subtract(
+      params.amount,
+    );
+
+    wallet.balance = newWalletBalance.amount;
+    float.balance = newFloatBalance.amount;
+    // §2: the cache is written in the same DB transaction, from the same
+    // computation that produces the ledger entries below — one place.
+    await accountRepo.save([wallet, float]);
+
+    const transactionRepo = manager.getRepository(Transaction);
+    const resolution = await transactionRepo.save(
+      transactionRepo.create({
+        // Deterministic from the chargeback's own (unique) reference, not a
+        // fresh UUID — same "collide on UQ_transactions_reference as a second
+        // line of defense" reasoning as reverseWithdrawal's `-reversal`
+        // suffix.
+        reference: `${chargeback.reference}-resolved`,
+        provider: chargeback.provider,
+        providerReference: null,
+        type: 'chargeback_reversal',
+        status: 'completed',
+        reversesTransactionId: chargeback.id,
+        amount: params.amount.amount,
+        currency: params.amount.currency,
+        senderWalletId: null,
+        recipientWalletId: wallet.id,
+        metadata:
+          chargeback.metadata as unknown as ChargebackTransactionMetadata,
+      }),
+    );
+
+    const entryRepo = manager.getRepository(LedgerEntry);
+    await entryRepo.save([
+      entryRepo.create({
+        transactionId: resolution.id,
+        accountId: float.id,
+        direction: 'debit',
+        amount: params.amount.amount,
+        runningBalance: newFloatBalance.amount,
+      }),
+      entryRepo.create({
+        transactionId: resolution.id,
+        accountId: wallet.id,
+        direction: 'credit',
+        amount: params.amount.amount,
+        runningBalance: newWalletBalance.amount,
+      }),
+    ]);
+
+    // Ledger's own bookkeeping on its own table (ADR-0016) — mirrors
+    // postChargebackEntries flipping this same column to `disputed`.
+    await manager
+      .getRepository(Transaction)
+      .update(
+        { id: chargeback.reversesTransactionId! },
+        { status: 'completed' },
+      );
+
+    return {
+      transactionId: resolution.id,
+      reference: resolution.reference,
+      reversesTransactionId: chargeback.id,
+      userId: wallet.userId!,
+      amount: params.amount,
+      newWalletBalance,
+      createdAt: resolution.createdAt,
     };
   }
 }
