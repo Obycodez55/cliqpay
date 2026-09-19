@@ -1,3 +1,4 @@
+import { DataSource, EntityManager } from 'typeorm';
 import { DisputesService } from '../disputes.service';
 import {
   LedgerService,
@@ -8,7 +9,6 @@ import { EventBusService } from '../../../shared/events/event-bus.service';
 import { Money } from '../../../shared/primitives/money';
 import { Dispute } from '../entities/dispute.entity';
 import {
-  ChargebackAmountExceedsRemainingException,
   DuplicateDisputeReferenceException,
   OriginalTransactionNotDisputableException,
   OriginalTransactionNotFoundException,
@@ -23,12 +23,14 @@ type FakeDisputeRepo = {
 describe('DisputesService', () => {
   let service: DisputesService;
   let disputeRepo: FakeDisputeRepo;
+  let fakeManager: EntityManager;
+  let dataSource: jest.Mocked<
+    Pick<DataSource, 'getRepository' | 'transaction'>
+  >;
   let ledgerService: jest.Mocked<
     Pick<
       LedgerService,
-      | 'findFundingTransactionForChargeback'
-      | 'getChargedBackAmount'
-      | 'postChargeback'
+      'findFundingTransactionForChargeback' | 'postChargebackWithinTransaction'
     >
   >;
   let usersService: jest.Mocked<Pick<UsersService, 'freeze' | 'findById'>>;
@@ -71,12 +73,27 @@ describe('DisputesService', () => {
         }),
       ),
     };
+    fakeManager = {
+      getRepository: jest.fn(() => disputeRepo),
+    } as unknown as EntityManager;
+    dataSource = {
+      getRepository: jest.fn(() => disputeRepo),
+      // Runs the callback against the same fake manager every test uses —
+      // real DataSource.transaction commits on resolve and rolls back on
+      // rejection, but nothing here asserts commit/rollback directly;
+      // that's covered by the integration spec, which hits a real Postgres.
+      transaction: jest.fn(
+        async (cb: (manager: EntityManager) => Promise<unknown>) =>
+          cb(fakeManager),
+      ),
+    } as unknown as jest.Mocked<
+      Pick<DataSource, 'getRepository' | 'transaction'>
+    >;
     ledgerService = {
       findFundingTransactionForChargeback: jest
         .fn()
         .mockResolvedValue(originalTransaction),
-      getChargedBackAmount: jest.fn().mockResolvedValue(Money.zero('NGN')),
-      postChargeback: jest
+      postChargebackWithinTransaction: jest
         .fn()
         .mockResolvedValue(postedResult(Money.of(300_000n, 'NGN'))),
     };
@@ -89,7 +106,7 @@ describe('DisputesService', () => {
     };
 
     service = new DisputesService(
-      disputeRepo as never,
+      dataSource as unknown as DataSource,
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
       eventBus as unknown as EventBusService,
@@ -113,7 +130,23 @@ describe('DisputesService', () => {
       await expect(service.recordChargeback(dto())).rejects.toThrow(
         DuplicateDisputeReferenceException,
       );
-      expect(ledgerService.postChargeback).not.toHaveBeenCalled();
+      expect(
+        ledgerService.postChargebackWithinTransaction,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('maps a unique-violation on the chargeback transaction reference to the same duplicate error', async () => {
+      const violation = Object.assign(new Error('duplicate key'), {
+        code: '23505',
+        constraint: 'UQ_transactions_reference',
+      });
+      ledgerService.postChargebackWithinTransaction.mockRejectedValue(
+        violation,
+      );
+
+      await expect(service.recordChargeback(dto())).rejects.toThrow(
+        DuplicateDisputeReferenceException,
+      );
     });
   });
 
@@ -148,52 +181,58 @@ describe('DisputesService', () => {
 
       await service.recordChargeback(dto());
 
-      expect(ledgerService.postChargeback).toHaveBeenCalled();
+      expect(ledgerService.postChargebackWithinTransaction).toHaveBeenCalled();
     });
   });
 
-  describe('amount cap', () => {
-    it('rejects an amount exceeding original_net_amount minus prior chargebacks', async () => {
-      ledgerService.getChargedBackAmount.mockResolvedValue(
-        Money.of(400_000n, 'NGN'),
+  // The amount-cap check itself (original amount minus prior chargebacks)
+  // is no longer this service's concern — it's enforced inside
+  // LedgerService.postChargeback, under the lock it holds on the original
+  // transaction row, precisely so two concurrent partial chargebacks can't
+  // both read a stale "remaining" figure (see that method's own tests and
+  // the disputes-record-chargeback integration spec's concurrency case).
+
+  describe('atomicity', () => {
+    it('posts, freezes, and writes the dispute row inside one transaction', async () => {
+      ledgerService.postChargebackWithinTransaction.mockResolvedValue(
+        postedResult(Money.of(-1n, 'NGN')),
       );
 
-      // original 500_000 - already charged back 400_000 = 100_000 remaining;
-      // requesting 200_000 exceeds it.
-      await expect(service.recordChargeback(dto())).rejects.toThrow(
-        ChargebackAmountExceedsRemainingException,
-      );
-      expect(ledgerService.postChargeback).not.toHaveBeenCalled();
+      await service.recordChargeback(dto());
+
+      expect(dataSource.transaction).toHaveBeenCalledTimes(1);
+      expect(
+        ledgerService.postChargebackWithinTransaction,
+      ).toHaveBeenCalledWith(fakeManager, expect.anything());
+      expect(usersService.freeze).toHaveBeenCalledWith(fakeManager, 'user-1');
     });
 
-    it('allows an amount exactly equal to the remaining chargebackable balance', async () => {
-      ledgerService.getChargedBackAmount.mockResolvedValue(
-        Money.of(300_000n, 'NGN'),
+    it('lets a failure inside the transaction propagate without writing a dispute row', async () => {
+      ledgerService.postChargebackWithinTransaction.mockRejectedValue(
+        new Error('posting failed'),
       );
 
-      // 500_000 - 300_000 = 200_000 remaining, requesting exactly 200_000.
-      await service.recordChargeback(dto({ amount: 200_000 }));
-
-      expect(ledgerService.postChargeback).toHaveBeenCalledWith(
-        expect.objectContaining({ amount: Money.of(200_000n, 'NGN') }),
+      await expect(service.recordChargeback(dto())).rejects.toThrow(
+        'posting failed',
       );
+      expect(disputeRepo.save).not.toHaveBeenCalled();
     });
   });
 
   describe('freeze threshold', () => {
     it('freezes the account when the resulting balance is strictly negative', async () => {
-      ledgerService.postChargeback.mockResolvedValue(
+      ledgerService.postChargebackWithinTransaction.mockResolvedValue(
         postedResult(Money.of(-1n, 'NGN')),
       );
 
       const result = await service.recordChargeback(dto());
 
-      expect(usersService.freeze).toHaveBeenCalledWith('user-1');
+      expect(usersService.freeze).toHaveBeenCalledWith(fakeManager, 'user-1');
       expect(result.accountFrozen).toBe(true);
     });
 
     it('does not freeze when the chargeback exactly zeroes the balance', async () => {
-      ledgerService.postChargeback.mockResolvedValue(
+      ledgerService.postChargebackWithinTransaction.mockResolvedValue(
         postedResult(Money.zero('NGN')),
       );
 
@@ -204,7 +243,7 @@ describe('DisputesService', () => {
     });
 
     it('does not freeze when the balance stays positive', async () => {
-      ledgerService.postChargeback.mockResolvedValue(
+      ledgerService.postChargebackWithinTransaction.mockResolvedValue(
         postedResult(Money.of(100_000n, 'NGN')),
       );
 
@@ -217,7 +256,7 @@ describe('DisputesService', () => {
 
   describe('events', () => {
     it('always publishes chargeback_received', async () => {
-      ledgerService.postChargeback.mockResolvedValue(
+      ledgerService.postChargebackWithinTransaction.mockResolvedValue(
         postedResult(Money.of(100_000n, 'NGN')),
       );
 
@@ -230,7 +269,7 @@ describe('DisputesService', () => {
     });
 
     it('publishes account_frozen only when a freeze actually happens', async () => {
-      ledgerService.postChargeback.mockResolvedValue(
+      ledgerService.postChargebackWithinTransaction.mockResolvedValue(
         postedResult(Money.of(-1n, 'NGN')),
       );
 
@@ -240,6 +279,15 @@ describe('DisputesService', () => {
         expect.objectContaining({ name: 'account_frozen' }),
       );
       expect(eventBus.publish).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not publish, but still returns the result, when fetching the email fails', async () => {
+      usersService.findById.mockRejectedValue(new Error('db blip'));
+
+      const result = await service.recordChargeback(dto());
+
+      expect(eventBus.publish).not.toHaveBeenCalled();
+      expect(result.disputeReference).toBe('dispute-ref-1');
     });
   });
 

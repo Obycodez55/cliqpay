@@ -24,7 +24,10 @@ import {
   WithdrawalReversalTransactionMetadata,
   WithdrawalTransactionMetadata,
 } from './entities/transaction.entity';
-import { InsufficientFundsException } from './internal/errors';
+import {
+  ChargebackAmountExceedsRemainingException,
+  InsufficientFundsException,
+} from './internal/errors';
 
 // Re-exported through the module's one door (this file) — `payments` needs
 // TransactionProvider for its active-(provider, currency)-pairs list (issue
@@ -1483,15 +1486,20 @@ export class LedgerService {
     };
   }
 
-  // Feeds disputes.recordChargeback's amount-cap check (§4.2, ADR-0016) —
-  // sums every completed chargeback already posted against one original
-  // funding transaction, so a caller can price `original_net_amount -
-  // charged_back_so_far` before requesting a further partial chargeback.
+  // Sums every completed chargeback already posted against one original
+  // funding transaction — used both as a read for callers pricing a
+  // prospective chargeback and, passed the caller's own locked `manager`,
+  // as the race-free half of postChargebackEntries' amount-cap enforcement
+  // (§4.2, ADR-0016). Same optional-manager-defaulting-to-dataSource shape
+  // as mergeTransactionMetadata above, for the same reason: a caller
+  // already inside a transaction needs this query to see what that
+  // transaction's own locks make visible, not a fresh implicit connection.
   async getChargedBackAmount(
     reversesTransactionId: string,
     currency: string,
+    manager: EntityManager | DataSource = this.dataSource,
   ): Promise<Money> {
-    const result = await this.dataSource
+    const result = await manager
       .getRepository(Transaction)
       .createQueryBuilder('transaction')
       .select('COALESCE(SUM(transaction.amount), 0)', 'total')
@@ -1506,16 +1514,21 @@ export class LedgerService {
 
   /**
    * The single place chargeback ledger entries are ever posted (ADR-0016)
-   * — `disputes` owns dedup on dispute_reference, the amount-cap check
-   * against the original transaction, and the freeze decision; this only
-   * knows how to move money out of a wallet into the float by reference,
-   * against whatever original transaction it's told to reverse. Unlike
-   * every other debit-posting path in the system, this deliberately does
-   * **not** enforce a sufficient-balance check — a wallet legitimately
-   * going negative here is the entire point (§4.2). Locks the original
-   * transaction row alongside the wallet/float accounts (ascending
-   * account_id, same as every other posting method) so a concurrent
+   * — `disputes` owns dedup on dispute_reference and the freeze decision;
+   * this owns the posting itself *and* the amount-cap invariant (total
+   * chargebacks against one original never exceed that original's own
+   * amount), since that's an accounting fact about the compensating entry
+   * being posted, not dispute-domain knowledge — the same category as
+   * postTransfer/postWithdrawal's own sufficient-balance checks. A cap
+   * check done by the caller *before* this locks the original row is a
+   * check-then-lock race (CLAUDE.md): two concurrent partial chargebacks
+   * against the same original could both read a stale "amount remaining"
+   * and both pass. Locking the original transaction row first and
+   * re-deriving the cap under that lock is what closes it — a concurrent
    * chargeback against the same original serializes behind this one.
+   * Unlike every other debit-posting path in the system, this deliberately
+   * does **not** enforce a sufficient-balance check on the wallet — a
+   * wallet legitimately going negative here is the entire point (§4.2).
    */
   async postChargeback(
     params: PostChargebackParams,
@@ -1523,6 +1536,17 @@ export class LedgerService {
     return runInTransaction(this.dataSource, (manager) =>
       this.postChargebackEntries(manager, params),
     );
+  }
+
+  // Lets `disputes.recordChargeback` fold the posting into its own
+  // transaction alongside the freeze decision and the `disputes` row write,
+  // so the whole operation commits or rolls back together — same pattern as
+  // postTransferWithinTransaction (MoneyRequestsService.payRequest).
+  async postChargebackWithinTransaction(
+    manager: EntityManager,
+    params: PostChargebackParams,
+  ): Promise<PostChargebackResult> {
+    return this.postChargebackEntries(manager, params);
   }
 
   private async postChargebackEntries(
@@ -1535,6 +1559,23 @@ export class LedgerService {
       .where('transaction.id = :id', { id: params.reversesTransactionId })
       .setLock('pessimistic_write')
       .getOneOrFail();
+
+    // Re-derived under the lock just acquired above, not trusted from
+    // anything a caller computed beforehand — see this method's own doc
+    // comment on why the cap has to be enforced here, not by the caller.
+    const chargedBackSoFar = await this.getChargedBackAmount(
+      original.id,
+      original.currency,
+      manager,
+    );
+    const remaining = Money.of(original.amount, original.currency).subtract(
+      chargedBackSoFar,
+    );
+    if (params.amount.greaterThan(remaining)) {
+      throw new ChargebackAmountExceedsRemainingException(
+        remaining.toDecimalString(),
+      );
+    }
 
     const accountRepo = manager.getRepository(Account);
     const accounts = await accountRepo

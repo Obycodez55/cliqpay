@@ -33,15 +33,3 @@ export class OriginalTransactionNotDisputableException extends DomainException {
     );
   }
 }
-
-// §4.2: partial chargebacks are allowed, capped at original_net_amount minus
-// whatever has already been charged back against the same transaction.
-export class ChargebackAmountExceedsRemainingException extends DomainException {
-  readonly code = 'CHARGEBACK_AMOUNT_EXCEEDS_REMAINING';
-  constructor(remaining: string) {
-    super(
-      `Chargeback amount exceeds the remaining chargebackable balance of ${remaining}`,
-      HttpStatus.UNPROCESSABLE_ENTITY,
-    );
-  }
-}

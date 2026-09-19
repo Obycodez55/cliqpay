@@ -315,4 +315,60 @@ describe('POST /disputes/chargebacks', () => {
       expect(res.status).toBe(404);
     });
   });
+
+  // Regression for the amount-cap race a review flagged: the cap was
+  // originally enforced by a pre-check in DisputesService, read before any
+  // row lock existed — two concurrent partial chargebacks against the same
+  // original could both read a stale "remaining" figure and both post,
+  // jointly exceeding the original amount. The fix moved the check inside
+  // LedgerService.postChargeback, under the lock it already takes on the
+  // original transaction row. Three concurrent 200,000 chargebacks against
+  // a 500,000 original can fit at most two (500,000 - 2*200,000 = 100,000
+  // remaining, short of a third) — so exactly two must succeed and one
+  // must be rejected, deterministically, regardless of which two happen to
+  // acquire the lock first.
+  describe('concurrency', () => {
+    it('never lets concurrent partial chargebacks against the same original jointly exceed its amount', async () => {
+      const { walletId, fundingReference } = await seedFundedUser(500_000n);
+
+      const results = await Promise.allSettled(
+        [1, 2, 3].map((i) =>
+          post(
+            {
+              originalTransactionReference: fundingReference,
+              amount: 200_000,
+              disputeReference: `dispute-${fundingReference}-race-${i}`,
+            },
+            TEST_INTERNAL_API_SECRET,
+          ),
+        ),
+      );
+
+      // Every request resolves to an HTTP response either way (supertest
+      // doesn't reject on a 4xx/5xx status) — "rejected" here would mean
+      // the request itself threw, which none should.
+      const responses = results.map((r) => {
+        if (r.status === 'rejected') throw r.reason;
+        return r.value;
+      });
+      const succeeded = responses.filter((r) => r.status === 201);
+      const rejected = responses.filter((r) => r.status === 422);
+      expect(succeeded).toHaveLength(2);
+      expect(rejected).toHaveLength(1);
+
+      const wallet = await ctx.accountRepo.findOneByOrFail({ id: walletId });
+      expect(wallet.balance).toBe(100_000n);
+
+      const chargebacks = await ctx.transactionRepo.findBy({
+        reversesTransactionId: (
+          await ctx.transactionRepo.findOneByOrFail({
+            reference: fundingReference,
+          })
+        ).id,
+      });
+      expect(chargebacks).toHaveLength(2);
+      const total = chargebacks.reduce((sum, t) => sum + t.amount, 0n);
+      expect(total).toBe(400_000n);
+    });
+  });
 });
