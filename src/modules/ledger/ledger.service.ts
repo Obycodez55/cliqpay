@@ -205,6 +205,30 @@ export interface FundingTransactionForChargeback {
   recipientWalletId: string;
 }
 
+// The row shape `disputes` needs for its collections view (issue #37) —
+// every wallet currently in negative balance. `userId` here is just
+// `accounts`' own plain-UUID column, not an import of `users` — returning
+// it doesn't touch ledger's zero-peer-dependency property (ADR-0011). No
+// dispute-domain knowledge: this is an accounting fact about `accounts`
+// alone.
+export interface NegativeBalanceWallet {
+  accountId: string;
+  userId: string;
+  balance: Money;
+}
+
+// Sibling row shape for the same collections view — an accounting fact
+// about `transactions` (which wallet a chargeback debited, how much), so
+// `disputes` can attach the originating chargeback(s) to each
+// negative-balance wallet above without querying `transactions` itself
+// (ledger owns that table).
+export interface ChargebackTransactionForWallet {
+  transactionId: string;
+  walletId: string;
+  amount: Money;
+  createdAt: Date;
+}
+
 export interface PostChargebackParams {
   walletId: string;
   amount: Money;
@@ -1510,6 +1534,51 @@ export class LedgerService {
       .andWhere('transaction.status = :status', { status: 'completed' })
       .getRawOne<{ total: string }>();
     return Money.of(BigInt(result?.total ?? '0'), currency);
+  }
+
+  // Feeds disputes.getCollections (issue #37) — every wallet currently
+  // owing Cliqpay money because of a chargeback. Compared directly on the
+  // raw bigint column via createQueryBuilder rather than a `LessThan` find
+  // operator, since a literal `0` needs no transformer round-trip the way
+  // a bound bigint parameter would.
+  async findNegativeBalanceWallets(): Promise<NegativeBalanceWallet[]> {
+    const accounts = await this.dataSource
+      .getRepository(Account)
+      .createQueryBuilder('account')
+      .where('account.role = :role', { role: 'user_wallet' })
+      .andWhere('account.balance < 0')
+      .getMany();
+    return accounts.map((account) => ({
+      accountId: account.id,
+      userId: account.userId!,
+      balance: Money.of(account.balance, account.currency),
+    }));
+  }
+
+  // Sibling lookup for the same collections view (issue #37) — every
+  // chargeback transaction posted against any of the given wallets.
+  async findChargebackTransactionsForWallets(
+    walletIds: string[],
+  ): Promise<ChargebackTransactionForWallet[]> {
+    if (walletIds.length === 0) {
+      return [];
+    }
+    const transactions = await this.dataSource.getRepository(Transaction).find({
+      where: { type: 'chargeback', senderWalletId: In(walletIds) },
+      select: {
+        id: true,
+        senderWalletId: true,
+        amount: true,
+        currency: true,
+        createdAt: true,
+      },
+    });
+    return transactions.map((transaction) => ({
+      transactionId: transaction.id,
+      walletId: transaction.senderWalletId!,
+      amount: Money.of(transaction.amount, transaction.currency),
+      createdAt: transaction.createdAt,
+    }));
   }
 
   /**

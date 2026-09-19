@@ -16,6 +16,7 @@ import {
 
 type FakeDisputeRepo = {
   findOneBy: jest.Mock<Promise<Dispute | null>, [Partial<Dispute>]>;
+  find: jest.Mock<Promise<Dispute[]>, [unknown]>;
   create: jest.Mock<Dispute, [Partial<Dispute>]>;
   save: jest.Mock<Promise<Dispute>, [Dispute]>;
 };
@@ -30,10 +31,15 @@ describe('DisputesService', () => {
   let ledgerService: jest.Mocked<
     Pick<
       LedgerService,
-      'findFundingTransactionForChargeback' | 'postChargebackWithinTransaction'
+      | 'findFundingTransactionForChargeback'
+      | 'postChargebackWithinTransaction'
+      | 'findNegativeBalanceWallets'
+      | 'findChargebackTransactionsForWallets'
     >
   >;
-  let usersService: jest.Mocked<Pick<UsersService, 'freeze' | 'findById'>>;
+  let usersService: jest.Mocked<
+    Pick<UsersService, 'freeze' | 'findById' | 'findByIds'>
+  >;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
 
   const originalTransaction = {
@@ -63,6 +69,7 @@ describe('DisputesService', () => {
       findOneBy: jest
         .fn<Promise<Dispute | null>, [Partial<Dispute>]>()
         .mockResolvedValue(null),
+      find: jest.fn<Promise<Dispute[]>, [unknown]>().mockResolvedValue([]),
       create: jest.fn((data: Partial<Dispute>) => data as Dispute),
       save: jest.fn((entity: Dispute) =>
         Promise.resolve({
@@ -96,10 +103,13 @@ describe('DisputesService', () => {
       postChargebackWithinTransaction: jest
         .fn()
         .mockResolvedValue(postedResult(Money.of(300_000n, 'NGN'))),
+      findNegativeBalanceWallets: jest.fn().mockResolvedValue([]),
+      findChargebackTransactionsForWallets: jest.fn().mockResolvedValue([]),
     };
     usersService = {
       freeze: jest.fn().mockResolvedValue(undefined),
       findById: jest.fn().mockResolvedValue({ email: 'user@example.com' }),
+      findByIds: jest.fn().mockResolvedValue([]),
     };
     eventBus = {
       publish: jest.fn().mockResolvedValue(undefined),
@@ -304,6 +314,164 @@ describe('DisputesService', () => {
           currency: 'NGN',
           resolvedAt: null,
         }),
+      );
+    });
+  });
+
+  describe('getCollections (issue #37)', () => {
+    it('returns an empty list without querying chargebacks/users when no wallet is negative', async () => {
+      ledgerService.findNegativeBalanceWallets.mockResolvedValue([]);
+
+      const result = await service.getCollections();
+
+      expect(result).toEqual([]);
+      expect(
+        ledgerService.findChargebackTransactionsForWallets,
+      ).not.toHaveBeenCalled();
+      expect(usersService.findByIds).not.toHaveBeenCalled();
+    });
+
+    it('composes a negative-balance wallet with its chargeback, dispute row, and frozen status', async () => {
+      ledgerService.findNegativeBalanceWallets.mockResolvedValue([
+        {
+          accountId: 'wallet-1',
+          userId: 'user-1',
+          balance: Money.of(-50_000n, 'NGN'),
+        },
+      ]);
+      ledgerService.findChargebackTransactionsForWallets.mockResolvedValue([
+        {
+          transactionId: 'chargeback-txn-1',
+          walletId: 'wallet-1',
+          amount: Money.of(150_000n, 'NGN'),
+          createdAt: new Date('2026-09-18T00:00:00Z'),
+        },
+      ]);
+      disputeRepo.find.mockResolvedValue([
+        {
+          id: 'dispute-1',
+          chargebackTransactionId: 'chargeback-txn-1',
+          disputeReference: 'dispute-ref-1',
+          status: 'open',
+          amount: 150_000n,
+          currency: 'NGN',
+          resolvedAt: null,
+          createdAt: new Date('2026-09-18T00:00:00Z'),
+          updatedAt: new Date('2026-09-18T00:00:00Z'),
+        },
+      ]);
+      usersService.findByIds.mockResolvedValue([
+        { id: 'user-1', isFrozen: true } as never,
+      ]);
+
+      const result = await service.getCollections();
+
+      expect(
+        ledgerService.findChargebackTransactionsForWallets,
+      ).toHaveBeenCalledWith(['wallet-1']);
+      expect(usersService.findByIds).toHaveBeenCalledWith(['user-1']);
+      expect(result).toEqual([
+        {
+          userId: 'user-1',
+          balance: { amount: '-50000', currency: 'NGN' },
+          isFrozen: true,
+          chargebacks: [
+            {
+              chargebackTransactionId: 'chargeback-txn-1',
+              amount: { amount: '150000', currency: 'NGN' },
+              disputeReference: 'dispute-ref-1',
+              disputeStatus: 'open',
+            },
+          ],
+        },
+      ]);
+    });
+
+    it('lists every chargeback contributing to a wallet, not just the most recent', async () => {
+      ledgerService.findNegativeBalanceWallets.mockResolvedValue([
+        {
+          accountId: 'wallet-1',
+          userId: 'user-1',
+          balance: Money.of(-10_000n, 'NGN'),
+        },
+      ]);
+      ledgerService.findChargebackTransactionsForWallets.mockResolvedValue([
+        {
+          transactionId: 'chargeback-txn-1',
+          walletId: 'wallet-1',
+          amount: Money.of(100_000n, 'NGN'),
+          createdAt: new Date('2026-09-01T00:00:00Z'),
+        },
+        {
+          transactionId: 'chargeback-txn-2',
+          walletId: 'wallet-1',
+          amount: Money.of(50_000n, 'NGN'),
+          createdAt: new Date('2026-09-18T00:00:00Z'),
+        },
+      ]);
+      disputeRepo.find.mockResolvedValue([
+        {
+          chargebackTransactionId: 'chargeback-txn-1',
+          disputeReference: 'dispute-ref-1',
+          status: 'resolved',
+        } as Dispute,
+        {
+          chargebackTransactionId: 'chargeback-txn-2',
+          disputeReference: 'dispute-ref-2',
+          status: 'open',
+        } as Dispute,
+      ]);
+      usersService.findByIds.mockResolvedValue([
+        { id: 'user-1', isFrozen: true } as never,
+      ]);
+
+      const result = await service.getCollections();
+
+      expect(result[0].chargebacks).toHaveLength(2);
+      expect(result[0].chargebacks.map((c) => c.disputeReference)).toEqual([
+        'dispute-ref-1',
+        'dispute-ref-2',
+      ]);
+    });
+
+    it('treats a user not returned by findByIds as not frozen rather than throwing', async () => {
+      ledgerService.findNegativeBalanceWallets.mockResolvedValue([
+        {
+          accountId: 'wallet-1',
+          userId: 'user-1',
+          balance: Money.of(-10_000n, 'NGN'),
+        },
+      ]);
+      usersService.findByIds.mockResolvedValue([]);
+
+      const result = await service.getCollections();
+
+      expect(result[0].isFrozen).toBe(false);
+    });
+
+    it('throws if a chargeback transaction has no matching dispute row', async () => {
+      ledgerService.findNegativeBalanceWallets.mockResolvedValue([
+        {
+          accountId: 'wallet-1',
+          userId: 'user-1',
+          balance: Money.of(-10_000n, 'NGN'),
+        },
+      ]);
+      ledgerService.findChargebackTransactionsForWallets.mockResolvedValue([
+        {
+          transactionId: 'chargeback-txn-1',
+          walletId: 'wallet-1',
+          amount: Money.of(100_000n, 'NGN'),
+          createdAt: new Date('2026-09-01T00:00:00Z'),
+        },
+      ]);
+      disputeRepo.find.mockResolvedValue([]);
+      usersService.findByIds.mockResolvedValue([
+        { id: 'user-1', isFrozen: false } as never,
+      ]);
+
+      await expect(service.getCollections()).rejects.toThrow(
+        /no dispute row found/,
       );
     });
   });

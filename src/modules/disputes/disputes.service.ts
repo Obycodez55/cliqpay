@@ -1,7 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource } from 'typeorm';
+import { DataSource, In } from 'typeorm';
 import {
+  ChargebackTransactionForWallet,
   FundingTransactionForChargeback,
   LedgerService,
   PostChargebackResult,
@@ -22,6 +23,10 @@ import {
   RecordChargebackResponseDto,
   toRecordChargebackResponse,
 } from './dto/record-chargeback-response.dto';
+import {
+  CollectionsEntryDto,
+  toCollectionsEntry,
+} from './dto/collections-response.dto';
 import {
   DuplicateDisputeReferenceException,
   OriginalTransactionNotDisputableException,
@@ -196,6 +201,71 @@ export class DisputesService {
       }
       throw error;
     }
+  }
+
+  // Issue #37. No pagination/filtering in this phase (flat list, current
+  // expected volume). `ledger` supplies the accounting facts (which
+  // wallets are negative, which chargebacks hit them); this composes them
+  // with each user's frozen status and the `disputes` rows those
+  // chargebacks belong to. A wallet can have more than one contributing
+  // chargeback (§4.2 partial chargebacks), so each entry lists all of
+  // them rather than picking just the most recent — see
+  // CollectionsEntryDto's own comment.
+  async getCollections(): Promise<CollectionsEntryDto[]> {
+    const wallets = await this.ledgerService.findNegativeBalanceWallets();
+    if (wallets.length === 0) {
+      return [];
+    }
+
+    const [chargebacks, users] = await Promise.all([
+      this.ledgerService.findChargebackTransactionsForWallets(
+        wallets.map((wallet) => wallet.accountId),
+      ),
+      this.usersService.findByIds(wallets.map((wallet) => wallet.userId)),
+    ]);
+
+    const disputesByChargebackId = await this.findDisputesByChargebackId(
+      chargebacks.map((chargeback) => chargeback.transactionId),
+    );
+    const isFrozenByUserId = new Map(
+      users.map((user) => [user.id, user.isFrozen]),
+    );
+    const chargebacksByWalletId = this.groupChargebacksByWalletId(chargebacks);
+
+    return wallets.map((wallet) =>
+      toCollectionsEntry(
+        wallet,
+        chargebacksByWalletId.get(wallet.accountId) ?? [],
+        disputesByChargebackId,
+        isFrozenByUserId.get(wallet.userId) ?? false,
+      ),
+    );
+  }
+
+  private groupChargebacksByWalletId(
+    chargebacks: ChargebackTransactionForWallet[],
+  ): Map<string, ChargebackTransactionForWallet[]> {
+    const byWalletId = new Map<string, ChargebackTransactionForWallet[]>();
+    for (const chargeback of chargebacks) {
+      const existing = byWalletId.get(chargeback.walletId) ?? [];
+      existing.push(chargeback);
+      byWalletId.set(chargeback.walletId, existing);
+    }
+    return byWalletId;
+  }
+
+  private async findDisputesByChargebackId(
+    chargebackTransactionIds: string[],
+  ): Promise<Map<string, Dispute>> {
+    if (chargebackTransactionIds.length === 0) {
+      return new Map();
+    }
+    const disputes = await this.dataSource.getRepository(Dispute).find({
+      where: { chargebackTransactionId: In(chargebackTransactionIds) },
+    });
+    return new Map(
+      disputes.map((dispute) => [dispute.chargebackTransactionId, dispute]),
+    );
   }
 
   private async publishChargebackReceivedEvent(
