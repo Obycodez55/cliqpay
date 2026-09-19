@@ -48,6 +48,7 @@ import { ChannelDispatchProcessor } from '../../../src/modules/notifications/int
 import { FundingPollProcessor } from '../../../src/modules/payments/internal/funding-poll.processor';
 import { WithdrawalPollProcessor } from '../../../src/modules/payments/internal/withdrawal-poll.processor';
 import { ReconciliationProcessor } from '../../../src/modules/payments/internal/reconciliation.processor';
+import { NotificationRetentionProcessor } from '../../../src/modules/notifications/internal/retention.processor';
 
 export interface PaymentsTestContext {
   postgres: StartedPostgreSqlContainer;
@@ -168,7 +169,7 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
 }
 
 // This context bootstraps PaymentsModule + NotificationsModule together,
-// which between them register 5 BullMQ queues/workers -- the only test
+// which between them register 7 BullMQ queues/workers -- the only test
 // context in this suite that does. Plain app.close() relies on
 // @nestjs/bullmq's own shutdown hook, which closes every worker
 // *gracefully* (BullExplorer.onApplicationShutdown -> worker.close()).
@@ -181,6 +182,15 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
 // skips waiting on in-flight jobs, which is fine here -- nothing is
 // mid-delivery between test cases) sidesteps it entirely; the subsequent
 // app.close() then has nothing left to gracefully wait on.
+//
+// [v2] hosts below listed only 6 of the 7 -- NotificationRetentionProcessor
+// was missing, so its worker was still closing gracefully every run. Sat
+// under the 5-worker hang threshold's margin long enough not to trigger,
+// until Phase 5 added enough extra suites/runtime to this file's CI run to
+// tip it over -- root-caused via the one suite that never printed PASS/FAIL
+// in two consecutive hung CI runs (test/integration/
+// payments-reconciliation.integration-spec.ts, the only spec in this
+// context missing from a clean local run's output), not a new bug.
 async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
   const hosts = [
     NotificationEventsProcessor,
@@ -189,6 +199,7 @@ async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
     FundingPollProcessor,
     WithdrawalPollProcessor,
     ReconciliationProcessor,
+    NotificationRetentionProcessor,
   ];
   await Promise.all(
     hosts.map(async (hostClass) => {

@@ -83,6 +83,7 @@ import { ChannelDispatchProcessor } from '../../../src/modules/notifications/int
 import { FundingPollProcessor } from '../../../src/modules/payments/internal/funding-poll.processor';
 import { WithdrawalPollProcessor } from '../../../src/modules/payments/internal/withdrawal-poll.processor';
 import { ReconciliationProcessor } from '../../../src/modules/payments/internal/reconciliation.processor';
+import { NotificationRetentionProcessor } from '../../../src/modules/notifications/internal/retention.processor';
 import { Money } from '../../../src/shared/primitives/money';
 
 // A superset of AuthTestContext's own fields (plus payments/withdrawals'
@@ -266,7 +267,9 @@ export async function createWithdrawalsTestContext(
 }
 
 // Same BullMQ multi-worker shutdown hazard as payments-test-context.ts's
-// forceCloseWorkers — see that file's comment for the full explanation.
+// forceCloseWorkers — see that file's comment for the full explanation,
+// including the [v2] note on NotificationRetentionProcessor having been
+// missing from this same list here too.
 async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
   const hosts = [
     NotificationEventsProcessor,
@@ -275,6 +278,7 @@ async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
     FundingPollProcessor,
     WithdrawalPollProcessor,
     ReconciliationProcessor,
+    NotificationRetentionProcessor,
   ];
   await Promise.all(
     hosts.map(async (hostClass) => {
