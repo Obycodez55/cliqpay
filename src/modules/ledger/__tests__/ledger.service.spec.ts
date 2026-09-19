@@ -24,6 +24,7 @@ interface FakeTransactionRepo {
     [Partial<Transaction>, Partial<Transaction>]
   >;
   find: jest.Mock<Promise<Transaction[]>, [unknown]>;
+  createQueryBuilder: jest.Mock<unknown, [string?]>;
 }
 
 describe('LedgerService', () => {
@@ -129,6 +130,7 @@ describe('LedgerService', () => {
         find: jest
           .fn<Promise<Transaction[]>, [unknown]>()
           .mockResolvedValue([]),
+        createQueryBuilder: jest.fn<unknown, [string?]>(),
       };
       // Chained builder for LedgerService's private mergeTransactionMetadata
       // (setFundingCheckoutUrl's real implementation) — a real jsonb `||`
@@ -375,6 +377,86 @@ describe('LedgerService', () => {
         }),
       );
       expect(stale).toEqual([{ reference: 'cliqpay-ref-1', currency: 'NGN' }]);
+    });
+
+    describe('findFundingTransactionForChargeback', () => {
+      it('returns null when no funding transaction matches the reference', async () => {
+        transactionRepo.findOneBy.mockResolvedValue(null);
+
+        const result =
+          await service.findFundingTransactionForChargeback('missing-ref');
+
+        expect(transactionRepo.findOneBy).toHaveBeenCalledWith({
+          reference: 'missing-ref',
+          type: 'funding',
+        });
+        expect(result).toBeNull();
+      });
+
+      it('narrows a matching funding transaction to what disputes needs', async () => {
+        transactionRepo.findOneBy.mockResolvedValue({
+          id: 'txn-1',
+          reference: 'cliqpay-ref-1',
+          status: 'completed',
+          amount: 500000n,
+          currency: 'NGN',
+          recipientWalletId: 'wallet-1',
+        } as Transaction);
+
+        const result =
+          await service.findFundingTransactionForChargeback('cliqpay-ref-1');
+
+        expect(result).toEqual({
+          id: 'txn-1',
+          status: 'completed',
+          amount: Money.of(500000n, 'NGN'),
+          recipientWalletId: 'wallet-1',
+        });
+      });
+    });
+
+    describe('getChargedBackAmount', () => {
+      it('sums prior completed chargebacks against the original transaction', async () => {
+        const chargebackQueryBuilder = {
+          select: jest.fn(),
+          where: jest.fn(),
+          andWhere: jest.fn(),
+          getRawOne: jest.fn().mockResolvedValue({ total: '150000' }),
+        };
+        chargebackQueryBuilder.select.mockReturnValue(chargebackQueryBuilder);
+        chargebackQueryBuilder.where.mockReturnValue(chargebackQueryBuilder);
+        chargebackQueryBuilder.andWhere.mockReturnValue(chargebackQueryBuilder);
+        transactionRepo.createQueryBuilder = jest
+          .fn<unknown, [string?]>()
+          .mockReturnValue(chargebackQueryBuilder);
+
+        const amount = await service.getChargedBackAmount('txn-1', 'NGN');
+
+        expect(chargebackQueryBuilder.where).toHaveBeenCalledWith(
+          'transaction.reversesTransactionId = :reversesTransactionId',
+          { reversesTransactionId: 'txn-1' },
+        );
+        expect(amount).toEqual(Money.of(150000n, 'NGN'));
+      });
+
+      it('returns zero when nothing has been charged back yet', async () => {
+        const chargebackQueryBuilder = {
+          select: jest.fn(),
+          where: jest.fn(),
+          andWhere: jest.fn(),
+          getRawOne: jest.fn().mockResolvedValue(undefined),
+        };
+        chargebackQueryBuilder.select.mockReturnValue(chargebackQueryBuilder);
+        chargebackQueryBuilder.where.mockReturnValue(chargebackQueryBuilder);
+        chargebackQueryBuilder.andWhere.mockReturnValue(chargebackQueryBuilder);
+        transactionRepo.createQueryBuilder = jest
+          .fn<unknown, [string?]>()
+          .mockReturnValue(chargebackQueryBuilder);
+
+        const amount = await service.getChargedBackAmount('txn-1', 'NGN');
+
+        expect(amount).toEqual(Money.zero('NGN'));
+      });
     });
   });
 });

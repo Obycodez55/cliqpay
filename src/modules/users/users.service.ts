@@ -173,6 +173,16 @@ export class UsersService {
     return user;
   }
 
+  // Called by `disputes` when a chargeback leaves a wallet strictly
+  // negative (ADR-0016) — freezing is a dispute-lifecycle event, never
+  // triggered automatically from a balance crossing zero. `unfreeze()`
+  // arrives with dispute resolution, not this issue.
+  async freeze(userId: string): Promise<void> {
+    await this.dataSource
+      .getRepository(User)
+      .update({ id: userId }, { isFrozen: true });
+  }
+
   async getProfile(userId: string): Promise<ProfileResponseDto> {
     const user = await this.dataSource
       .getRepository(User)

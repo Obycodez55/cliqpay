@@ -87,6 +87,14 @@ export interface WithdrawalReversalTransactionMetadata {
   reason: string;
 }
 
+// §4.2's Chargeback/Reversal posting example: `metadata: { dispute_reference }`.
+// `disputeReference` doubles as this transaction's own `reference` column
+// (LedgerService.postChargeback) — `disputes` owns dispute_reference's
+// uniqueness (ADR-0016), so reusing it here needs no second identifier.
+export interface ChargebackTransactionMetadata {
+  disputeReference: string;
+}
+
 /**
  * Metadata is shaped per transaction type, not a free-form bag — `payments`
  * writing an untyped field here and casting it back on read is exactly the
@@ -97,7 +105,8 @@ export type TransactionMetadata =
   | FundingTransactionMetadata
   | TransferTransactionMetadata
   | WithdrawalTransactionMetadata
-  | WithdrawalReversalTransactionMetadata;
+  | WithdrawalReversalTransactionMetadata
+  | ChargebackTransactionMetadata;
 
 /**
  * See docs/architecture.md §5. `sender_wallet_id`/`recipient_wallet_id` are
