@@ -349,10 +349,11 @@ export class DisputesService {
     manager: EntityManager,
     dispute: Dispute,
   ): Promise<ResolveDisputeResponseDto> {
-    await this.ledgerService.upholdChargebackWithinTransaction(
-      manager,
-      dispute.chargebackTransactionId,
-    );
+    const { originalTransactionId } =
+      await this.ledgerService.upholdChargebackWithinTransaction(
+        manager,
+        dispute.chargebackTransactionId,
+      );
 
     const disputeRepo = manager.getRepository(Dispute);
     await disputeRepo.update(
@@ -360,6 +361,15 @@ export class DisputesService {
       { status: 'upheld', resolvedAt: new Date() },
     );
     const resolved = await disputeRepo.findOneByOrFail({ id: dispute.id });
+
+    // Audit fix, issue #36: the original transaction's status must reflect
+    // every dispute against it, not just this one — a sibling partial
+    // chargeback (§4.2 allows more than one) could still be `open`, in
+    // which case the original stays `disputed`, not `reversed`.
+    await this.recomputeOriginalTransactionStatus(
+      manager,
+      originalTransactionId,
+    );
 
     return toResolveDisputeResponse(resolved, false);
   }
@@ -377,14 +387,6 @@ export class DisputesService {
         },
       );
 
-    // §4.2/ADR-0016/issue #36: `>= 0`, unlike the freeze threshold's
-    // strict `< 0` — a resolution that brings the balance back to exactly
-    // zero leaves nothing owed, so the freeze lifts.
-    const accountUnfrozen = !posted.newWalletBalance.isNegative();
-    if (accountUnfrozen) {
-      await this.usersService.unfreeze(manager, posted.userId);
-    }
-
     const disputeRepo = manager.getRepository(Dispute);
     await disputeRepo.update(
       { id: dispute.id },
@@ -392,7 +394,100 @@ export class DisputesService {
     );
     const resolved = await disputeRepo.findOneByOrFail({ id: dispute.id });
 
+    // Audit fix, issue #36: same reasoning as resolveAsUpheld above — the
+    // original transaction's status has to account for every dispute
+    // against it, not just this one.
+    await this.recomputeOriginalTransactionStatus(
+      manager,
+      posted.originalTransactionId,
+    );
+
+    // §4.2/ADR-0016/issue #36: `>= 0`, unlike the freeze threshold's
+    // strict `< 0` — a resolution that brings the balance back to exactly
+    // zero leaves nothing owed. But a user can be frozen from more than
+    // one chargeback at once (different original transactions, each with
+    // its own amount cap — the cap is scoped per transaction, not per
+    // wallet), so this balance alone isn't sufficient to unfreeze: audit
+    // fix, issue #36. Without this, resolving one dispute in Cliqpay's
+    // favor could unfreeze a user while a second, unrelated dispute is
+    // still open — exactly the balance-threshold-vs-dispute-lifecycle
+    // bypass ADR-0016 says freeze/unfreeze must never allow.
+    const balanceNonNegative = !posted.newWalletBalance.isNegative();
+    const accountUnfrozen =
+      balanceNonNegative &&
+      !(await this.hasOtherOpenDisputeForWallet(manager, posted.walletId));
+    if (accountUnfrozen) {
+      await this.usersService.unfreeze(manager, posted.userId);
+    }
+
     return toResolveDisputeResponse(resolved, accountUnfrozen);
+  }
+
+  // Audit fix, issue #36. `ledger` deliberately doesn't decide what status
+  // an original transaction should carry once it can have more than one
+  // dispute against it (§4.2 partial chargebacks) — that's dispute-domain
+  // knowledge only `disputes` has. `open` anywhere among the siblings wins
+  // (still under review); otherwise `upheld` anywhere means real money was
+  // permanently lost (`reversed`); otherwise every dispute against it
+  // resolved in Cliqpay's favor, so the original is whole again
+  // (`completed`).
+  private async recomputeOriginalTransactionStatus(
+    manager: EntityManager,
+    originalTransactionId: string,
+  ): Promise<void> {
+    const chargebackTransactionIds =
+      await this.ledgerService.findChargebackTransactionIdsForOriginal(
+        originalTransactionId,
+        manager,
+      );
+    const siblingDisputes = await manager.getRepository(Dispute).find({
+      where: { chargebackTransactionId: In(chargebackTransactionIds) },
+    });
+
+    let status: 'disputed' | 'reversed' | 'completed';
+    if (siblingDisputes.some((d) => d.status === 'open')) {
+      status = 'disputed';
+    } else if (siblingDisputes.some((d) => d.status === 'upheld')) {
+      status = 'reversed';
+    } else {
+      status = 'completed';
+    }
+
+    await this.ledgerService.setTransactionStatusWithinTransaction(
+      manager,
+      originalTransactionId,
+      status,
+    );
+  }
+
+  // Audit fix, issue #36. The amount-cap check in
+  // LedgerService.postChargebackEntries is scoped per original transaction
+  // (`reversesTransactionId`), not per wallet or user — so a single user
+  // can have two open disputes at once from two separate funding
+  // transactions. Resolving one in Cliqpay's favor must not unfreeze the
+  // account while the other is still under review. Callers must flip the
+  // dispute being resolved to a terminal status before calling this — it
+  // doesn't exclude any dispute id, so a still-`open` current dispute
+  // would count against itself.
+  private async hasOtherOpenDisputeForWallet(
+    manager: EntityManager,
+    walletId: string,
+  ): Promise<boolean> {
+    const chargebacks =
+      await this.ledgerService.findChargebackTransactionsForWallets(
+        [walletId],
+        manager,
+      );
+    if (chargebacks.length === 0) {
+      return false;
+    }
+    const openCount = await manager.getRepository(Dispute).count({
+      where: {
+        chargebackTransactionId: In(chargebacks.map((c) => c.transactionId)),
+        status: 'open',
+      },
+    });
+    return openCount > 0;
   }
 
   private async publishAccountFrozenEvent(

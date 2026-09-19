@@ -297,6 +297,166 @@ describe('POST /disputes/resolve', () => {
     });
   });
 
+  // Audit fix, issue #36. The four issues that make up this phase were
+  // each built and reviewed against a single-dispute-per-user/per-original
+  // assumption; the end-of-phase audit found two real gaps once a user or
+  // a single funding transaction can have more than one dispute against it
+  // at once — which the amount cap (scoped per original transaction, not
+  // per wallet) and partial chargebacks (explicitly allowed, §4.2) both
+  // make possible through the real API, not just in theory.
+  describe('multiple disputes at once', () => {
+    it('does not unfreeze a user while a second, unrelated dispute on a different funding transaction is still open', async () => {
+      // Two separate fundings for the same user, each independently
+      // charged back enough to leave the wallet negative and frozen.
+      const identity = nextIdentity('multi-dispute');
+      const { userId, walletId } = await seedDisputesUser(ctx, identity);
+
+      const fundingA = `cliqpay-fund-a-${userId}`;
+      await fundWallet(ctx, {
+        reference: fundingA,
+        walletId,
+        netAmountMinor: 250_000n,
+      });
+      const fundingB = `cliqpay-fund-b-${userId}`;
+      await fundWallet(ctx, {
+        reference: fundingB,
+        walletId,
+        netAmountMinor: 100_000n,
+      });
+
+      // Spend it all down so both chargebacks bite into debt, not just
+      // reduce a cushion — balance is now 350,000 before either chargeback.
+      await ctx.accountRepo.update({ id: walletId }, { balance: 350_000n });
+
+      const disputeA = `dispute-${fundingA}-multi`;
+      const chargebackA = await postChargeback({
+        originalTransactionReference: fundingA,
+        amount: 250_000,
+        disputeReference: disputeA,
+      });
+      expect(chargebackA.status).toBe(201);
+
+      const disputeB = `dispute-${fundingB}-multi`;
+      const chargebackB = await postChargeback({
+        originalTransactionReference: fundingB,
+        amount: 100_000,
+        disputeReference: disputeB,
+      });
+      expect(chargebackB.status).toBe(201);
+
+      const walletAfterBothChargebacks = await ctx.accountRepo.findOneByOrFail({
+        id: walletId,
+      });
+      expect(walletAfterBothChargebacks.balance).toBe(0n);
+
+      const userAfterChargebacks = await ctx.userRepo.findOneByOrFail({
+        id: userId,
+      });
+      // A chargeback landing exactly at zero doesn't freeze on its own
+      // (§4.2, strictly negative only) — force a frozen starting state the
+      // same way other tests in this file do, so this test exercises the
+      // unfreeze decision itself rather than depending on exact arithmetic
+      // lining up to a negative balance from two independent chargebacks.
+      expect(userAfterChargebacks.isFrozen).toBe(false);
+      await ctx.userRepo.update({ id: userId }, { isFrozen: true });
+
+      // Resolve dispute A in Cliqpay's favor. Dispute B is still open.
+      const resolveA = await postResolve(
+        { disputeReference: disputeA, outcome: 'resolved', amount: 250_000 },
+        TEST_INTERNAL_API_SECRET,
+      );
+
+      expect(resolveA.status).toBe(201);
+      expect(
+        (resolveA.body as { accountUnfrozen: boolean }).accountUnfrozen,
+      ).toBe(false);
+
+      const userAfterResolveA = await ctx.userRepo.findOneByOrFail({
+        id: userId,
+      });
+      expect(userAfterResolveA.isFrozen).toBe(true);
+
+      const disputeBRow = await ctx.disputeRepo.findOneByOrFail({
+        disputeReference: disputeB,
+      });
+      expect(disputeBRow.status).toBe('open');
+
+      // Resolving B too, also in Cliqpay's favor, should now actually lift
+      // the freeze — no more open disputes on this wallet. (Resolving B as
+      // `upheld` instead would correctly leave the freeze standing forever
+      // — that's real debt, not this test's concern; `resolved` is what
+      // exercises the "no more open disputes" half of the fix.)
+      const resolveB = await postResolve(
+        { disputeReference: disputeB, outcome: 'resolved', amount: 100_000 },
+        TEST_INTERNAL_API_SECRET,
+      );
+      expect(resolveB.status).toBe(201);
+
+      const userAfterResolveB = await ctx.userRepo.findOneByOrFail({
+        id: userId,
+      });
+      expect(userAfterResolveB.isFrozen).toBe(false);
+    });
+
+    it('leaves the original funding transaction disputed, not reversed or completed, while a sibling partial chargeback is still open', async () => {
+      // One funding transaction, two partial chargebacks against it
+      // (§4.2 explicitly allows this) — resolving the first must not flip
+      // the original's status until the second is decided too.
+      const { fundingReference } = await seedFundedUser(500_000n);
+
+      const disputeA = `dispute-${fundingReference}-partial-a`;
+      const chargebackA = await postChargeback({
+        originalTransactionReference: fundingReference,
+        amount: 200_000,
+        disputeReference: disputeA,
+      });
+      expect(chargebackA.status).toBe(201);
+
+      const disputeB = `dispute-${fundingReference}-partial-b`;
+      const chargebackB = await postChargeback({
+        originalTransactionReference: fundingReference,
+        amount: 150_000,
+        disputeReference: disputeB,
+      });
+      expect(chargebackB.status).toBe(201);
+
+      const originalAfterBoth = await ctx.transactionRepo.findOneByOrFail({
+        reference: fundingReference,
+      });
+      expect(originalAfterBoth.status).toBe('disputed');
+
+      // Resolve the first partial as upheld. The second is still open, so
+      // the original must stay `disputed`, not jump to `reversed`.
+      const resolveA = await postResolve(
+        { disputeReference: disputeA, outcome: 'upheld' },
+        TEST_INTERNAL_API_SECRET,
+      );
+      expect(resolveA.status).toBe(201);
+
+      const originalAfterA = await ctx.transactionRepo.findOneByOrFail({
+        reference: fundingReference,
+      });
+      expect(originalAfterA.status).toBe('disputed');
+
+      // Now resolve the second in Cliqpay's favor too. With no disputes
+      // left open, the original's status reflects the aggregate outcome —
+      // one upheld (real, permanent loss) means `reversed`, not
+      // `completed`, even though this specific chargeback's own money came
+      // back.
+      const resolveB = await postResolve(
+        { disputeReference: disputeB, outcome: 'resolved', amount: 150_000 },
+        TEST_INTERNAL_API_SECRET,
+      );
+      expect(resolveB.status).toBe(201);
+
+      const originalAfterBothResolved =
+        await ctx.transactionRepo.findOneByOrFail({
+          reference: fundingReference,
+        });
+      expect(originalAfterBothResolved.status).toBe('reversed');
+    });
+  });
+
   describe('validation', () => {
     it('rejects a dispute_reference that does not exist', async () => {
       const res = await postResolve(

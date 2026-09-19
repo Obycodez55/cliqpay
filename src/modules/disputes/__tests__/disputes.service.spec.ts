@@ -32,6 +32,7 @@ type FakeDisputeRepo = {
   create: jest.Mock<Dispute, [Partial<Dispute>]>;
   save: jest.Mock<Promise<Dispute>, [Dispute]>;
   update: jest.Mock<Promise<unknown>, [Partial<Dispute>, Partial<Dispute>]>;
+  count: jest.Mock<Promise<number>, [unknown]>;
   createQueryBuilder: jest.Mock<FakeQueryBuilder, [string]>;
 };
 
@@ -51,6 +52,8 @@ describe('DisputesService', () => {
       | 'findChargebackTransactionsForWallets'
       | 'upholdChargebackWithinTransaction'
       | 'postChargebackResolutionWithinTransaction'
+      | 'findChargebackTransactionIdsForOriginal'
+      | 'setTransactionStatusWithinTransaction'
     >
   >;
   let usersService: jest.Mocked<
@@ -88,7 +91,9 @@ describe('DisputesService', () => {
       transactionId: 'txn-resolution',
       reference: 'dispute-ref-1-resolved',
       reversesTransactionId: 'txn-chargeback',
+      originalTransactionId: originalTransaction.id,
       userId: 'user-1',
+      walletId: 'wallet-1',
       amount,
       newWalletBalance,
       createdAt: new Date('2026-09-19T00:00:00Z'),
@@ -130,6 +135,7 @@ describe('DisputesService', () => {
       update: jest
         .fn<Promise<unknown>, [Partial<Dispute>, Partial<Dispute>]>()
         .mockResolvedValue({ affected: 1 }),
+      count: jest.fn<Promise<number>, [unknown]>().mockResolvedValue(0),
       createQueryBuilder: jest
         .fn<FakeQueryBuilder, [string]>()
         .mockImplementation(() => {
@@ -177,6 +183,12 @@ describe('DisputesService', () => {
           [EntityManager, { chargebackTransactionId: string; amount: Money }]
         >()
         .mockResolvedValue(resolutionResult(Money.of(0n, 'NGN'))),
+      findChargebackTransactionIdsForOriginal: jest
+        .fn()
+        .mockResolvedValue(['txn-chargeback']),
+      setTransactionStatusWithinTransaction: jest
+        .fn()
+        .mockResolvedValue(undefined),
     };
     usersService = {
       freeze: jest.fn().mockResolvedValue(undefined),
@@ -592,6 +604,30 @@ describe('DisputesService', () => {
       disputeRepo.findOneByOrFail.mockImplementation(() =>
         Promise.resolve(currentDispute as Dispute),
       );
+      // Default single-dispute-per-wallet fixture: one chargeback
+      // ('txn-chargeback'), one dispute against it (`currentDispute`,
+      // already reflecting whatever status update happened above by the
+      // time these run) — reads back live rather than a fixed snapshot,
+      // so recomputeOriginalTransactionStatus and
+      // hasOtherOpenDisputeForWallet see the same post-update state a real
+      // query would. Tests exercising a genuine sibling dispute override
+      // these explicitly.
+      disputeRepo.find.mockImplementation(() =>
+        Promise.resolve(currentDispute ? [currentDispute] : []),
+      );
+      ledgerService.findChargebackTransactionsForWallets.mockResolvedValue([
+        {
+          transactionId: 'txn-chargeback',
+          walletId: 'wallet-1',
+          amount: Money.of(200_000n, 'NGN'),
+          createdAt: new Date('2026-09-18T00:00:00Z'),
+        },
+      ]);
+      disputeRepo.count.mockImplementation(() =>
+        Promise.resolve(
+          currentDispute && currentDispute.status === 'open' ? 1 : 0,
+        ),
+      );
     });
 
     describe('validation', () => {
@@ -642,6 +678,47 @@ describe('DisputesService', () => {
         expect(result.status).toBe('upheld');
         expect(result.accountUnfrozen).toBe(false);
       });
+
+      // Audit fix, issue #36: the original transaction's status is
+      // recomputed from every dispute against it, not hardcoded by
+      // ledger — with only this one dispute (now upheld) against it, the
+      // original genuinely is reversed.
+      it("recomputes the original transaction's status to reversed", async () => {
+        await service.resolveDispute(resolveDto({ outcome: 'upheld' }));
+
+        expect(
+          ledgerService.findChargebackTransactionIdsForOriginal,
+        ).toHaveBeenCalledWith('txn-original', fakeManager);
+        expect(
+          ledgerService.setTransactionStatusWithinTransaction,
+        ).toHaveBeenCalledWith(fakeManager, 'txn-original', 'reversed');
+      });
+
+      // Audit fix, issue #36 (Critical): a second, still-open dispute
+      // against a *different* original transaction on the same wallet
+      // must not be silently ignored — upheld never unfreezes regardless,
+      // but the original-status recompute must still see every dispute
+      // tied to *this* original, sibling or not.
+      it('leaves the original disputed, not reversed, if a sibling chargeback against it is still open', async () => {
+        disputeRepo.find.mockResolvedValue([
+          currentDispute as Dispute,
+          {
+            ...openDispute,
+            id: 'dispute-2',
+            chargebackTransactionId: 'txn-chargeback-2',
+            disputeReference: 'dispute-ref-2',
+          },
+        ]);
+        ledgerService.findChargebackTransactionIdsForOriginal.mockResolvedValue(
+          ['txn-chargeback', 'txn-chargeback-2'],
+        );
+
+        await service.resolveDispute(resolveDto({ outcome: 'upheld' }));
+
+        expect(
+          ledgerService.setTransactionStatusWithinTransaction,
+        ).toHaveBeenCalledWith(fakeManager, 'txn-original', 'disputed');
+      });
     });
 
     describe('resolved', () => {
@@ -685,6 +762,61 @@ describe('DisputesService', () => {
         ledgerService.postChargebackResolutionWithinTransaction.mockResolvedValue(
           resolutionResult(Money.of(-50_000n, 'NGN')),
         );
+
+        const result = await service.resolveDispute(
+          resolveDto({ outcome: 'resolved', amount: 200_000 }),
+        );
+
+        expect(usersService.unfreeze).not.toHaveBeenCalled();
+        expect(result.accountUnfrozen).toBe(false);
+      });
+
+      // Audit fix, issue #36: same reasoning as the 'upheld' recompute
+      // test above — with only this one (now resolved) dispute against
+      // it, the original is genuinely completed.
+      it("recomputes the original transaction's status to completed", async () => {
+        ledgerService.postChargebackResolutionWithinTransaction.mockResolvedValue(
+          resolutionResult(Money.of(50_000n, 'NGN')),
+        );
+
+        await service.resolveDispute(
+          resolveDto({ outcome: 'resolved', amount: 200_000 }),
+        );
+
+        expect(
+          ledgerService.setTransactionStatusWithinTransaction,
+        ).toHaveBeenCalledWith(fakeManager, 'txn-original', 'completed');
+      });
+
+      // Audit fix, issue #36 (Critical). The amount cap in
+      // LedgerService.postChargebackEntries is scoped per original
+      // transaction, not per wallet — a user can have two open disputes
+      // at once from two separate fundings. Without this check, resolving
+      // one in Cliqpay's favor would unfreeze the account while the other
+      // is still under review, exactly the balance-threshold bypass
+      // ADR-0016 says must never happen.
+      it('does not unfreeze when a second, unrelated dispute against the same wallet is still open', async () => {
+        ledgerService.postChargebackResolutionWithinTransaction.mockResolvedValue(
+          resolutionResult(Money.of(50_000n, 'NGN')),
+        );
+        ledgerService.findChargebackTransactionsForWallets.mockResolvedValue([
+          {
+            transactionId: 'txn-chargeback',
+            walletId: 'wallet-1',
+            amount: Money.of(200_000n, 'NGN'),
+            createdAt: new Date('2026-09-18T00:00:00Z'),
+          },
+          {
+            transactionId: 'txn-chargeback-2',
+            walletId: 'wallet-1',
+            amount: Money.of(75_000n, 'NGN'),
+            createdAt: new Date('2026-09-18T00:00:00Z'),
+          },
+        ]);
+        // The second dispute (against a different original transaction,
+        // same wallet) is still open — disputeRepo.count reflects that,
+        // same as a real `WHERE status = 'open'` query would.
+        disputeRepo.count.mockResolvedValue(1);
 
         const result = await service.resolveDispute(
           resolveDto({ outcome: 'resolved', amount: 200_000 }),

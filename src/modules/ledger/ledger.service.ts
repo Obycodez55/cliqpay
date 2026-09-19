@@ -265,7 +265,9 @@ export interface PostChargebackResolutionResult {
   transactionId: string;
   reference: string;
   reversesTransactionId: string;
+  originalTransactionId: string;
   userId: string;
+  walletId: string;
   amount: Money;
   newWalletBalance: Money;
   createdAt: Date;
@@ -1582,14 +1584,19 @@ export class LedgerService {
   }
 
   // Sibling lookup for the same collections view (issue #37) — every
-  // chargeback transaction posted against any of the given wallets.
+  // chargeback transaction posted against any of the given wallets. Same
+  // optional-manager shape as getChargedBackAmount above — a caller
+  // resolving a dispute inside its own transaction (issue #36's audit
+  // fix) needs this to see that transaction's own writes/locks, not a
+  // fresh implicit connection.
   async findChargebackTransactionsForWallets(
     walletIds: string[],
+    manager: EntityManager | DataSource = this.dataSource,
   ): Promise<ChargebackTransactionForWallet[]> {
     if (walletIds.length === 0) {
       return [];
     }
-    const transactions = await this.dataSource.getRepository(Transaction).find({
+    const transactions = await manager.getRepository(Transaction).find({
       where: { type: 'chargeback', senderWalletId: In(walletIds) },
       select: {
         id: true,
@@ -1605,6 +1612,42 @@ export class LedgerService {
       amount: Money.of(transaction.amount, transaction.currency),
       createdAt: transaction.createdAt,
     }));
+  }
+
+  // Feeds disputes.resolveDispute's original-transaction-status recompute
+  // (audit fix, issue #36) — every chargeback transaction id posted
+  // against one original funding transaction, so a caller can look up
+  // each one's own dispute row and decide the original's true aggregate
+  // status rather than assuming the dispute just resolved is the only one.
+  async findChargebackTransactionIdsForOriginal(
+    originalTransactionId: string,
+    manager: EntityManager | DataSource = this.dataSource,
+  ): Promise<string[]> {
+    const rows = await manager.getRepository(Transaction).find({
+      where: {
+        type: 'chargeback',
+        reversesTransactionId: originalTransactionId,
+      },
+      select: { id: true },
+    });
+    return rows.map((row) => row.id);
+  }
+
+  // Ledger's own bookkeeping on its own table (ADR-0016) — a plain status
+  // write, same as the inline `.update(..., { status: ... })` calls
+  // elsewhere in this file, just exposed as its own method because the
+  // *decision* of what status an original transaction should carry once
+  // multiple disputes can exist against it is dispute-domain knowledge
+  // `ledger` must not own (audit fix, issue #36) — `disputes` computes the
+  // target status from its own rows and tells this method what to write.
+  async setTransactionStatusWithinTransaction(
+    manager: EntityManager,
+    transactionId: string,
+    status: TransactionStatus,
+  ): Promise<void> {
+    await manager
+      .getRepository(Transaction)
+      .update({ id: transactionId }, { status });
   }
 
   /**
@@ -1791,13 +1834,11 @@ export class LedgerService {
       .getRepository(Transaction)
       .findOneByOrFail({ id: chargebackTransactionId, type: 'chargeback' });
 
-    await manager
-      .getRepository(Transaction)
-      .update(
-        { id: chargeback.reversesTransactionId! },
-        { status: 'reversed' },
-      );
-
+    // Does NOT set the original transaction's status itself (audit fix,
+    // issue #36) — a `reversed` label is only correct if no OTHER dispute
+    // against the same original is still `open`, which is dispute-domain
+    // knowledge this method can't see. `DisputesService.resolveDispute`
+    // recomputes and sets the true aggregate status right after this call.
     return { originalTransactionId: chargeback.reversesTransactionId! };
   }
 
@@ -1911,20 +1952,20 @@ export class LedgerService {
       }),
     ]);
 
-    // Ledger's own bookkeeping on its own table (ADR-0016) — mirrors
-    // postChargebackEntries flipping this same column to `disputed`.
-    await manager
-      .getRepository(Transaction)
-      .update(
-        { id: chargeback.reversesTransactionId! },
-        { status: 'completed' },
-      );
+    // Does NOT set the original transaction's status itself (audit fix,
+    // issue #36) — a `completed` label is only correct if no OTHER
+    // dispute against the same original is still outstanding, which is
+    // dispute-domain knowledge this method can't see.
+    // `DisputesService.resolveDispute` recomputes and sets the true
+    // aggregate status right after this call.
 
     return {
       transactionId: resolution.id,
       reference: resolution.reference,
       reversesTransactionId: chargeback.id,
+      originalTransactionId: chargeback.reversesTransactionId!,
       userId: wallet.userId!,
+      walletId: wallet.id,
       amount: params.amount,
       newWalletBalance,
       createdAt: resolution.createdAt,
