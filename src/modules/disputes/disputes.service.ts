@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, In } from 'typeorm';
+import { DataSource, EntityManager, In } from 'typeorm';
 import {
   ChargebackTransactionForWallet,
   FundingTransactionForChargeback,
@@ -23,11 +23,19 @@ import {
   RecordChargebackResponseDto,
   toRecordChargebackResponse,
 } from './dto/record-chargeback-response.dto';
+import { ResolveDisputeDto } from './dto/resolve-dispute.dto';
 import {
   CollectionsEntryDto,
   toCollectionsEntry,
 } from './dto/collections-response.dto';
 import {
+  ResolveDisputeResponseDto,
+  toResolveDisputeResponse,
+} from './dto/resolve-dispute-response.dto';
+import {
+  DisputeAlreadyResolvedException,
+  DisputeNotFoundException,
+  DisputeResolutionAmountMismatchException,
   DuplicateDisputeReferenceException,
   OriginalTransactionNotDisputableException,
   OriginalTransactionNotFoundException,
@@ -290,6 +298,101 @@ export class DisputesService {
         `publishChargebackReceivedEvent: chargeback posted successfully (reference "${disputeReference}"), but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
       );
     }
+  }
+
+  // Issue #36. Admin-triggered close-out of a dispute recorded via
+  // recordChargeback — the same internal guard, keyed on the dispute's own
+  // dispute_reference rather than any ledger id. Locks the `disputes` row
+  // for the whole operation: that lock is what makes a concurrent resolve
+  // attempt on the *same* dispute serialize behind this one (the second
+  // waits for this transaction to commit, then re-reads a status that's no
+  // longer 'open' and rejects) — same "lock, validate, post" shape
+  // postChargebackEntries uses for its own amount cap, just enforced here on
+  // the disputes row instead of duplicated inside ledger.
+  async resolveDispute(
+    dto: ResolveDisputeDto,
+  ): Promise<ResolveDisputeResponseDto> {
+    return this.dataSource.transaction(async (manager) => {
+      const disputeRepo = manager.getRepository(Dispute);
+      const dispute = await disputeRepo
+        .createQueryBuilder('dispute')
+        .where('dispute.disputeReference = :reference', {
+          reference: dto.disputeReference,
+        })
+        .setLock('pessimistic_write')
+        .getOne();
+      if (!dispute) {
+        throw new DisputeNotFoundException();
+      }
+      if (dispute.status !== 'open') {
+        throw new DisputeAlreadyResolvedException();
+      }
+
+      if (dto.outcome === 'upheld') {
+        return this.resolveAsUpheld(manager, dispute);
+      }
+
+      // dto.amount is required by ResolveDisputeDto's own validation
+      // whenever outcome is 'resolved' — never trusted on its own, checked
+      // against the dispute's own recorded amount, the same value the
+      // ledger posting below actually reverses.
+      if (BigInt(dto.amount!) !== dispute.amount) {
+        throw new DisputeResolutionAmountMismatchException(
+          dispute.amount.toString(),
+        );
+      }
+      return this.resolveInCliqpaysFavor(manager, dispute);
+    });
+  }
+
+  private async resolveAsUpheld(
+    manager: EntityManager,
+    dispute: Dispute,
+  ): Promise<ResolveDisputeResponseDto> {
+    await this.ledgerService.upholdChargebackWithinTransaction(
+      manager,
+      dispute.chargebackTransactionId,
+    );
+
+    const disputeRepo = manager.getRepository(Dispute);
+    await disputeRepo.update(
+      { id: dispute.id },
+      { status: 'upheld', resolvedAt: new Date() },
+    );
+    const resolved = await disputeRepo.findOneByOrFail({ id: dispute.id });
+
+    return toResolveDisputeResponse(resolved, false);
+  }
+
+  private async resolveInCliqpaysFavor(
+    manager: EntityManager,
+    dispute: Dispute,
+  ): Promise<ResolveDisputeResponseDto> {
+    const posted =
+      await this.ledgerService.postChargebackResolutionWithinTransaction(
+        manager,
+        {
+          chargebackTransactionId: dispute.chargebackTransactionId,
+          amount: Money.of(dispute.amount, dispute.currency),
+        },
+      );
+
+    // §4.2/ADR-0016/issue #36: `>= 0`, unlike the freeze threshold's
+    // strict `< 0` — a resolution that brings the balance back to exactly
+    // zero leaves nothing owed, so the freeze lifts.
+    const accountUnfrozen = !posted.newWalletBalance.isNegative();
+    if (accountUnfrozen) {
+      await this.usersService.unfreeze(manager, posted.userId);
+    }
+
+    const disputeRepo = manager.getRepository(Dispute);
+    await disputeRepo.update(
+      { id: dispute.id },
+      { status: 'resolved', resolvedAt: new Date() },
+    );
+    const resolved = await disputeRepo.findOneByOrFail({ id: dispute.id });
+
+    return toResolveDisputeResponse(resolved, accountUnfrozen);
   }
 
   private async publishAccountFrozenEvent(

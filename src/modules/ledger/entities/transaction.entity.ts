@@ -22,6 +22,13 @@ export type TransactionType =
   // rejection path and #29's async webhook-failure path.
   | 'withdrawal_reversal'
   | 'chargeback'
+  // The second compensating transaction for a dispute resolved in
+  // Cliqpay's favor — its own row, `reverses_transaction_id` pointing at
+  // the `chargeback` row it reverses (not the original funding
+  // transaction), same "own row, own reversesTransactionId" shape as
+  // `withdrawal_reversal` above (docs/architecture.md §4.2, ADR-0016,
+  // issue #36).
+  | 'chargeback_reversal'
   | 'profit_withdrawal'
   | 'bill_split'
   | 'scheduled';
