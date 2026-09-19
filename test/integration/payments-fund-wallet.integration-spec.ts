@@ -65,6 +65,26 @@ describe('POST /wallet/fund', () => {
     expect(ctx.fakeAdapter.initiated).toHaveLength(1);
   });
 
+  it('still lets a frozen user fund their wallet — freeze blocks outbound spend, never funding', async () => {
+    const { userId } = await seedUserWithWallet(ctx, {
+      email: 'fund-frozen@example.com',
+      phone: '+2348011110099',
+      username: 'fund_frozen_user',
+    });
+    await ctx.userRepo.update({ id: userId }, { isFrozen: true });
+
+    await request(ctx.app.getHttpServer())
+      .post('/wallet/fund')
+      .set('Authorization', `Bearer ${tokenFor(userId)}`)
+      .send({ amount: 500000, reference: 'cliqpay-fund-frozen-1' })
+      .expect(201);
+
+    const transaction = await ctx.transactionRepo.findOneByOrFail({
+      reference: 'cliqpay-fund-frozen-1',
+    });
+    expect(transaction.status).toBe('pending');
+  });
+
   it('is idempotent: a repeated reference returns the same checkout URL, no second charge, no second row', async () => {
     const { userId } = await seedUserWithWallet(ctx, {
       email: 'fund-retry@example.com',

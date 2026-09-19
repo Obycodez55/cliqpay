@@ -38,6 +38,16 @@ export class SenderEmailNotVerifiedException extends DomainException {
   }
 }
 
+export class SenderAccountFrozenException extends DomainException {
+  readonly code = 'SENDER_ACCOUNT_FROZEN';
+  constructor() {
+    super(
+      'Your account is frozen and cannot send money right now',
+      HttpStatus.FORBIDDEN,
+    );
+  }
+}
+
 export class UnsupportedTransferCurrencyException extends DomainException {
   readonly code = 'UNSUPPORTED_TRANSFER_CURRENCY';
   constructor() {
