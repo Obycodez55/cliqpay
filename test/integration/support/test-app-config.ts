@@ -5,6 +5,8 @@ import { APP_CONFIG, AppConfig } from '../../../src/config';
 export const TEST_JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
 export const TEST_ENCRYPTION_KEY = 'a'.repeat(64);
 export const TEST_PIN_PEPPER = 'b'.repeat(64);
+export const TEST_INTERNAL_API_SECRET =
+  'test-internal-api-secret-at-least-32-chars';
 
 function defaultTestAppConfig(): AppConfig {
   return {
@@ -50,6 +52,7 @@ function defaultTestAppConfig(): AppConfig {
       platformFee: 0,
       providerFee: 3_000,
     },
+    internal: { apiSecret: TEST_INTERNAL_API_SECRET },
   };
 }
 

@@ -44,6 +44,9 @@ export class User {
   @Column({ type: 'timestamptz', nullable: true })
   phoneVerifiedAt: Date | null;
 
+  @Column({ type: 'boolean', default: false })
+  isFrozen: boolean;
+
   // Set by change-phone (issue #10) between its verification-code send and
   // confirm — `phone` itself never changes until confirm succeeds, mirroring
   // pendingEmail (issue #9).

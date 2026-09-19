@@ -15,6 +15,7 @@ import {
 import { Account } from './entities/account.entity';
 import { LedgerEntry } from './entities/ledger-entry.entity';
 import {
+  ChargebackTransactionMetadata,
   FundingTransactionMetadata,
   Transaction,
   TransactionProvider,
@@ -23,7 +24,10 @@ import {
   WithdrawalReversalTransactionMetadata,
   WithdrawalTransactionMetadata,
 } from './entities/transaction.entity';
-import { InsufficientFundsException } from './internal/errors';
+import {
+  ChargebackAmountExceedsRemainingException,
+  InsufficientFundsException,
+} from './internal/errors';
 
 // Re-exported through the module's one door (this file) — `payments` needs
 // TransactionProvider for its active-(provider, currency)-pairs list (issue
@@ -188,6 +192,37 @@ export interface CompleteWithdrawalResult {
   reference: string;
   userId: string;
   amount: Money;
+}
+
+// The row shape `disputes` needs to validate and price a chargeback request
+// against (issue #34) — narrowed the same way StaleFundingTransaction is:
+// just enough to locate the wallet, check the transaction is in a
+// chargebackable state, and price the cap against its own amount/currency.
+export interface FundingTransactionForChargeback {
+  id: string;
+  status: TransactionStatus;
+  amount: Money;
+  recipientWalletId: string;
+}
+
+export interface PostChargebackParams {
+  walletId: string;
+  amount: Money;
+  // Also the dispute's own dispute_reference — see
+  // ChargebackTransactionMetadata's comment on why one identifier serves
+  // both.
+  reference: string;
+  reversesTransactionId: string;
+}
+
+export interface PostChargebackResult {
+  transactionId: string;
+  reference: string;
+  reversesTransactionId: string;
+  userId: string;
+  amount: Money;
+  newWalletBalance: Money;
+  createdAt: Date;
 }
 
 /**
@@ -1426,5 +1461,220 @@ export class LedgerService {
         amount: Money.of(transaction.amount, transaction.currency),
       };
     });
+  }
+
+  // Feeds disputes.recordChargeback's original-transaction lookup (issue
+  // #34) — scoped to `type: 'funding'` since only a funding transaction can
+  // be charged back (ADR-0016, §4.2).
+  async findFundingTransactionForChargeback(
+    reference: string,
+  ): Promise<FundingTransactionForChargeback | null> {
+    const transaction = await this.dataSource
+      .getRepository(Transaction)
+      .findOneBy({
+        reference,
+        type: 'funding',
+      });
+    if (!transaction) {
+      return null;
+    }
+    return {
+      id: transaction.id,
+      status: transaction.status,
+      amount: Money.of(transaction.amount, transaction.currency),
+      recipientWalletId: transaction.recipientWalletId!,
+    };
+  }
+
+  // Sums every completed chargeback already posted against one original
+  // funding transaction — used both as a read for callers pricing a
+  // prospective chargeback and, passed the caller's own locked `manager`,
+  // as the race-free half of postChargebackEntries' amount-cap enforcement
+  // (§4.2, ADR-0016). Same optional-manager-defaulting-to-dataSource shape
+  // as mergeTransactionMetadata above, for the same reason: a caller
+  // already inside a transaction needs this query to see what that
+  // transaction's own locks make visible, not a fresh implicit connection.
+  async getChargedBackAmount(
+    reversesTransactionId: string,
+    currency: string,
+    manager: EntityManager | DataSource = this.dataSource,
+  ): Promise<Money> {
+    const result = await manager
+      .getRepository(Transaction)
+      .createQueryBuilder('transaction')
+      .select('COALESCE(SUM(transaction.amount), 0)', 'total')
+      .where('transaction.reversesTransactionId = :reversesTransactionId', {
+        reversesTransactionId,
+      })
+      .andWhere('transaction.type = :type', { type: 'chargeback' })
+      .andWhere('transaction.status = :status', { status: 'completed' })
+      .getRawOne<{ total: string }>();
+    return Money.of(BigInt(result?.total ?? '0'), currency);
+  }
+
+  /**
+   * The single place chargeback ledger entries are ever posted (ADR-0016)
+   * — `disputes` owns dedup on dispute_reference and the freeze decision;
+   * this owns the posting itself *and* the amount-cap invariant (total
+   * chargebacks against one original never exceed that original's own
+   * amount), since that's an accounting fact about the compensating entry
+   * being posted, not dispute-domain knowledge — the same category as
+   * postTransfer/postWithdrawal's own sufficient-balance checks. A cap
+   * check done by the caller *before* this locks the original row is a
+   * check-then-lock race (CLAUDE.md): two concurrent partial chargebacks
+   * against the same original could both read a stale "amount remaining"
+   * and both pass. Locking the original transaction row first and
+   * re-deriving the cap under that lock is what closes it — a concurrent
+   * chargeback against the same original serializes behind this one.
+   * Unlike every other debit-posting path in the system, this deliberately
+   * does **not** enforce a sufficient-balance check on the wallet — a
+   * wallet legitimately going negative here is the entire point (§4.2).
+   */
+  async postChargeback(
+    params: PostChargebackParams,
+  ): Promise<PostChargebackResult> {
+    return runInTransaction(this.dataSource, (manager) =>
+      this.postChargebackEntries(manager, params),
+    );
+  }
+
+  // Lets `disputes.recordChargeback` fold the posting into its own
+  // transaction alongside the freeze decision and the `disputes` row write,
+  // so the whole operation commits or rolls back together — same pattern as
+  // postTransferWithinTransaction (MoneyRequestsService.payRequest).
+  async postChargebackWithinTransaction(
+    manager: EntityManager,
+    params: PostChargebackParams,
+  ): Promise<PostChargebackResult> {
+    return this.postChargebackEntries(manager, params);
+  }
+
+  private async postChargebackEntries(
+    manager: EntityManager,
+    params: PostChargebackParams,
+  ): Promise<PostChargebackResult> {
+    const original = await manager
+      .getRepository(Transaction)
+      .createQueryBuilder('transaction')
+      .where('transaction.id = :id', { id: params.reversesTransactionId })
+      .setLock('pessimistic_write')
+      .getOneOrFail();
+
+    // Re-derived under the lock just acquired above, not trusted from
+    // anything a caller computed beforehand — see this method's own doc
+    // comment on why the cap has to be enforced here, not by the caller.
+    const chargedBackSoFar = await this.getChargedBackAmount(
+      original.id,
+      original.currency,
+      manager,
+    );
+    const remaining = Money.of(original.amount, original.currency).subtract(
+      chargedBackSoFar,
+    );
+    if (params.amount.greaterThan(remaining)) {
+      throw new ChargebackAmountExceedsRemainingException(
+        remaining.toDecimalString(),
+      );
+    }
+
+    const accountRepo = manager.getRepository(Account);
+    const accounts = await accountRepo
+      .createQueryBuilder('account')
+      .where(
+        new Brackets((qb) => {
+          qb.where('account.id = :walletId', {
+            walletId: params.walletId,
+          }).orWhere(
+            '(account.role = :float AND account.provider = :provider AND account.currency = :currency AND account.userId IS NULL)',
+            {
+              float: 'float',
+              provider: original.provider,
+              currency: params.amount.currency,
+            },
+          );
+        }),
+      )
+      .orderBy('account.id', 'ASC')
+      .setLock('pessimistic_write')
+      .getMany();
+
+    const wallet = accounts.find((a) => a.id === params.walletId);
+    const float = accounts.find((a) => a.role === 'float');
+    if (!wallet || !float) {
+      throw new Error(
+        `postChargeback: missing one of wallet/float accounts for reference "${params.reference}"`,
+      );
+    }
+
+    // Deliberately no InsufficientFundsException check here — §4.2: going
+    // negative is the entire point of a chargeback.
+    const newWalletBalance = Money.of(wallet.balance, wallet.currency).subtract(
+      params.amount,
+    );
+    const newFloatBalance = Money.of(float.balance, float.currency).add(
+      params.amount,
+    );
+
+    wallet.balance = newWalletBalance.amount;
+    float.balance = newFloatBalance.amount;
+    // §2: the cache is written in the same DB transaction, from the same
+    // computation that produces the ledger entries below — one place.
+    await accountRepo.save([wallet, float]);
+
+    const transactionRepo = manager.getRepository(Transaction);
+    const transaction = await transactionRepo.save(
+      transactionRepo.create({
+        reference: params.reference,
+        provider: original.provider,
+        providerReference: null,
+        type: 'chargeback',
+        status: 'completed',
+        reversesTransactionId: original.id,
+        amount: params.amount.amount,
+        currency: params.amount.currency,
+        senderWalletId: wallet.id,
+        recipientWalletId: null,
+        metadata: {
+          disputeReference: params.reference,
+        } satisfies ChargebackTransactionMetadata,
+      }),
+    );
+
+    const entryRepo = manager.getRepository(LedgerEntry);
+    await entryRepo.save([
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: wallet.id,
+        direction: 'debit',
+        amount: params.amount.amount,
+        runningBalance: newWalletBalance.amount,
+      }),
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: float.id,
+        direction: 'credit',
+        amount: params.amount.amount,
+        runningBalance: newFloatBalance.amount,
+      }),
+    ]);
+
+    // Ledger's own bookkeeping on its own table, not dispute-domain
+    // knowledge (ADR-0016) — same pattern reverseWithdrawal uses to flip
+    // its original transaction's status. Unconditional, not a guarded
+    // transition: partial chargebacks allowed means a second chargeback
+    // against an already-`disputed` original is a normal, expected call.
+    await manager
+      .getRepository(Transaction)
+      .update({ id: original.id }, { status: 'disputed' });
+
+    return {
+      transactionId: transaction.id,
+      reference: transaction.reference,
+      reversesTransactionId: original.id,
+      userId: wallet.userId!,
+      amount: params.amount,
+      newWalletBalance,
+      createdAt: transaction.createdAt,
+    };
   }
 }

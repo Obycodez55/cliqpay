@@ -42,6 +42,7 @@ import { CreateNotifications1786812506579 } from '../../../src/database/migratio
 import { CreateBankAccounts1787200000000 } from '../../../src/database/migrations/1787200000000-CreateBankAccounts';
 import { AddWithdrawalReversalTransactionType1787300000000 } from '../../../src/database/migrations/1787300000000-AddWithdrawalReversalTransactionType';
 import { EncryptBankAccountNumbers1787400000000 } from '../../../src/database/migrations/1787400000000-EncryptBankAccountNumbers';
+import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
 import { CreateTransactionsAndLedgerEntries1784707276066 } from '../../../src/database/migrations/1784707276066-CreateTransactionsAndLedgerEntries';
 import { AddFundingQueryIndexes1785488695081 } from '../../../src/database/migrations/1785488695081-AddFundingQueryIndexes';
 import { EnforceLedgerEntriesAppendOnly1785491930164 } from '../../../src/database/migrations/1785491930164-EnforceLedgerEntriesAppendOnly';
@@ -169,6 +170,7 @@ export async function createWithdrawalsTestContext(
   await new CreateBankAccounts1787200000000().up(queryRunner);
   await new AddWithdrawalReversalTransactionType1787300000000().up(queryRunner);
   await new EncryptBankAccountNumbers1787400000000().up(queryRunner);
+  await new AddIsFrozenToUsers1787500000001().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 
