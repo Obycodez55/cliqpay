@@ -27,6 +27,13 @@ export function setupApiDocs(app: INestApplication, config: AppConfig): void {
     )
     .setVersion('1')
     .addBearerAuth()
+    .addSecurity('internal-secret', {
+      type: 'apiKey',
+      in: 'header',
+      name: 'X-Internal-Secret',
+      description:
+        'Shared secret for internal/ops endpoints with no AdminUser model yet — see docs/adr/0016-disputes-module-boundary.md.',
+    })
     .addTag('Application', 'Liveness and health checks')
     .addTag(
       'Authentication',
