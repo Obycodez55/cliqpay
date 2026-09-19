@@ -256,6 +256,25 @@ describe('POST /withdrawals', () => {
     expect(walletAccount.balance).toBe(5_000_000n);
   });
 
+  describe('freeze enforcement', () => {
+    it('rejects a frozen initiator with a distinct error code, without moving anything', async () => {
+      const sender = await seedFundedSenderWithBankAccount();
+      await ctx.userRepo.update({ id: sender.userId }, { isFrozen: true });
+
+      await initiate(tokenFor(sender.userId), {
+        bankAccountId: sender.bankAccount.id,
+        amount: 500_000,
+        reference: `cliqpay-wd-frozen-${sender.userId}`,
+        pin: '1234',
+      }).expect(403);
+
+      const walletAccount = await ctx.accountRepo.findOneByOrFail({
+        id: sender.walletId,
+      });
+      expect(walletAccount.balance).toBe(5_000_000n);
+    });
+  });
+
   describe('synchronous payout rejection', () => {
     it('reverses the posted entries and returns 422 when Kora synchronously rejects the payout', async () => {
       const sender = await seedFundedSenderWithBankAccount();

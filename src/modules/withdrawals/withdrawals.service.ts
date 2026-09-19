@@ -43,6 +43,7 @@ import {
   BankAccountAlreadySavedException,
   BankAccountNotFoundException,
   BankAccountNotResolvableException,
+  InitiatorAccountFrozenException,
   UnsupportedWithdrawalCurrencyException,
   WithdrawalAmountTooLargeException,
   WithdrawalAmountTooSmallException,
@@ -275,6 +276,10 @@ export class WithdrawalsService {
     // PIN checked only after a replay match would have short-circuited
     // above — a retried, already-initiated withdrawal shouldn't demand the
     // PIN again, mirroring TransfersService.executeTransfer.
+    const user = await this.usersService.findById(userId);
+    if (user.isFrozen) {
+      throw new InitiatorAccountFrozenException();
+    }
     await this.authService.verifyTransactionPin(userId, dto.pin);
 
     const accountNumber = this.decryptAccountNumber(bankAccount);
@@ -321,7 +326,6 @@ export class WithdrawalsService {
     // exception here doesn't confirm Kora rejected the payout, and
     // reversing on an unconfirmed outcome risks double-crediting the wallet
     // while the bank transfer still lands.
-    const user = await this.usersService.findById(userId);
     const payoutResult = await this.paymentsService.initiatePayout({
       reference: dto.reference,
       amount,

@@ -27,6 +27,7 @@ import { SendTransferResponseDto } from './dto/send-transfer-response.dto';
 import {
   RecipientWalletNotFoundException,
   SelfTransferException,
+  SenderAccountFrozenException,
   SenderEmailNotVerifiedException,
   TransferAmountTooLargeException,
   TransferAmountTooSmallException,
@@ -210,6 +211,9 @@ export class TransfersService {
     pin: string,
     manager?: EntityManager,
   ): Promise<PostTransferResult> {
+    if (prepared.sender.isFrozen) {
+      throw new SenderAccountFrozenException();
+    }
     await this.authService.verifyTransactionPin(senderId, pin);
 
     const fee = Money.of(this.config.transfers.platformFee, NGN);

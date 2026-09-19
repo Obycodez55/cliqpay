@@ -45,6 +45,16 @@ export class WithdrawalAmountTooLargeException extends DomainException {
   }
 }
 
+export class InitiatorAccountFrozenException extends DomainException {
+  readonly code = 'INITIATOR_ACCOUNT_FROZEN';
+  constructor() {
+    super(
+      'Your account is frozen and cannot withdraw right now',
+      HttpStatus.FORBIDDEN,
+    );
+  }
+}
+
 // Defensive only, mirroring TransfersService's UnsupportedTransferCurrencyException
 // — no currency field exists on the DTO today, so this can't be reached
 // through the real API until multi-currency wallets (Phase 10) exist.
