@@ -17,6 +17,7 @@ import { Money } from '../../../shared/primitives/money';
 import {
   RecipientWalletNotFoundException,
   SelfTransferException,
+  SenderAccountFrozenException,
   SenderEmailNotVerifiedException,
   TransferAmountTooLargeException,
   TransferAmountTooSmallException,
@@ -40,6 +41,7 @@ function user(overrides: Partial<User> = {}): User {
     email: 'sender@example.com',
     username: 'sender_username',
     emailVerifiedAt: new Date('2026-01-01T00:00:00Z'),
+    isFrozen: false,
     ...overrides,
   } as User;
 }
@@ -140,6 +142,16 @@ describe('TransfersService.sendMoney', () => {
     await expect(service.sendMoney('sender-1', dto)).rejects.toThrow(
       SenderEmailNotVerifiedException,
     );
+  });
+
+  it('rejects a frozen sender at the PIN-check call site, without verifying the PIN', async () => {
+    usersService.findById.mockResolvedValue(user({ isFrozen: true }));
+
+    await expect(service.sendMoney('sender-1', dto)).rejects.toThrow(
+      SenderAccountFrozenException,
+    );
+    expect(authService.verifyTransactionPin).not.toHaveBeenCalled();
+    expect(ledgerService.postTransfer).not.toHaveBeenCalled();
   });
 
   it('maps a missing recipient wallet to a domain exception', async () => {

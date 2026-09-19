@@ -164,6 +164,27 @@ export interface WithdrawalFailedEventPayload {
   reason: string;
 }
 
+export const CHARGEBACK_RECEIVED_EVENT = 'chargeback_received';
+
+export interface ChargebackReceivedEventPayload {
+  userId: string;
+  email: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  disputeReference: string;
+}
+
+// Fires only when a chargeback actually leaves the account frozen — a
+// chargeback that doesn't (balance stays >= 0) publishes only
+// CHARGEBACK_RECEIVED_EVENT (docs/architecture.md §6 Phase 5, ADR-0016).
+export const ACCOUNT_FROZEN_EVENT = 'account_frozen';
+
+export interface AccountFrozenEventPayload {
+  userId: string;
+  email: string;
+  reason: string;
+}
+
 export const RECONCILIATION_MISMATCH_EVENT = 'reconciliation_mismatch';
 
 export interface ReconciliationMismatchEventPayload {

@@ -129,6 +129,22 @@ export interface WithdrawalFailedPayload {
   reason: string;
 }
 
+export interface ChargebackReceivedPayload {
+  userId: string;
+  email: string;
+  amount: string;
+  currency: string;
+  // The dispute's own reference — the in-app channel's dedupe_key, same
+  // reasoning as FundingCompletedPayload's reference.
+  disputeReference: string;
+}
+
+export interface AccountFrozenPayload {
+  userId: string;
+  email: string;
+  reason: string;
+}
+
 export interface ReconciliationMismatchPayload {
   email: string;
   provider: string;
@@ -154,6 +170,8 @@ export interface NotificationPayloadMap {
   withdrawal_initiated: WithdrawalInitiatedPayload;
   withdrawal_completed: WithdrawalCompletedPayload;
   withdrawal_failed: WithdrawalFailedPayload;
+  chargeback_received: ChargebackReceivedPayload;
+  account_frozen: AccountFrozenPayload;
   reconciliation_mismatch: ReconciliationMismatchPayload;
 }
 
@@ -201,6 +219,10 @@ export const NOTIFICATION_CATALOG = {
   // above.
   withdrawal_completed: { channels: ['email'] },
   withdrawal_failed: { channels: ['email'] },
+  // Email only for this issue (#34) — same reasoning as withdrawal_initiated
+  // above; push/in_app follow if a later issue asks for them.
+  chargeback_received: { channels: ['email'] },
+  account_frozen: { channels: ['email'] },
   reconciliation_mismatch: { channels: ['email'] },
 } as const satisfies NotificationCatalogShape;
 

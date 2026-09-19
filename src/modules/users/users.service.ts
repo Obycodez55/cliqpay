@@ -173,6 +173,33 @@ export class UsersService {
     return user;
   }
 
+  // Called by `disputes` when a chargeback leaves a wallet strictly
+  // negative (ADR-0016) — freezing is a dispute-lifecycle event, never
+  // triggered automatically from a balance crossing zero. Takes the
+  // caller's own EntityManager, not an injected repository — the freeze
+  // must commit atomically with the chargeback posting and the `disputes`
+  // row it accompanies (DisputesService.recordChargeback), so there's no
+  // standalone-transaction variant to fall back to, same as
+  // LedgerService.createUserWallet.
+  async freeze(manager: EntityManager, userId: string): Promise<void> {
+    await manager
+      .getRepository(User)
+      .update({ id: userId }, { isFrozen: true });
+  }
+
+  // The other half of freeze() — called only by
+  // `disputes.resolveDispute`'s `resolved` branch, once the resulting
+  // balance is non-negative (issue #36, ADR-0016). Never called from a
+  // balance-restoring top-up elsewhere: the freeze represents an unresolved
+  // dispute, not an arithmetic state, so it lifts only through the
+  // dispute-resolution path. Same EntityManager-only shape as freeze() for
+  // the same atomicity reason.
+  async unfreeze(manager: EntityManager, userId: string): Promise<void> {
+    await manager
+      .getRepository(User)
+      .update({ id: userId }, { isFrozen: false });
+  }
+
   async getProfile(userId: string): Promise<ProfileResponseDto> {
     const user = await this.dataSource
       .getRepository(User)

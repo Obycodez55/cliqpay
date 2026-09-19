@@ -22,6 +22,13 @@ export type TransactionType =
   // rejection path and #29's async webhook-failure path.
   | 'withdrawal_reversal'
   | 'chargeback'
+  // The second compensating transaction for a dispute resolved in
+  // Cliqpay's favor — its own row, `reverses_transaction_id` pointing at
+  // the `chargeback` row it reverses (not the original funding
+  // transaction), same "own row, own reversesTransactionId" shape as
+  // `withdrawal_reversal` above (docs/architecture.md §4.2, ADR-0016,
+  // issue #36).
+  | 'chargeback_reversal'
   | 'profit_withdrawal'
   | 'bill_split'
   | 'scheduled';
@@ -87,6 +94,14 @@ export interface WithdrawalReversalTransactionMetadata {
   reason: string;
 }
 
+// §4.2's Chargeback/Reversal posting example: `metadata: { dispute_reference }`.
+// `disputeReference` doubles as this transaction's own `reference` column
+// (LedgerService.postChargeback) — `disputes` owns dispute_reference's
+// uniqueness (ADR-0016), so reusing it here needs no second identifier.
+export interface ChargebackTransactionMetadata {
+  disputeReference: string;
+}
+
 /**
  * Metadata is shaped per transaction type, not a free-form bag — `payments`
  * writing an untyped field here and casting it back on read is exactly the
@@ -97,7 +112,8 @@ export type TransactionMetadata =
   | FundingTransactionMetadata
   | TransferTransactionMetadata
   | WithdrawalTransactionMetadata
-  | WithdrawalReversalTransactionMetadata;
+  | WithdrawalReversalTransactionMetadata
+  | ChargebackTransactionMetadata;
 
 /**
  * See docs/architecture.md §5. `sender_wallet_id`/`recipient_wallet_id` are

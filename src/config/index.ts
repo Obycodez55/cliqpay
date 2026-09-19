@@ -138,6 +138,13 @@ const envSchema = z
       .int()
       .nonnegative()
       .default(3_000),
+
+    // Shared secret for the `X-Internal-Secret` header on internal/ops
+    // endpoints (disputes' chargeback-recording endpoint is the first
+    // caller — see docs/adr/0016-disputes-module-boundary.md). Required
+    // unconditionally, same as TRANSACTION_PIN_PEPPER — there's no
+    // unguarded fallback to degrade to.
+    INTERNAL_API_SECRET: z.string().min(32),
   })
   .superRefine((env, ctx) => {
     // A provider's own credentials are only required when it's the one
@@ -269,6 +276,9 @@ function buildConfig(env: Env) {
       maxAmount: env.WITHDRAWAL_MAX_AMOUNT,
       platformFee: env.WITHDRAWAL_PLATFORM_FEE,
       providerFee: env.WITHDRAWAL_PROVIDER_FEE,
+    },
+    internal: {
+      apiSecret: env.INTERNAL_API_SECRET,
     },
   };
 }

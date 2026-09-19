@@ -271,6 +271,44 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
     }).expect(423);
   });
 
+  describe('freeze enforcement', () => {
+    it('rejects a frozen sender with a distinct error code, without moving anything', async () => {
+      const sender = await seedFundedSender();
+      const recipient = await seedRecipient();
+      await ctx.userRepo.update({ id: sender.userId }, { isFrozen: true });
+
+      await send(tokenFor(sender.userId), {
+        recipientUserId: recipient.userId,
+        amount: 500_000,
+        reference: `cliqpay-xfer-frozen-sender-${sender.userId}`,
+        pin: '1234',
+      }).expect(403);
+
+      const senderAccount = await ctx.accountRepo.findOneByOrFail({
+        id: sender.walletId,
+      });
+      expect(senderAccount.balance).toBe(5_000_000n);
+    });
+
+    it('still lets a frozen user receive a P2P transfer', async () => {
+      const sender = await seedFundedSender();
+      const recipient = await seedRecipient();
+      await ctx.userRepo.update({ id: recipient.userId }, { isFrozen: true });
+
+      await send(tokenFor(sender.userId), {
+        recipientUserId: recipient.userId,
+        amount: 500_000,
+        reference: `cliqpay-xfer-frozen-recipient-${sender.userId}`,
+        pin: '1234',
+      }).expect(201);
+
+      const recipientAccount = await ctx.accountRepo.findOneByOrFail({
+        id: recipient.walletId,
+      });
+      expect(recipientAccount.balance).toBe(500_000n);
+    });
+  });
+
   describe('idempotency', () => {
     it('replays the original result for a matching retry, without moving money twice', async () => {
       const sender = await seedFundedSender();
