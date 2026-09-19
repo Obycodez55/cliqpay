@@ -36,6 +36,7 @@ import { AddPendingEmailToUsers1784707276064 } from '../../../src/database/migra
 import { AddPendingPhoneToUsers1784707276065 } from '../../../src/database/migrations/1784707276065-AddPendingPhoneToUsers';
 import { AddTransactionPinLockoutToCredentials1785491931164 } from '../../../src/database/migrations/1785491931164-AddTransactionPinLockoutToCredentials';
 import { CreateNotifications1786812506579 } from '../../../src/database/migrations/1786812506579-CreateNotifications';
+import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
 import { AuthModule } from '../../../src/modules/auth/auth.module';
 import { AuthService } from '../../../src/modules/auth/auth.service';
 import { Credential } from '../../../src/modules/auth/entities/credential.entity';
@@ -118,6 +119,7 @@ export async function createAuthTestContext(
     queryRunner,
   );
   await new CreateNotifications1786812506579().up(queryRunner);
+  await new AddIsFrozenToUsers1787500000001().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 

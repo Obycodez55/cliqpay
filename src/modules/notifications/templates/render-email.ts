@@ -28,6 +28,8 @@ const bodies = {
   withdrawal_initiated: compile('withdrawal-initiated.hbs'),
   withdrawal_completed: compile('withdrawal-completed.hbs'),
   withdrawal_failed: compile('withdrawal-failed.hbs'),
+  chargeback_received: compile('chargeback-received.hbs'),
+  account_frozen: compile('account-frozen.hbs'),
   reconciliation_mismatch: compile('reconciliation-mismatch.hbs'),
 };
 

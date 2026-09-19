@@ -1,4 +1,6 @@
 import {
+  AccountFrozenPayload,
+  ChargebackReceivedPayload,
   EmailVerificationOtpPayload,
   FundingCompletedPayload,
   MfaChallengeOtpPayload,
@@ -102,6 +104,14 @@ export const emailTemplates: {
   withdrawal_failed: (payload: WithdrawalFailedPayload) => ({
     subject: `Your withdrawal of ${payload.currency} ${payload.amount} failed`,
     ...renderEmail('withdrawal_failed', payload),
+  }),
+  chargeback_received: (payload: ChargebackReceivedPayload) => ({
+    subject: `A chargeback of ${payload.currency} ${payload.amount} was recorded on your account`,
+    ...renderEmail('chargeback_received', payload),
+  }),
+  account_frozen: (payload: AccountFrozenPayload) => ({
+    subject: 'Your Cliqpay account has been restricted',
+    ...renderEmail('account_frozen', payload),
   }),
   reconciliation_mismatch: (payload: ReconciliationMismatchPayload) => ({
     subject: `Reconciliation mismatch: ${payload.provider}/${payload.currency}`,

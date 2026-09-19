@@ -90,6 +90,10 @@ export default tseslint.config(
           pattern: 'src/modules/withdrawals/**',
         },
         {
+          type: 'disputes-module',
+          pattern: 'src/modules/disputes/**',
+        },
+        {
           type: 'peripheral-module',
           pattern:
             'src/modules/{kyc,fraud,social,billsplit,scheduling,notifications}',
@@ -154,6 +158,24 @@ export default tseslint.config(
               message:
                 '`withdrawals` must never import from `transfers` — see docs/adr/0014-withdrawals-module-boundary.md.',
             },
+            {
+              from: { element: { type: 'disputes-module' } },
+              disallow: { to: { element: { type: 'peripheral-module' } } },
+              message:
+                'Core modules (ledger, payments, auth, users, transfers, withdrawals, disputes) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10 and docs/adr/0016-disputes-module-boundary.md.',
+            },
+            {
+              from: { element: { type: 'disputes-module' } },
+              disallow: { to: { element: { type: 'transfers-module' } } },
+              message:
+                '`disputes` must never import from `transfers` — see docs/adr/0016-disputes-module-boundary.md.',
+            },
+            {
+              from: { element: { type: 'disputes-module' } },
+              disallow: { to: { element: { type: 'withdrawals-module' } } },
+              message:
+                '`disputes` must never import from `withdrawals` — see docs/adr/0016-disputes-module-boundary.md.',
+            },
           ],
         },
       ],
@@ -201,6 +223,10 @@ export default tseslint.config(
             },
             {
               target: { type: 'withdrawals-module' },
+              allow: '*.(service|module).ts',
+            },
+            {
+              target: { type: 'disputes-module' },
               allow: '*.(service|module).ts',
             },
             {
