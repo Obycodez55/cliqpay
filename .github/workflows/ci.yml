@@ -55,4 +55,14 @@ jobs:
       # already — no services: block or manual container setup needed.
       # Real env values above aren't needed here: each integration spec
       # provisions its own Postgres/Redis containers and JWT secret.
+      #
+      # TESTCONTAINERS_RYUK_DISABLED: the Ryuk reaper container hung the
+      # whole job after every spec had already passed — a known failure
+      # mode on GitHub's ephemeral runners (testcontainers/testcontainers-go
+      # #3867), reproduced twice in a row here, not a one-off. The reaper's
+      # job is cleaning up containers a crashed test run left behind; on a
+      # GitHub-hosted runner the entire VM is destroyed after the job
+      # regardless, so it has nothing to buy here.
       - run: pnpm test:integration
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: 'true'
