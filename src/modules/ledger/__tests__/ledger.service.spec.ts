@@ -459,4 +459,116 @@ describe('LedgerService', () => {
       });
     });
   });
+
+  describe('collections (issue #37)', () => {
+    describe('findNegativeBalanceWallets', () => {
+      it('queries user_wallet accounts with a negative balance and narrows the result', async () => {
+        const accountQueryBuilder = {
+          where: jest.fn(),
+          andWhere: jest.fn(),
+          getMany: jest.fn().mockResolvedValue([
+            {
+              id: 'wallet-1',
+              userId: 'user-1',
+              balance: -50_000n,
+              currency: 'NGN',
+            } as Account,
+          ]),
+        };
+        accountQueryBuilder.where.mockReturnValue(accountQueryBuilder);
+        accountQueryBuilder.andWhere.mockReturnValue(accountQueryBuilder);
+        const accountRepo = {
+          createQueryBuilder: jest.fn().mockReturnValue(accountQueryBuilder),
+        };
+        const dataSource = {
+          getRepository: jest.fn(() => accountRepo),
+        } as unknown as DataSource;
+        const service = new LedgerService(dataSource);
+
+        const result = await service.findNegativeBalanceWallets();
+
+        expect(accountQueryBuilder.where).toHaveBeenCalledWith(
+          'account.role = :role',
+          { role: 'user_wallet' },
+        );
+        expect(accountQueryBuilder.andWhere).toHaveBeenCalledWith(
+          'account.balance < 0',
+        );
+        expect(result).toEqual([
+          {
+            accountId: 'wallet-1',
+            userId: 'user-1',
+            balance: Money.of(-50_000n, 'NGN'),
+          },
+        ]);
+      });
+
+      it('returns an empty list when no wallet is negative', async () => {
+        const accountQueryBuilder = {
+          where: jest.fn(),
+          andWhere: jest.fn(),
+          getMany: jest.fn().mockResolvedValue([]),
+        };
+        accountQueryBuilder.where.mockReturnValue(accountQueryBuilder);
+        accountQueryBuilder.andWhere.mockReturnValue(accountQueryBuilder);
+        const dataSource = {
+          getRepository: jest.fn(() => ({
+            createQueryBuilder: jest.fn().mockReturnValue(accountQueryBuilder),
+          })),
+        } as unknown as DataSource;
+        const service = new LedgerService(dataSource);
+
+        expect(await service.findNegativeBalanceWallets()).toEqual([]);
+      });
+    });
+
+    describe('findChargebackTransactionsForWallets', () => {
+      it('returns an empty list without querying when given no wallet ids', async () => {
+        const find = jest.fn();
+        const dataSource = {
+          getRepository: jest.fn(() => ({ find })),
+        } as unknown as DataSource;
+        const service = new LedgerService(dataSource);
+
+        const result = await service.findChargebackTransactionsForWallets([]);
+
+        expect(result).toEqual([]);
+        expect(find).not.toHaveBeenCalled();
+      });
+
+      it('finds chargeback transactions against the given wallets and narrows the result', async () => {
+        const find = jest
+          .fn<Promise<Transaction[]>, [unknown]>()
+          .mockResolvedValue([
+            {
+              id: 'chargeback-txn-1',
+              senderWalletId: 'wallet-1',
+              amount: 30_000n,
+              currency: 'NGN',
+              createdAt: new Date('2026-01-01T00:00:00.000Z'),
+            } as Transaction,
+          ]);
+        const dataSource = {
+          getRepository: jest.fn(() => ({ find })),
+        } as unknown as DataSource;
+        const service = new LedgerService(dataSource);
+
+        const result = await service.findChargebackTransactionsForWallets([
+          'wallet-1',
+          'wallet-2',
+        ]);
+
+        const [{ where }] = find.mock.calls[0] as [{ where: unknown }];
+        expect(where).toEqual(expect.objectContaining({ type: 'chargeback' }));
+        expect(result).toEqual([
+          {
+            transactionId: 'chargeback-txn-1',
+            walletId: 'wallet-1',
+            amount: Money.of(30_000n, 'NGN'),
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          },
+        ]);
+      });
+    });
+  });
 });
