@@ -5,6 +5,10 @@ import { classifyHttpFailure } from '../../internal/errors';
 
 const TERMII_SEND_URL = 'https://api.ns.termii.com/api/sms/send';
 
+// Without this, a hung connection holds the BullMQ job until its lock
+// expires instead of failing into the normal retry path.
+const TERMII_TIMEOUT_MS = 15_000;
+
 @Injectable()
 export class TermiiSmsAdapter implements SmsSender {
   private readonly apiKey: string;
@@ -29,6 +33,7 @@ export class TermiiSmsAdapter implements SmsSender {
           type: 'plain',
           channel: 'generic',
         }),
+        signal: AbortSignal.timeout(TERMII_TIMEOUT_MS),
       });
     } catch (error) {
       throw new Error(

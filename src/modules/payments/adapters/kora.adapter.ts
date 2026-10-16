@@ -1,6 +1,11 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { APP_CONFIG, AppConfig } from '../../../config';
+import {
+  JsonResult,
+  ProviderHttpError,
+  requestJson,
+} from '../../../shared/http/request-json';
 import { Money } from '../../../shared/primitives/money';
 import {
   InitiatePaymentParams,
@@ -108,34 +113,21 @@ export class KoraAdapter implements PaymentProviderAdapter {
   async initiatePayment(
     params: InitiatePaymentParams,
   ): Promise<InitiatePaymentResult> {
-    let response: Response;
-    try {
-      response = await fetch(`${KORA_BASE_URL}/charges/initialize`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.secretKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          amount: params.amount.toDecimalString(),
-          currency: params.amount.currency,
-          reference: params.reference,
-          customer: { email: params.customerEmail },
-          notification_url: this.webhookUrl,
-          redirect_url: this.redirectUrl,
-        }),
-        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
-      });
-    } catch (error) {
+    const { ok, status, body } = await this.request<KoraInitializeResponse>(
+      'POST',
+      '/charges/initialize',
+      {
+        amount: params.amount.toDecimalString(),
+        currency: params.amount.currency,
+        reference: params.reference,
+        customer: { email: params.customerEmail },
+        notification_url: this.webhookUrl,
+        redirect_url: this.redirectUrl,
+      },
+    );
+    if (!ok || !body.status || !body.data) {
       throw new Error(
-        `KoraAdapter: network error (${(error as Error).message})`,
-      );
-    }
-
-    const body = (await response.json()) as KoraInitializeResponse;
-    if (!response.ok || !body.status || !body.data) {
-      throw new Error(
-        `KoraAdapter: ${response.status} ${body.message ?? 'unknown error'}`,
+        `KoraAdapter: ${status} ${body.message ?? 'unknown error'}`,
       );
     }
 
@@ -146,23 +138,13 @@ export class KoraAdapter implements PaymentProviderAdapter {
   // whose webhook never arrived within the normal window, so this doesn't
   // run per-request.
   async verifyCharge(reference: string): Promise<VerifyChargeResult> {
-    let response: Response;
-    try {
-      response = await fetch(`${KORA_BASE_URL}/charges/${reference}`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${this.secretKey}` },
-        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
-      });
-    } catch (error) {
+    const { ok, status, body } = await this.request<KoraVerifyChargeResponse>(
+      'GET',
+      `/charges/${reference}`,
+    );
+    if (!ok || !body.status || !body.data) {
       throw new Error(
-        `KoraAdapter: network error (${(error as Error).message})`,
-      );
-    }
-
-    const body = (await response.json()) as KoraVerifyChargeResponse;
-    if (!response.ok || !body.status || !body.data) {
-      throw new Error(
-        `KoraAdapter: ${response.status} ${body.message ?? 'unknown error'}`,
+        `KoraAdapter: ${status} ${body.message ?? 'unknown error'}`,
       );
     }
 
@@ -186,23 +168,13 @@ export class KoraAdapter implements PaymentProviderAdapter {
   }
 
   async getBalance(currency: string): Promise<Money> {
-    let response: Response;
-    try {
-      response = await fetch(`${KORA_BASE_URL}/balances`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${this.secretKey}` },
-        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
-      });
-    } catch (error) {
+    const { ok, status, body } = await this.request<KoraBalancesResponse>(
+      'GET',
+      '/balances',
+    );
+    if (!ok || !body.status || !body.data) {
       throw new Error(
-        `KoraAdapter: network error (${(error as Error).message})`,
-      );
-    }
-
-    const body = (await response.json()) as KoraBalancesResponse;
-    if (!response.ok || !body.status || !body.data) {
-      throw new Error(
-        `KoraAdapter: ${response.status} ${body.message ?? 'unknown error'}`,
+        `KoraAdapter: ${status} ${body.message ?? 'unknown error'}`,
       );
     }
 
@@ -228,37 +200,25 @@ export class KoraAdapter implements PaymentProviderAdapter {
     bankCode: string,
     accountNumber: string,
   ): Promise<ResolveBankAccountResult> {
-    let response: Response;
-    try {
-      response = await fetch(`${KORA_BASE_URL}/misc/banks/resolve`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.secretKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ bank: bankCode, account: accountNumber }),
-        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
-      });
-    } catch (error) {
-      throw new Error(
-        `KoraAdapter: network error (${(error as Error).message})`,
+    const { ok, status, body } =
+      await this.request<KoraResolveBankAccountResponse>(
+        'POST',
+        '/misc/banks/resolve',
+        { bank: bankCode, account: accountNumber },
       );
-    }
 
-    const body = (await response.json()) as KoraResolveBankAccountResponse;
-
-    if (response.ok && body.status && body.data) {
+    if (ok && body.status && body.data) {
       return {
         status: 'resolved',
         bankName: body.data.bank_name,
         accountName: body.data.account_name,
       };
     }
-    if (response.status === 400 || response.status === 404) {
+    if (status === 400 || status === 404) {
       return { status: 'not_found' };
     }
     throw new Error(
-      `KoraAdapter: ${response.status} ${body.message ?? 'unknown error'}`,
+      `KoraAdapter: ${status} ${body.message ?? 'unknown error'}`,
     );
   }
 
@@ -269,15 +229,12 @@ export class KoraAdapter implements PaymentProviderAdapter {
   async initiatePayout(
     params: InitiatePayoutParams,
   ): Promise<InitiatePayoutResult> {
-    let response: Response;
+    let response: JsonResult<KoraDisburseResponse>;
     try {
-      response = await fetch(`${KORA_BASE_URL}/transactions/disburse`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.secretKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      response = await this.request<KoraDisburseResponse>(
+        'POST',
+        '/transactions/disburse',
+        {
           reference: params.reference,
           destination: {
             type: 'bank_account',
@@ -290,23 +247,23 @@ export class KoraAdapter implements PaymentProviderAdapter {
             },
             customer: { name: params.accountName, email: params.customerEmail },
           },
-        }),
-        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
-      });
+        },
+      );
     } catch (error) {
-      // A network error means Kora's receipt of the request is genuinely unknown
-      return {
-        status: 'unknown',
-        detail: `network error (${(error as Error).message})`,
-      };
+      // Whatever went wrong getting or reading the response — network error,
+      // timeout, unreadable body — Kora's receipt of the request is genuinely
+      // unknown.
+      if (error instanceof ProviderHttpError) {
+        return { status: 'unknown', detail: error.message };
+      }
+      throw error;
     }
+    const { ok, status, body } = response;
 
-    const body = (await response.json()) as KoraDisburseResponse;
-
-    if (response.ok && body.status && body.data?.status === 'processing') {
+    if (ok && body.status && body.data?.status === 'processing') {
       return { status: 'accepted' };
     }
-    if (response.status === 409 && body.data?.status === 'failed') {
+    if (status === 409 && body.data?.status === 'failed') {
       return { status: 'rejected', reason: body.data.message };
     }
     // Any other shape (5xx, an unrecognized 2xx/4xx body) is not a
@@ -314,7 +271,7 @@ export class KoraAdapter implements PaymentProviderAdapter {
     // error above.
     return {
       status: 'unknown',
-      detail: `${response.status} ${body.message ?? 'unknown error'}`,
+      detail: `${status} ${body.message ?? 'unknown error'}`,
     };
   }
 
@@ -322,23 +279,13 @@ export class KoraAdapter implements PaymentProviderAdapter {
   // payouts whose webhook never arrived within the normal window, mirroring
   // verifyCharge's role and status mapping for funding.
   async verifyPayout(reference: string): Promise<VerifyPayoutResult> {
-    let response: Response;
-    try {
-      response = await fetch(`${KORA_BASE_URL}/transactions/${reference}`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${this.secretKey}` },
-        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
-      });
-    } catch (error) {
+    const { ok, status, body } = await this.request<KoraPayoutStatusResponse>(
+      'GET',
+      `/transactions/${reference}`,
+    );
+    if (!ok || !body.status || !body.data) {
       throw new Error(
-        `KoraAdapter: network error (${(error as Error).message})`,
-      );
-    }
-
-    const body = (await response.json()) as KoraPayoutStatusResponse;
-    if (!response.ok || !body.status || !body.data) {
-      throw new Error(
-        `KoraAdapter: ${response.status} ${body.message ?? 'unknown error'}`,
+        `KoraAdapter: ${status} ${body.message ?? 'unknown error'}`,
       );
     }
 
@@ -352,6 +299,17 @@ export class KoraAdapter implements PaymentProviderAdapter {
       return { status: 'failed', reason: body.data.message };
     }
     return { status: 'pending' };
+  }
+
+  private request<T>(method: 'GET' | 'POST', path: string, body?: unknown) {
+    return requestJson<T>({
+      provider: 'KoraAdapter',
+      url: `${KORA_BASE_URL}${path}`,
+      method,
+      headers: { Authorization: `Bearer ${this.secretKey}` },
+      body,
+      timeoutMs: KORA_TIMEOUT_MS,
+    });
   }
 
   verifyWebhookSignature(rawBody: Buffer, signature: string): boolean {

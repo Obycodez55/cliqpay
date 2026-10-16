@@ -596,6 +596,53 @@ describe('KoraAdapter', () => {
       expect(result.status).toBe('unknown');
       expect((result as { detail: string }).detail).toMatch(/ECONNRESET/);
     });
+
+    // A body that can't be read is just as unconfirmed as a network error:
+    // debit-first already moved the money, so none of these may throw or
+    // be mistaken for a rejection.
+    describe.each([
+      [
+        'a non-JSON 502',
+        () => ({
+          ok: false,
+          status: 502,
+          json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+        }),
+      ],
+      [
+        'a non-JSON 200',
+        () => ({
+          ok: true,
+          status: 200,
+          json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+        }),
+      ],
+      ['a JSON null body', () => jsonResponse(200, null)],
+      [
+        'a connection reset while reading the body',
+        () => ({
+          ok: true,
+          status: 200,
+          json: () => Promise.reject(new TypeError('terminated')),
+        }),
+      ],
+    ])('when the response is %s', (_label, buildResponse) => {
+      it('maps to a typed unknown outcome, not a thrown error', async () => {
+        fetchMock.mockResolvedValue(buildResponse());
+        const adapter = new KoraAdapter(buildConfig());
+
+        const result = await adapter.initiatePayout({
+          reference: 'cliqpay-payout-6',
+          amount: Money.of(100000n, 'NGN'),
+          bankCode: '033',
+          accountNumber: '0000000000',
+          accountName: 'Jane Doe',
+          customerEmail: 'jane@example.com',
+        });
+
+        expect(result.status).toBe('unknown');
+      });
+    });
   });
 
   // Same GET /transactions/{reference} envelope confirmed for the
@@ -606,6 +653,19 @@ describe('KoraAdapter', () => {
   // tooling refuses), so these mirror verifyCharge's mapping and Kora's
   // documented shape rather than an observed one.
   describe('verifyPayout', () => {
+    it('throws, rather than reporting an outcome, when the body is not JSON', async () => {
+      fetchMock.mockResolvedValue({
+        ok: false,
+        status: 502,
+        json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+      });
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.verifyPayout('cliqpay-payout-6')).rejects.toThrow(
+        /KoraAdapter/,
+      );
+    });
+
     it('maps a "success" status to a success outcome with the settled amount', async () => {
       fetchMock.mockResolvedValue(
         jsonResponse(200, {
