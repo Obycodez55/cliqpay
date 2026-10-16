@@ -24,13 +24,28 @@ import { deriveTier, tierRank } from './internal/tier';
 import {
   BvnAlreadyLinkedException,
   BvnVerificationFailedException,
+  NinAlreadyLinkedException,
+  NinVerificationFailedException,
   TooManyVerificationAttemptsException,
 } from './internal/errors';
-import { VerifyBvnResponseDto } from './dto/verify-bvn-response.dto';
+import { VerifyIdentityResponseDto } from './dto/verify-identity-response.dto';
 import { KycStatusResponseDto } from './dto/kyc-status-response.dto';
 
 const MAX_FAILED_ATTEMPTS_PER_WINDOW = 5;
 const ATTEMPT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+const IDENTITY_SPECS = {
+  bvn: {
+    failed: BvnVerificationFailedException,
+    alreadyLinked: BvnAlreadyLinkedException,
+    uniqueConstraint: 'UQ_kyc_verifications_bvn_hash_partial',
+  },
+  nin: {
+    failed: NinVerificationFailedException,
+    alreadyLinked: NinAlreadyLinkedException,
+    uniqueConstraint: 'UQ_kyc_verifications_nin_hash_partial',
+  },
+} as const;
 
 @Injectable()
 export class KycService {
@@ -45,12 +60,28 @@ export class KycService {
     this.encryptionKey = encryptionKeyFromHex(config.encryption.key);
   }
 
-  async verifyBvn(userId: string, bvn: string): Promise<VerifyBvnResponseDto> {
-    const attemptId = await this.reserveAttempt(userId, 'bvn');
+  verifyBvn(userId: string, bvn: string): Promise<VerifyIdentityResponseDto> {
+    return this.verifyIdentity(userId, 'bvn', bvn);
+  }
+
+  verifyNin(userId: string, nin: string): Promise<VerifyIdentityResponseDto> {
+    return this.verifyIdentity(userId, 'nin', nin);
+  }
+
+  private async verifyIdentity(
+    userId: string,
+    identityType: KycIdentityType,
+    idNumber: string,
+  ): Promise<VerifyIdentityResponseDto> {
+    const spec = IDENTITY_SPECS[identityType];
+    const attemptId = await this.reserveAttempt(userId, identityType);
 
     let result: KycVerificationResult;
     try {
-      result = await this.kycProvider.verifyBvn(bvn);
+      result =
+        identityType === 'bvn'
+          ? await this.kycProvider.verifyBvn(idNumber)
+          : await this.kycProvider.verifyNin(idNumber);
     } catch (error) {
       await this.dataSource
         .getRepository(KycVerificationAttempt)
@@ -58,11 +89,11 @@ export class KycService {
       throw error;
     }
     if (result.status !== 'verified') {
-      throw new BvnVerificationFailedException();
+      throw new spec.failed();
     }
 
-    const bvnHash = hmacHex(bvn, this.encryptionKey);
-    const bvnCiphertext = encryptSecret(bvn, this.encryptionKey);
+    const hash = hmacHex(idNumber, this.encryptionKey);
+    const ciphertext = encryptSecret(idNumber, this.encryptionKey);
 
     try {
       return await runInTransaction(this.dataSource, async (manager) => {
@@ -72,10 +103,18 @@ export class KycService {
         const existing = await repo.findOneBy({ userId });
         const record =
           existing ?? repo.create({ userId, livenessVerified: false });
-        record.bvnCiphertext = bvnCiphertext;
-        record.bvnHash = bvnHash;
+        if (identityType === 'bvn') {
+          record.bvnCiphertext = ciphertext;
+          record.bvnHash = hash;
+        } else {
+          record.ninCiphertext = ciphertext;
+          record.ninHash = hash;
+        }
         if (result.address) {
-          record.address = { ...record.address, bvn: result.address };
+          record.address = {
+            ...record.address,
+            [identityType]: result.address,
+          };
         }
         record.verifiedLegalName = result.legalName ?? null;
         await repo.save(record);
@@ -84,10 +123,12 @@ export class KycService {
           .getRepository(KycVerificationAttempt)
           .update({ id: attemptId }, { succeeded: true });
 
+        const bvnVerified = !!record.bvnHash;
+        const ninVerified = !!record.ninHash;
         const currentTier = await this.usersService.getKycTier(manager, userId);
         const derivedTier = deriveTier({
-          bvnVerified: true,
-          ninVerified: !!record.ninHash,
+          bvnVerified,
+          ninVerified,
           livenessVerified: record.livenessVerified,
         });
         const tierIncreased = tierRank(derivedTier) > tierRank(currentTier);
@@ -97,14 +138,14 @@ export class KycService {
 
         return {
           tier: tierIncreased ? derivedTier : currentTier,
-          bvnVerified: true,
-          ninVerified: !!record.ninHash,
+          bvnVerified,
+          ninVerified,
           livenessVerified: record.livenessVerified,
         };
       });
     } catch (error) {
-      if (isUniqueViolation(error, 'UQ_kyc_verifications_bvn_hash_partial')) {
-        throw new BvnAlreadyLinkedException();
+      if (isUniqueViolation(error, spec.uniqueConstraint)) {
+        throw new spec.alreadyLinked();
       }
       throw error;
     }

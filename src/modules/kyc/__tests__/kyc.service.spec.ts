@@ -11,6 +11,8 @@ import {
 import {
   BvnAlreadyLinkedException,
   BvnVerificationFailedException,
+  NinAlreadyLinkedException,
+  NinVerificationFailedException,
   TooManyVerificationAttemptsException,
 } from '../internal/errors';
 
@@ -125,7 +127,9 @@ describe('KycService', () => {
       verifyBvn: jest
         .fn<Promise<KycVerificationResult>, [string]>()
         .mockResolvedValue(verifiedResult()),
-      verifyNin: jest.fn(),
+      verifyNin: jest
+        .fn<Promise<KycVerificationResult>, [string]>()
+        .mockResolvedValue(verifiedResult()),
     };
     usersService = {
       findById: jest
@@ -278,6 +282,114 @@ describe('KycService', () => {
 
       await expect(service.verifyBvn('user-1', '12345678901')).rejects.toThrow(
         BvnAlreadyLinkedException,
+      );
+      expect(attemptRepo.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('verifyNin', () => {
+    const bvnAddress = {
+      street: '3 Bvn St',
+      town: 'Surulere',
+      lga: 'Surulere',
+      state: 'Lagos',
+    };
+
+    it('stores the NIN under the nin keys and merges the address without touching bvn', async () => {
+      kycVerificationRepo.findOneBy.mockResolvedValue({
+        userId: 'user-1',
+        bvnHash: 'bvn-hash',
+        livenessVerified: false,
+        address: { bvn: bvnAddress },
+      } as KycVerification);
+      usersService.getKycTier.mockResolvedValue('tier1');
+
+      const result = await service.verifyNin('user-1', '12345678901');
+
+      const saved = kycVerificationRepo.save.mock.calls[0][0];
+      expect(typeof saved.ninHash).toBe('string');
+      expect(typeof saved.ninCiphertext).toBe('string');
+      expect(saved.bvnHash).toBe('bvn-hash');
+      expect(saved.address).toEqual({
+        bvn: bvnAddress,
+        nin: verifiedResult().address,
+      });
+      expect(attemptRepo.create).toHaveBeenCalledWith(
+        expect.objectContaining({ identityType: 'nin' }),
+      );
+      expect(usersService.setKycTier).toHaveBeenCalledWith(
+        fakeManager,
+        'user-1',
+        'tier2',
+      );
+      expect(result).toEqual({
+        tier: 'tier2',
+        bvnVerified: true,
+        ninVerified: true,
+        livenessVerified: false,
+      });
+    });
+
+    it('upgrades a tier0 user to tier1 when no BVN is verified yet', async () => {
+      const result = await service.verifyNin('user-1', '12345678901');
+
+      expect(usersService.setKycTier).toHaveBeenCalledWith(
+        fakeManager,
+        'user-1',
+        'tier1',
+      );
+      expect(result).toMatchObject({
+        tier: 'tier1',
+        bvnVerified: false,
+        ninVerified: true,
+      });
+    });
+
+    it('does not call setKycTier when the derived tier does not increase', async () => {
+      usersService.getKycTier.mockResolvedValue('tier2');
+      kycVerificationRepo.findOneBy.mockResolvedValue({
+        userId: 'user-1',
+        bvnHash: 'bvn-hash',
+        ninHash: 'old-nin-hash',
+        livenessVerified: false,
+      } as KycVerification);
+
+      const result = await service.verifyNin('user-1', '12345678901');
+
+      expect(usersService.setKycTier).not.toHaveBeenCalled();
+      expect(result.tier).toBe('tier2');
+    });
+
+    it('keeps the attempt counted as failed and persists nothing when the provider does not verify', async () => {
+      kycProvider.verifyNin.mockResolvedValue({ status: 'mismatch' });
+
+      await expect(service.verifyNin('user-1', '11110000000')).rejects.toThrow(
+        NinVerificationFailedException,
+      );
+      expect(attemptRepo.delete).not.toHaveBeenCalled();
+      expect(kycVerificationRepo.save).not.toHaveBeenCalled();
+      expect(kycProvider.verifyBvn).not.toHaveBeenCalled();
+    });
+
+    it('releases the reserved attempt when the provider itself errors', async () => {
+      kycProvider.verifyNin.mockRejectedValue(new Error('provider down'));
+
+      await expect(service.verifyNin('user-1', '12345678901')).rejects.toThrow(
+        'provider down',
+      );
+      expect(attemptRepo.delete).toHaveBeenCalledWith({ id: 'attempt-1' });
+    });
+
+    it('maps a nin_hash unique violation to a conflict error', async () => {
+      kycVerificationRepo.save.mockRejectedValue(
+        Object.assign(new Error('duplicate key'), {
+          code: '23505',
+          constraint: 'UQ_kyc_verifications_nin_hash_partial',
+        }),
+      );
+
+      await expect(service.verifyNin('user-1', '12345678901')).rejects.toThrow(
+        NinAlreadyLinkedException,
       );
       expect(attemptRepo.update).not.toHaveBeenCalled();
     });

@@ -5,18 +5,32 @@ import {
   KycVerifyOptions,
 } from './kyc-provider.interface';
 
-// BVNs are digits-only, so sentinels are prefixes: "0000" is not_found, "1111" is mismatch.
+// BVNs and NINs are digits-only, so sentinels are prefixes: "0000" is not_found, "1111" is mismatch.
 @Injectable()
 export class FakeKycProvider implements KycProvider {
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async verifyBvn(
+  verifyBvn(
     bvn: string,
     options?: KycVerifyOptions,
   ): Promise<KycVerificationResult> {
-    if (bvn.startsWith('0000')) {
+    return this.verify(bvn, options);
+  }
+
+  verifyNin(
+    nin: string,
+    options?: KycVerifyOptions,
+  ): Promise<KycVerificationResult> {
+    return this.verify(nin, options);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  private async verify(
+    idNumber: string,
+    options?: KycVerifyOptions,
+  ): Promise<KycVerificationResult> {
+    if (idNumber.startsWith('0000')) {
       return { status: 'not_found' };
     }
-    if (bvn.startsWith('1111')) {
+    if (idNumber.startsWith('1111')) {
       return { status: 'mismatch' };
     }
     return {
@@ -30,11 +44,5 @@ export class FakeKycProvider implements KycProvider {
       },
       livenessPassed: options?.selfie ? true : undefined,
     };
-  }
-
-  verifyNin(): Promise<KycVerificationResult> {
-    return Promise.reject(
-      new Error('FakeKycProvider.verifyNin: not implemented'),
-    );
   }
 }

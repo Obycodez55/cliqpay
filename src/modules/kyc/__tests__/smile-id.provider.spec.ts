@@ -133,4 +133,26 @@ describe('SmileIdKycProvider', () => {
       /SmileIdKycProvider/,
     );
   });
+
+  it('posts the NIN lookup with id_type NIN and maps a match to verified', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, {
+        ResultCode: '1012',
+        FullName: 'Jane Doe',
+        Address: { AddressLine1: '1 Main St', City: 'Ikeja' },
+      }),
+    );
+    const provider = new SmileIdKycProvider(buildConfig());
+
+    await expect(provider.verifyNin('33333333333')).resolves.toMatchObject({
+      status: 'verified',
+      legalName: 'Jane Doe',
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      id_type: 'NIN',
+      id_number: '33333333333',
+    });
+  });
 });

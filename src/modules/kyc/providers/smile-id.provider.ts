@@ -12,7 +12,8 @@ import {
 const SMILE_ID_TIMEOUT_MS = 15_000;
 
 // Request/response shapes and the signing scheme are unconfirmed against a live
-// Smile ID sandbox; a contract test must verify them before real use.
+// Smile ID sandbox; a contract test must verify them before real use. The NIN
+// lookup is assumed to take id_type "NIN" and return the same response shape as BVN.
 interface SmileIdEnhancedKycResponse {
   ResultCode: string;
   ResultText: string;
@@ -50,10 +51,11 @@ export class SmileIdKycProvider implements KycProvider {
     return this.verify('BVN', bvn, options);
   }
 
-  verifyNin(): Promise<KycVerificationResult> {
-    return Promise.reject(
-      new Error('SmileIdKycProvider.verifyNin: not implemented'),
-    );
+  async verifyNin(
+    nin: string,
+    options?: KycVerifyOptions,
+  ): Promise<KycVerificationResult> {
+    return this.verify('NIN', nin, options);
   }
 
   private buildSignature(timestamp: string): string {

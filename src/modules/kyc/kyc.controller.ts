@@ -6,7 +6,8 @@ import {
 } from '../../common/guards/jwt-auth.guard';
 import { KycService } from './kyc.service';
 import { VerifyBvnDto } from './dto/verify-bvn.dto';
-import { VerifyBvnResponseDto } from './dto/verify-bvn-response.dto';
+import { VerifyNinDto } from './dto/verify-nin.dto';
+import { VerifyIdentityResponseDto } from './dto/verify-identity-response.dto';
 import { KycStatusResponseDto } from './dto/kyc-status-response.dto';
 
 @ApiTags('KYC')
@@ -23,8 +24,19 @@ export class KycController {
   verifyBvn(
     @Req() req: AuthenticatedRequest,
     @Body() dto: VerifyBvnDto,
-  ): Promise<VerifyBvnResponseDto> {
+  ): Promise<VerifyIdentityResponseDto> {
     return this.kycService.verifyBvn(req.user.userId, dto.bvn);
+  }
+
+  @Post('verify-nin')
+  @ApiOperation({
+    summary: "Verify the caller's NIN and derive their KYC tier",
+  })
+  verifyNin(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: VerifyNinDto,
+  ): Promise<VerifyIdentityResponseDto> {
+    return this.kycService.verifyNin(req.user.userId, dto.nin);
   }
 
   @Get('status')

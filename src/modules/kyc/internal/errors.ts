@@ -21,6 +21,26 @@ export class BvnAlreadyLinkedException extends DomainException {
   }
 }
 
+export class NinVerificationFailedException extends DomainException {
+  readonly code = 'NIN_VERIFICATION_FAILED';
+  constructor() {
+    super(
+      "We couldn't verify this NIN. Please check the number and try again.",
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
+export class NinAlreadyLinkedException extends DomainException {
+  readonly code = 'NIN_ALREADY_LINKED';
+  constructor() {
+    super(
+      'This NIN is already linked to another Cliqpay account.',
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
 export class TooManyVerificationAttemptsException extends DomainException {
   readonly code = 'TOO_MANY_VERIFICATION_ATTEMPTS';
   constructor() {

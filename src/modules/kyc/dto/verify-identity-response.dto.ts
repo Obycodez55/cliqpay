@@ -1,7 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { KycTier } from '../../users/users.service';
 
-export class VerifyBvnResponseDto {
+export class VerifyIdentityResponseDto {
   @ApiProperty({ enum: ['tier0', 'tier1', 'tier2', 'tier3'] })
   tier: KycTier;
 
