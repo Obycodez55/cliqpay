@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, EntityManager, In } from 'typeorm';
-import { User } from './entities/user.entity';
+import { KycTier, User } from './entities/user.entity';
 import {
   NoPendingEmailChangeException,
   NoPendingPhoneChangeException,
@@ -17,6 +17,8 @@ import {
   RecipientLookupResponseDto,
   toRecipientLookupResponse,
 } from './dto/recipient-lookup-response.dto';
+
+export type { KycTier };
 
 const USERNAME_CHANGE_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
@@ -198,6 +200,21 @@ export class UsersService {
     await manager
       .getRepository(User)
       .update({ id: userId }, { isFrozen: false });
+  }
+
+  async getKycTier(manager: EntityManager, userId: string): Promise<KycTier> {
+    const user = await manager
+      .getRepository(User)
+      .findOneByOrFail({ id: userId });
+    return user.kycTier;
+  }
+
+  async setKycTier(
+    manager: EntityManager,
+    userId: string,
+    tier: KycTier,
+  ): Promise<void> {
+    await manager.getRepository(User).update({ id: userId }, { kycTier: tier });
   }
 
   async getProfile(userId: string): Promise<ProfileResponseDto> {

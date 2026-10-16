@@ -33,9 +33,6 @@ const envSchema = z
         'ENCRYPTION_KEY must be a 64-character hex string (32 bytes)',
       ),
 
-    // HMAC-SHA256 pepper applied before bcrypt on transaction PINs — 32
-    // bytes as hex, required unconditionally (unlike the provider secrets
-    // below) since there's no unpeppered fallback to degrade to. See
     // ADR-0009: this key can never be rotated without invalidating every
     // PIN in the system.
     TRANSACTION_PIN_PEPPER: z
@@ -45,10 +42,6 @@ const envSchema = z
         'TRANSACTION_PIN_PEPPER must be a 64-character hex string (32 bytes)',
       ),
 
-    // Named per concrete provider, not a real/fake toggle — `fake` is just
-    // another option in the same set, so adding a second real provider for a
-    // channel (e.g. SES alongside Brevo) is adding an enum value, not
-    // reshaping this into something else.
     EMAIL_PROVIDER: z.enum(['brevo', 'fake']).default('fake'),
     SMS_PROVIDER: z.enum(['termii', 'fake']).default('fake'),
     PUSH_PROVIDER: z.enum(['fcm', 'fake']).default('fake'),
@@ -64,24 +57,10 @@ const envSchema = z
     FIREBASE_CLIENT_EMAIL: z.string().optional(),
     FIREBASE_PRIVATE_KEY: z.string().optional(),
 
-    // Same real/fake-as-just-another-provider pattern as the notification
-    // channels above — 'fake' (the default) runs FakeAdapter, no network,
-    // no Kora credentials required.
     PAYMENT_PROVIDER: z.enum(['kora', 'fake']).default('fake'),
     KORA_SECRET_KEY: z.string().optional(),
 
-    // Sent as `notification_url` on every charge — this backend's own
-    // webhook receiver, not a frontend page. Optional/undocumented until
-    // now (Phase 2 audit, M2): without it, the webhook path depended
-    // entirely on whatever's configured in Kora's dashboard, which nothing
-    // in this repo could confirm or review.
     KORA_WEBHOOK_URL: z.url().optional(),
-    // Sent as `redirect_url` — where Kora's hosted checkout sends the
-    // customer back to after paying. No frontend exists yet
-    // (docs/architecture.md §9), so this is a placeholder until one does.
-    // The webhook, not this redirect, is what actually completes the
-    // funding transaction (§4.2) — this only affects where the customer's
-    // browser ends up.
     PAYMENT_REDIRECT_URL: z.url().optional(),
 
     RECONCILIATION_ALERT_EMAIL: z.email(),
@@ -94,12 +73,7 @@ const envSchema = z
       .positive()
       .default(180),
 
-    // Flat, config-driven platform fee on P2P transfers, minor units.
-    // Launches at 0 — see docs/architecture.md §4.2 for why the fee_income
-    // leg is only posted when this is non-zero.
     TRANSFER_PLATFORM_FEE: z.coerce.number().int().nonnegative().default(0),
-    // Bounds per transfer, minor units. The maximum is an interim ceiling
-    // until Phase 6 KYC tier limits replace it.
     TRANSFER_MIN_AMOUNT: z.coerce.number().int().nonnegative().default(10_000),
     TRANSFER_MAX_AMOUNT: z.coerce
       .number()
@@ -119,9 +93,6 @@ const envSchema = z
       .positive()
       .default(3),
 
-    // Withdrawal bounds mirror TRANSFER_MIN_AMOUNT/TRANSFER_MAX_AMOUNT's
-    // pattern (docs/architecture.md §6 Phase 4). Platform fee is flat,
-    // config-driven, launches at 0, same as TRANSFER_PLATFORM_FEE.
     WITHDRAWAL_MIN_AMOUNT: z.coerce
       .number()
       .int()
@@ -145,11 +116,14 @@ const envSchema = z
     // unconditionally, same as TRANSACTION_PIN_PEPPER — there's no
     // unguarded fallback to degrade to.
     INTERNAL_API_SECRET: z.string().min(32),
+
+    KYC_PROVIDER: z.enum(['smileid', 'fake']).default('fake'),
+    SMILE_ID_API_KEY: z.string().optional(),
+    SMILE_ID_PARTNER_ID: z.string().optional(),
+    SMILE_ID_BASE_URL: z.url().optional(),
   })
   .superRefine((env, ctx) => {
-    // A provider's own credentials are only required when it's the one
-    // actually selected — this is what lets EMAIL_PROVIDER=fake (etc., the
-    // default) run with zero real credentials configured.
+    // A provider's own credentials are only required when it's the one actually selected
     const requireWhen = (
       condition: boolean,
       fields: { path: string; value: string | undefined }[],
@@ -158,7 +132,7 @@ const envSchema = z
       for (const { path, value } of fields) {
         if (!value) {
           ctx.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: 'custom',
             path: [path],
             message: `${path} is required when its provider is selected`,
           });
@@ -184,6 +158,11 @@ const envSchema = z
       { path: 'KORA_WEBHOOK_URL', value: env.KORA_WEBHOOK_URL },
       { path: 'PAYMENT_REDIRECT_URL', value: env.PAYMENT_REDIRECT_URL },
     ]);
+    requireWhen(env.KYC_PROVIDER === 'smileid', [
+      { path: 'SMILE_ID_API_KEY', value: env.SMILE_ID_API_KEY },
+      { path: 'SMILE_ID_PARTNER_ID', value: env.SMILE_ID_PARTNER_ID },
+      { path: 'SMILE_ID_BASE_URL', value: env.SMILE_ID_BASE_URL },
+    ]);
 
     // FakeAdapter validates webhook signatures against a hardcoded key
     // committed to the repo (see fake.adapter.ts) — a production deploy
@@ -191,9 +170,17 @@ const envSchema = z
     // webhook. Fail at boot, not silently.
     if (env.NODE_ENV === 'production' && env.PAYMENT_PROVIDER === 'fake') {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: 'custom',
         path: ['PAYMENT_PROVIDER'],
         message: 'PAYMENT_PROVIDER must not be "fake" in production',
+      });
+    }
+
+    if (env.NODE_ENV === 'production' && env.KYC_PROVIDER === 'fake') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['KYC_PROVIDER'],
+        message: 'KYC_PROVIDER must not be "fake" in production',
       });
     }
   });
@@ -279,6 +266,14 @@ function buildConfig(env: Env) {
     },
     internal: {
       apiSecret: env.INTERNAL_API_SECRET,
+    },
+    kyc: {
+      provider: env.KYC_PROVIDER,
+      smileId: {
+        apiKey: env.SMILE_ID_API_KEY,
+        partnerId: env.SMILE_ID_PARTNER_ID,
+        baseUrl: env.SMILE_ID_BASE_URL,
+      },
     },
   };
 }

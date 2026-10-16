@@ -28,6 +28,7 @@ import { CreateNotifications1786812506579 } from '../../../src/database/migratio
 import { CreateDisputes1787500000000 } from '../../../src/database/migrations/1787500000000-CreateDisputes';
 import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
 import { AddChargebackReversalTransactionType1787500000002 } from '../../../src/database/migrations/1787500000002-AddChargebackReversalTransactionType';
+import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
 import { Account } from '../../../src/modules/ledger/entities/account.entity';
 import { Transaction } from '../../../src/modules/ledger/entities/transaction.entity';
 import { LedgerEntry } from '../../../src/modules/ledger/entities/ledger-entry.entity';
@@ -103,6 +104,7 @@ export async function createDisputesTestContext(): Promise<DisputesTestContext> 
   await new CreateDisputes1787500000000().up(queryRunner);
   await new AddIsFrozenToUsers1787500000001().up(queryRunner);
   await new AddChargebackReversalTransactionType1787500000002().up(queryRunner);
+  await new AddKycTierToUsers1787600000002().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 

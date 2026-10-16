@@ -37,6 +37,7 @@ import { AddTransactionPinLockoutToCredentials1785491931164 } from '../../../src
 import { CreateNotifications1786812506579 } from '../../../src/database/migrations/1786812506579-CreateNotifications';
 import { CreateMoneyRequests1786900000000 } from '../../../src/database/migrations/1786900000000-CreateMoneyRequests';
 import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
+import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
 import { AuthModule } from '../../../src/modules/auth/auth.module';
 import { AuthService } from '../../../src/modules/auth/auth.service';
 import { Credential } from '../../../src/modules/auth/entities/credential.entity';
@@ -132,6 +133,7 @@ export async function createTransfersTestContext(
   await new CreateNotifications1786812506579().up(queryRunner);
   await new CreateMoneyRequests1786900000000().up(queryRunner);
   await new AddIsFrozenToUsers1787500000001().up(queryRunner);
+  await new AddKycTierToUsers1787600000002().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 

@@ -27,6 +27,7 @@ import { EnforceLedgerEntriesAppendOnly1785491930164 } from '../../../src/databa
 import { CreateCredentials1784707276062 } from '../../../src/database/migrations/1784707276062-CreateCredentials';
 import { CreateNotifications1786812506579 } from '../../../src/database/migrations/1786812506579-CreateNotifications';
 import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
+import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
 import { Account } from '../../../src/modules/ledger/entities/account.entity';
@@ -98,6 +99,7 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
   await new EnforceLedgerEntriesAppendOnly1785491930164().up(queryRunner);
   await new CreateNotifications1786812506579().up(queryRunner);
   await new AddIsFrozenToUsers1787500000001().up(queryRunner);
+  await new AddKycTierToUsers1787600000002().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 

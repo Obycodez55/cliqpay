@@ -94,9 +94,13 @@ export default tseslint.config(
           pattern: 'src/modules/disputes/**',
         },
         {
+          type: 'kyc-module',
+          pattern: 'src/modules/kyc/**',
+        },
+        {
           type: 'peripheral-module',
           pattern:
-            'src/modules/{kyc,fraud,social,billsplit,scheduling,notifications}',
+            'src/modules/{fraud,social,billsplit,scheduling,notifications}',
         },
         {
           type: 'shared',
@@ -176,6 +180,61 @@ export default tseslint.config(
               message:
                 '`disputes` must never import from `withdrawals` — see docs/adr/0016-disputes-module-boundary.md.',
             },
+            {
+              from: { element: { type: 'kyc-module' } },
+              disallow: { to: { element: { type: 'ledger-module' } } },
+              message: '`kyc` must never import from `ledger` — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
+            },
+            {
+              from: { element: { type: 'kyc-module' } },
+              disallow: { to: { element: { type: 'payments-module' } } },
+              message: '`kyc` must never import from `payments` — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
+            },
+            {
+              from: { element: { type: 'kyc-module' } },
+              disallow: { to: { element: { type: 'auth-module' } } },
+              message: '`kyc` must never import from `auth` — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
+            },
+            {
+              from: { element: { type: 'kyc-module' } },
+              disallow: { to: { element: { type: 'transfers-module' } } },
+              message: '`kyc` must never import from `transfers` — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
+            },
+            {
+              from: { element: { type: 'kyc-module' } },
+              disallow: { to: { element: { type: 'withdrawals-module' } } },
+              message: '`kyc` must never import from `withdrawals` — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
+            },
+            {
+              from: { element: { type: 'kyc-module' } },
+              disallow: { to: { element: { type: 'disputes-module' } } },
+              message: '`kyc` must never import from `disputes` — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
+            },
+            {
+              from: { element: { type: 'kyc-module' } },
+              disallow: { to: { element: { type: 'peripheral-module' } } },
+              message: '`kyc` must never import from another peripheral module — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
+            },
+            {
+              from: { element: { type: 'ledger-module' } },
+              disallow: { to: { element: { type: 'kyc-module' } } },
+              message: '`ledger` must never import from `kyc` — see docs/architecture.md §10.',
+            },
+            {
+              from: { element: { type: 'auth-module' } },
+              disallow: { to: { element: { type: 'kyc-module' } } },
+              message: '`auth` must never import from `kyc` — see docs/architecture.md §10.',
+            },
+            {
+              from: { element: { type: 'users-module' } },
+              disallow: { to: { element: { type: 'kyc-module' } } },
+              message: '`users` must never import from `kyc` — see docs/architecture.md §10.',
+            },
+            {
+              from: { element: { type: 'disputes-module' } },
+              disallow: { to: { element: { type: 'kyc-module' } } },
+              message: '`disputes` must never import from `kyc` — see docs/architecture.md §10.',
+            },
           ],
         },
       ],
@@ -231,6 +290,10 @@ export default tseslint.config(
             },
             {
               target: { type: 'peripheral-module' },
+              allow: '*.(service|module).ts',
+            },
+            {
+              target: { type: 'kyc-module' },
               allow: '*.(service|module).ts',
             },
             // shared/primitives and shared/events are explicitly the one
