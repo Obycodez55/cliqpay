@@ -70,23 +70,6 @@ interface KoraResolveBankAccountResponse {
   };
 }
 
-// Ground truth: a real sandbox call to POST /transactions/disburse, run
-// during issue #28's design (per the same discipline as ADR-0007/the
-// resolve-bank-account call above) — not guessed from Kora's docs. The
-// accepted case returns HTTP 200 with `data.status: "processing"`:
-//   {"status":true,"message":"Transfer initiated successfully.","data":
-//    {"amount":"1000.00","fee":"30.00","currency":"NGN","status":"processing",
-//     "reference":"...","message":"Payout processing","customer":{...}}}
-// A synchronous rejection (bad bank code, bad account) returns HTTP 409:
-//   {"status":false,"error":"conflict","message":"Invalid bank provided.",
-//    "data":{"status":"failed","message":"Invalid bank provided.","reference":"..."}}
-// Neither response carries a Kora-generated id distinct from the `reference`
-// we sent — re-fetching the same disbursement via its status endpoint
-// (`GET /transactions/{reference}`) confirms the same: only `reference` is
-// echoed back, never a separate id. ADR-0007 originally assumed withdrawals
-// would differ from funding on this point; its Phase 4 correction records
-// this finding — ledger's `postWithdrawal` mirrors `reference` into
-// `providerReference` the same way funding does, not a distinct value.
 interface KoraDisburseResponse {
   status: boolean;
   message: string;
@@ -98,26 +81,6 @@ interface KoraDisburseResponse {
   };
 }
 
-// Ground truth for GET /transactions/{reference} on a payout: the same
-// endpoint and `data` envelope ADR-0007's Phase 4 correction already
-// captured from a real sandbox call made during issue #28's design, while
-// that disbursement was still `processing`:
-//   {"status":true,"message":"Transfer initiated successfully.","data":
-//    {"amount":"1000.00","fee":"30.00","currency":"NGN","status":"processing",
-//     "reference":"...","message":"Payout processing","customer":{...}}}
-// A follow-up live sandbox call to re-confirm the terminal `success`/`failed`
-// shapes specifically for this issue was blocked in this environment (any
-// live Kora disbursement call is treated as a real-money action and refused
-// by this session's tooling, not something a sandbox flag can opt out of
-// here) — so the terminal shapes are taken on the strength of that same
-// captured envelope plus Kora's docs (developers.korapay.com/docs/payouts),
-// not independently re-observed the way ADR-0007's other corrections were.
-// `amount` stays the decimal-string form already confirmed above; `status`
-// mirrors the charge endpoint's terminal values ("success"/"failed"), and a
-// failed payout's `message` field is read as the failure reason, the same
-// field this same envelope already carries for `processing`. Flagged for
-// confirmation against a real terminal response before this handles
-// production traffic — see the withdrawal-poll implementation notes.
 interface KoraPayoutStatusResponse {
   status: boolean;
   message: string;
@@ -130,14 +93,6 @@ interface KoraPayoutStatusResponse {
   };
 }
 
-// Ground truth for the request/response shapes below: docs/adr/0007, backed
-// by a real sandbox charge (POST /charges/initialize, then GET
-// /charges/{reference}) run during design — not guessed from Kora's docs.
-// `notification_url`/`redirect_url` are both optional per that sandbox
-// check, but sending them explicitly pins this backend's webhook and the
-// customer's post-checkout destination in code (reviewable, per-environment
-// config) instead of depending entirely on whatever's set in Kora's
-// dashboard, which nothing in this repo could confirm (Phase 2 audit, M2).
 @Injectable()
 export class KoraAdapter implements PaymentProviderAdapter {
   private readonly secretKey: string;
@@ -162,10 +117,6 @@ export class KoraAdapter implements PaymentProviderAdapter {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          // Kora's amount is major units (naira), not minor units — the
-          // one place that conversion happens, right at the provider
-          // boundary. Sent as a decimal string, not a float, to avoid any
-          // binary-float round-off on the way out.
           amount: params.amount.toDecimalString(),
           currency: params.amount.currency,
           reference: params.reference,
@@ -191,7 +142,7 @@ export class KoraAdapter implements PaymentProviderAdapter {
     return { checkoutUrl: body.data.checkout_url };
   }
 
-  // The self-verify poll path (issue #14) — called only for transactions
+  // The self-verify poll path — called only for transactions
   // whose webhook never arrived within the normal window, so this doesn't
   // run per-request.
   async verifyCharge(reference: string): Promise<VerifyChargeResult> {
@@ -234,15 +185,6 @@ export class KoraAdapter implements PaymentProviderAdapter {
     return { status: 'pending' };
   }
 
-  // The external reconciliation path (issue #15). Sums `available_balance`
-  // AND `pending_balance` — `float_ngn` is credited the moment a charge
-  // succeeds (postFunding runs off the webhook/poll result, not off Kora's
-  // own settlement), so it reflects money Kora owes us regardless of
-  // whether Kora has settled it yet. Comparing against `available_balance`
-  // alone (an earlier version of this method did) undercounts by whatever's
-  // still mid-settlement (T+1 in Nigeria) and produces a mismatch alert on
-  // every successful funding until it settles — a false positive by
-  // construction, not a real drift.
   async getBalance(currency: string): Promise<Money> {
     let response: Response;
     try {
@@ -282,11 +224,6 @@ export class KoraAdapter implements PaymentProviderAdapter {
     return available.add(pending);
   }
 
-  // 400/404 are Kora's normal shape for "couldn't resolve this" (bad
-  // account number or bad bank code, confirmed against the real sandbox —
-  // see KoraResolveBankAccountResponse) — a typed `not_found` result, not a
-  // thrown error. Any other non-ok status (401, 5xx, ...) is a genuine
-  // system failure and still throws, same as every other adapter method.
   async resolveBankAccount(
     bankCode: string,
     accountNumber: string,
@@ -357,10 +294,7 @@ export class KoraAdapter implements PaymentProviderAdapter {
         signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
       });
     } catch (error) {
-      // A network error means Kora's receipt of the request is genuinely
-      // unknown — it may have arrived and started processing. Not a thrown
-      // error: see InitiatePayoutResult's `unknown` case for why treating
-      // this as a rejection would be wrong post-debit.
+      // A network error means Kora's receipt of the request is genuinely unknown
       return {
         status: 'unknown',
         detail: `network error (${(error as Error).message})`,
