@@ -668,6 +668,7 @@ Each phase exits with a working, production-quality slice of the system. No phas
 - Activate new system accounts for a currency (`float_usd`, etc., tied to whichever provider(s) support that currency) via the same boot-seeding logic from Phase 1
 - Fund foreign currency wallet via the active provider
 - Transfer between same-currency wallets (no change needed — already currency-scoped)
+- **[v13]** KYC daily-limit enforcement (§6 Phase 6) assumes one NGN `user_wallet` per user today: `ledger.getDebitedSince` resolves a single wallet by `(userId, role)`, the limit is a single NGN figure per tier, and the per-user advisory lock serializes across all of a user's currencies. Multi-currency wallets need `getDebitedSince` to take a currency, a decision on whether the daily limit is per currency or converted to one figure, and a review of the lock key (ADR-0017 Consequences).
 - **[v2] Cross-currency transfer**, worked example:
 
 ```

@@ -77,7 +77,7 @@ export class DailyLimitExceededException extends DomainException {
   readonly details: { dailyLimit: object; remaining: object };
   constructor(dailyLimit: Money, remaining: Money) {
     super(
-      `This would exceed your daily limit of ${dailyLimit.toDecimalString()}. You can still send ${remaining.toDecimalString()} today.`,
+      `This would exceed your daily limit of ${dailyLimit.toDecimalString()}. You have ${remaining.toDecimalString()} left today.`,
       HttpStatus.UNPROCESSABLE_ENTITY,
     );
     this.details = {

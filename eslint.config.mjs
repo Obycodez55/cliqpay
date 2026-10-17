@@ -37,7 +37,7 @@ export default tseslint.config(
     },
   },
   // Enforces docs/architecture.md §10: core modules (ledger, payments, auth,
-  // users) may never import from peripheral modules (kyc, fraud, social,
+  // users) may never import from peripheral modules (fraud, social,
   // billsplit, scheduling), and a module's public surface is only its
   // <name>.service.ts — everything else inside it is private to that
   // module. Element patterns are defined now, ahead of any module existing,
@@ -118,31 +118,31 @@ export default tseslint.config(
               from: { element: { type: 'ledger-module' } },
               disallow: { to: { element: { type: 'peripheral-module' } } },
               message:
-                'Core modules (ledger, payments, auth, users) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
+                'Core modules (ledger, payments, auth, users) must never import from peripheral modules (fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
             },
             {
               from: { element: { type: 'payments-module' } },
               disallow: { to: { element: { type: 'peripheral-module' } } },
               message:
-                'Core modules (ledger, payments, auth, users) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
+                'Core modules (ledger, payments, auth, users) must never import from peripheral modules (fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
             },
             {
               from: { element: { type: 'auth-module' } },
               disallow: { to: { element: { type: 'peripheral-module' } } },
               message:
-                'Core modules (ledger, payments, auth, users) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
+                'Core modules (ledger, payments, auth, users) must never import from peripheral modules (fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
             },
             {
               from: { element: { type: 'users-module' } },
               disallow: { to: { element: { type: 'peripheral-module' } } },
               message:
-                'Core modules (ledger, payments, auth, users) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
+                'Core modules (ledger, payments, auth, users) must never import from peripheral modules (fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
             },
             {
               from: { element: { type: 'transfers-module' } },
               disallow: { to: { element: { type: 'peripheral-module' } } },
               message:
-                'Core modules (ledger, payments, auth, users, transfers) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10 and docs/adr/0011-transfers-module-boundary.md.',
+                'Core modules (ledger, payments, auth, users, transfers) must never import from peripheral modules (fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10 and docs/adr/0011-transfers-module-boundary.md.',
             },
             {
               from: { element: { type: 'users-module' } },
@@ -154,7 +154,7 @@ export default tseslint.config(
               from: { element: { type: 'withdrawals-module' } },
               disallow: { to: { element: { type: 'peripheral-module' } } },
               message:
-                'Core modules (ledger, payments, auth, users, transfers, withdrawals) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10 and docs/adr/0014-withdrawals-module-boundary.md.',
+                'Core modules (ledger, payments, auth, users, transfers, withdrawals) must never import from peripheral modules (fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10 and docs/adr/0014-withdrawals-module-boundary.md.',
             },
             {
               from: { element: { type: 'withdrawals-module' } },
@@ -166,7 +166,7 @@ export default tseslint.config(
               from: { element: { type: 'disputes-module' } },
               disallow: { to: { element: { type: 'peripheral-module' } } },
               message:
-                'Core modules (ledger, payments, auth, users, transfers, withdrawals, disputes) must never import from peripheral modules (kyc, fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10 and docs/adr/0016-disputes-module-boundary.md.',
+                'Core modules (ledger, payments, auth, users, transfers, withdrawals, disputes) must never import from peripheral modules (fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10 and docs/adr/0016-disputes-module-boundary.md.',
             },
             {
               from: { element: { type: 'disputes-module' } },
