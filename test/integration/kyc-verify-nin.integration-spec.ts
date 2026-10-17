@@ -91,7 +91,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
     expect(record.ninCiphertext).toEqual(expect.any(String));
     expect(record.ninCiphertext).not.toContain('12345678901');
     expect(record.bvnHash).toBeNull();
-    expect(record.verifiedLegalName).toBe('Test User');
+    expect(record.verifiedLegalName).toBe('Nin Test User');
     expect(record.address).toEqual({
       nin: {
         street: '1 Test Street',
@@ -129,6 +129,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
     expect(user.kycTier).toBe('tier2');
     const record = await ctx.kycVerificationRepo.findOneByOrFail({ userId });
     expect(Object.keys(record.address ?? {}).sort()).toEqual(['bvn', 'nin']);
+    expect(record.verifiedLegalName).toBe('Bvn Test User');
   });
 
   it('reaches tier2 when the BVN is verified first and the NIN second', async () => {
@@ -150,6 +151,8 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
       bvnVerified: true,
       ninVerified: true,
     });
+    const record = await ctx.kycVerificationRepo.findOneByOrFail({ userId });
+    expect(record.verifiedLegalName).toBe('Bvn Test User');
   });
 
   it('ends at tier2 when BVN and NIN verification run concurrently for the same user', async () => {
@@ -170,6 +173,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
       const record = await ctx.kycVerificationRepo.findOneByOrFail({ userId });
       expect(record.bvnHash).not.toBeNull();
       expect(record.ninHash).not.toBeNull();
+      expect(record.verifiedLegalName).toBe('Bvn Test User');
     }
   });
 
@@ -218,5 +222,60 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
         identityType: 'nin',
       }),
     ).toBe(5);
+  });
+
+  it('treats resubmitting the same NIN as a free no-op and rejects a different one', async () => {
+    const userId = await seedUser();
+    const token = tokenFor(userId);
+    await verifyNin(token, '73000000001').expect(201);
+    const before = await ctx.kycVerificationRepo.findOneByOrFail({ userId });
+    const attemptsBefore = await ctx.kycVerificationAttemptRepo.countBy({
+      userId,
+    });
+
+    const same = await verifyNin(token, '73000000001');
+    expect(same.status).toBe(201);
+    expect(same.body).toEqual({
+      tier: 'tier1',
+      bvnVerified: false,
+      ninVerified: true,
+      livenessVerified: false,
+    });
+
+    const different = await verifyNin(token, '73000000002');
+    expect(different.status).toBe(409);
+
+    const after = await ctx.kycVerificationRepo.findOneByOrFail({ userId });
+    expect(after).toEqual(before);
+    expect(await ctx.kycVerificationAttemptRepo.countBy({ userId })).toBe(
+      attemptsBefore,
+    );
+    const user = await ctx.userRepo.findOneByOrFail({ id: userId });
+    expect(user.kycTier).toBe('tier1');
+  });
+
+  it('does not free the old NIN for another account by overwriting it', async () => {
+    const userA = await seedUser();
+    const userB = await seedUser();
+    await verifyNin(tokenFor(userA), '74000000001').expect(201);
+
+    expect((await verifyNin(tokenFor(userA), '74000000002')).status).toBe(409);
+    const res = await verifyNin(tokenFor(userB), '74000000001');
+
+    expect(res.status).toBe(409);
+    expect(await ctx.kycVerificationRepo.findOneBy({ userId: userB })).toBe(
+      null,
+    );
+  });
+
+  it('does not let a verified BVN block a first NIN', async () => {
+    const userId = await seedUser();
+    const token = tokenFor(userId);
+    await verifyBvn(token, '75000000001').expect(201);
+
+    const res = await verifyNin(token, '75000000002');
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ tier: 'tier2' });
   });
 });

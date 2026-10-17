@@ -23,8 +23,10 @@ import {
 import { deriveTier, tierRank } from './internal/tier';
 import {
   BvnAlreadyLinkedException,
+  BvnAlreadyVerifiedException,
   BvnVerificationFailedException,
   NinAlreadyLinkedException,
+  NinAlreadyVerifiedException,
   NinVerificationFailedException,
   TooManyVerificationAttemptsException,
 } from './internal/errors';
@@ -38,11 +40,13 @@ const IDENTITY_SPECS = {
   bvn: {
     failed: BvnVerificationFailedException,
     alreadyLinked: BvnAlreadyLinkedException,
+    alreadyVerified: BvnAlreadyVerifiedException,
     uniqueConstraint: 'UQ_kyc_verifications_bvn_hash_partial',
   },
   nin: {
     failed: NinVerificationFailedException,
     alreadyLinked: NinAlreadyLinkedException,
+    alreadyVerified: NinAlreadyVerifiedException,
     uniqueConstraint: 'UQ_kyc_verifications_nin_hash_partial',
   },
 } as const;
@@ -74,7 +78,12 @@ export class KycService {
     idNumber: string,
   ): Promise<VerifyIdentityResponseDto> {
     const spec = IDENTITY_SPECS[identityType];
-    const attemptId = await this.reserveAttempt(userId, identityType);
+    const hash = hmacHex(idNumber, this.encryptionKey);
+    const reservation = await this.reserveAttempt(userId, identityType, hash);
+    if ('currentState' in reservation) {
+      return reservation.currentState;
+    }
+    const { attemptId } = reservation;
 
     let result: KycVerificationResult;
     try {
@@ -92,7 +101,6 @@ export class KycService {
       throw new spec.failed();
     }
 
-    const hash = hmacHex(idNumber, this.encryptionKey);
     const ciphertext = encryptSecret(idNumber, this.encryptionKey);
 
     try {
@@ -101,6 +109,13 @@ export class KycService {
 
         const repo = manager.getRepository(KycVerification);
         const existing = await repo.findOneBy({ userId });
+        // A concurrent request may have verified a different identifier while
+        // this one was at the provider.
+        const storedHash =
+          identityType === 'bvn' ? existing?.bvnHash : existing?.ninHash;
+        if (storedHash && storedHash !== hash) {
+          throw new spec.alreadyVerified();
+        }
         const record =
           existing ?? repo.create({ userId, livenessVerified: false });
         if (identityType === 'bvn') {
@@ -116,7 +131,10 @@ export class KycService {
             [identityType]: result.address,
           };
         }
-        record.verifiedLegalName = result.legalName ?? null;
+        // The BVN name wins; a NIN name only fills in until a BVN is verified.
+        if (result.legalName && (identityType === 'bvn' || !record.bvnHash)) {
+          record.verifiedLegalName = result.legalName;
+        }
         await repo.save(record);
 
         await manager
@@ -166,15 +184,56 @@ export class KycService {
     };
   }
 
+  // A verified identity is immutable through the API: resubmitting it is a free
+  // no-op, a different one is rejected, so a freed hash can't be claimed by
+  // another account.
+  private async resolveVerifiedIdentity(
+    manager: EntityManager,
+    userId: string,
+    identityType: KycIdentityType,
+    hash: string,
+  ): Promise<VerifyIdentityResponseDto | null> {
+    const record = await manager
+      .getRepository(KycVerification)
+      .findOneBy({ userId });
+    const storedHash =
+      identityType === 'bvn' ? record?.bvnHash : record?.ninHash;
+    if (!record || !storedHash) {
+      return null;
+    }
+    if (storedHash !== hash) {
+      throw new IDENTITY_SPECS[identityType].alreadyVerified();
+    }
+    return {
+      tier: await this.usersService.getKycTier(manager, userId),
+      bvnVerified: !!record.bvnHash,
+      ninVerified: !!record.ninHash,
+      livenessVerified: record.livenessVerified,
+    };
+  }
+
   // Counted as failed under the user's lock before the provider call so
   // concurrent requests can't all pass the limit; a success flips it. The
   // provider call stays outside every transaction.
   private reserveAttempt(
     userId: string,
     identityType: KycIdentityType,
-  ): Promise<string> {
+    hash: string,
+  ): Promise<
+    { attemptId: string } | { currentState: VerifyIdentityResponseDto }
+  > {
     return runInTransaction(this.dataSource, async (manager) => {
       await this.lockUser(manager, userId);
+
+      const currentState = await this.resolveVerifiedIdentity(
+        manager,
+        userId,
+        identityType,
+        hash,
+      );
+      if (currentState) {
+        return { currentState };
+      }
 
       const repo = manager.getRepository(KycVerificationAttempt);
       const failedCount = await repo.count({
@@ -192,7 +251,7 @@ export class KycService {
       const attempt = await repo.save(
         repo.create({ userId, identityType, succeeded: false }),
       );
-      return attempt.id;
+      return { attemptId: attempt.id };
     });
   }
 

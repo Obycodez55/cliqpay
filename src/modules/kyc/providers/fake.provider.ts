@@ -12,18 +12,19 @@ export class FakeKycProvider implements KycProvider {
     bvn: string,
     options?: KycVerifyOptions,
   ): Promise<KycVerificationResult> {
-    return this.verify(bvn, options);
+    return this.verify('Bvn Test User', bvn, options);
   }
 
   verifyNin(
     nin: string,
     options?: KycVerifyOptions,
   ): Promise<KycVerificationResult> {
-    return this.verify(nin, options);
+    return this.verify('Nin Test User', nin, options);
   }
 
   // eslint-disable-next-line @typescript-eslint/require-await
   private async verify(
+    legalName: string,
     idNumber: string,
     options?: KycVerifyOptions,
   ): Promise<KycVerificationResult> {
@@ -35,7 +36,7 @@ export class FakeKycProvider implements KycProvider {
     }
     return {
       status: 'verified',
-      legalName: 'Test User',
+      legalName,
       address: {
         street: '1 Test Street',
         town: 'Ikeja',

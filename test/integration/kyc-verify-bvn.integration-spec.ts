@@ -178,12 +178,60 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
     expect(attempts).toBe(5);
   });
 
+  describe('verified BVN immutability', () => {
+    it('treats resubmitting the same BVN as a free no-op and rejects a different one', async () => {
+      const userId = await seedUser();
+      const token = tokenFor(userId);
+      await verifyBvn(token, '71000000001').expect(201);
+      const before = await ctx.kycVerificationRepo.findOneByOrFail({ userId });
+      const attemptsBefore = await ctx.kycVerificationAttemptRepo.countBy({
+        userId,
+      });
+
+      const same = await verifyBvn(token, '71000000001');
+      expect(same.status).toBe(201);
+      expect(same.body).toEqual({
+        tier: 'tier1',
+        bvnVerified: true,
+        ninVerified: false,
+        livenessVerified: false,
+      });
+
+      const different = await verifyBvn(token, '71000000002');
+      expect(different.status).toBe(409);
+
+      const after = await ctx.kycVerificationRepo.findOneByOrFail({ userId });
+      expect(after).toEqual(before);
+      expect(await ctx.kycVerificationAttemptRepo.countBy({ userId })).toBe(
+        attemptsBefore,
+      );
+      const user = await ctx.userRepo.findOneByOrFail({ id: userId });
+      expect(user.kycTier).toBe('tier1');
+    });
+
+    it('does not free the old BVN for another account by overwriting it', async () => {
+      const userA = await seedUser();
+      const userB = await seedUser();
+      await verifyBvn(tokenFor(userA), '72000000001').expect(201);
+
+      expect((await verifyBvn(tokenFor(userA), '72000000002')).status).toBe(
+        409,
+      );
+      const res = await verifyBvn(tokenFor(userB), '72000000001');
+
+      expect(res.status).toBe(409);
+      expect(await ctx.kycVerificationRepo.findOneBy({ userId: userB })).toBe(
+        null,
+      );
+    });
+  });
+
   describe('concurrency', () => {
     beforeAll(async () => {
       await ctx.app.listen(0);
     });
 
-    it('serializes concurrent first-time verifications for one user without a 500', async () => {
+    it('serializes concurrent first-time verifications for one user: the first wins, the rest are rejected, with no 500', async () => {
       const userId = await seedUser();
       const token = tokenFor(userId);
 
@@ -193,7 +241,9 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
         ),
       );
 
-      expect(responses.map((r) => r.status)).toEqual(Array(5).fill(201));
+      const statuses = responses.map((r) => r.status);
+      expect(statuses.filter((s) => s === 201)).toHaveLength(1);
+      expect(statuses.filter((s) => s === 409)).toHaveLength(4);
       expect(await ctx.kycVerificationRepo.countBy({ userId })).toBe(1);
       const user = await ctx.userRepo.findOneByOrFail({ id: userId });
       expect(user.kycTier).toBe('tier1');

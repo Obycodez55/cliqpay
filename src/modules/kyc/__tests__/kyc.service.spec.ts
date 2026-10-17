@@ -1,5 +1,9 @@
 import { DataSource, EntityManager } from 'typeorm';
 import { AppConfig } from '../../../config';
+import {
+  encryptionKeyFromHex,
+  hmacHex,
+} from '../../../shared/crypto/secrets.util';
 import { KycTier, UsersService } from '../../users/users.service';
 import { KycService } from '../kyc.service';
 import { KycVerification } from '../entities/kyc-verification.entity';
@@ -10,8 +14,10 @@ import {
 } from '../providers/kyc-provider.interface';
 import {
   BvnAlreadyLinkedException,
+  BvnAlreadyVerifiedException,
   BvnVerificationFailedException,
   NinAlreadyLinkedException,
+  NinAlreadyVerifiedException,
   NinVerificationFailedException,
   TooManyVerificationAttemptsException,
 } from '../internal/errors';
@@ -204,12 +210,13 @@ describe('KycService', () => {
       await service.verifyBvn('user-1', '12345678901');
 
       const lockCalls = managerQuery.mock.invocationCallOrder;
-      const [lockSql, lockArgs] = managerQuery.mock.calls[1];
-      expect(lockSql).toContain('pg_advisory_xact_lock');
-      expect(lockArgs).toEqual(['user-1']);
-      expect(lockCalls[1]).toBeLessThan(
-        kycVerificationRepo.findOneBy.mock.invocationCallOrder[0],
-      );
+      const readCalls = kycVerificationRepo.findOneBy.mock.invocationCallOrder;
+      for (const [lockSql, lockArgs] of managerQuery.mock.calls) {
+        expect(lockSql).toContain('pg_advisory_xact_lock');
+        expect(lockArgs).toEqual(['user-1']);
+      }
+      expect(lockCalls[0]).toBeLessThan(readCalls[0]);
+      expect(lockCalls[1]).toBeLessThan(readCalls[1]);
       expect(lockCalls[1]).toBeLessThan(
         usersService.getKycTier.mock.invocationCallOrder[0],
       );
@@ -217,28 +224,6 @@ describe('KycService', () => {
         fakeManager,
         'user-1',
       );
-    });
-
-    it('does not downgrade or re-call setKycTier for an already tier1+ user re-verifying', async () => {
-      usersService.getKycTier.mockResolvedValue('tier1');
-      kycVerificationRepo.findOneBy.mockResolvedValue({
-        id: 'kyc-1',
-        userId: 'user-1',
-        bvnCiphertext: 'old',
-        bvnHash: 'old-hash',
-        ninCiphertext: null,
-        ninHash: null,
-        address: null,
-        verifiedLegalName: null,
-        livenessVerified: false,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-
-      const result = await service.verifyBvn('user-1', '12345678901');
-
-      expect(usersService.setKycTier).not.toHaveBeenCalled();
-      expect(result.tier).toBe('tier1');
     });
 
     it('keeps the reserved attempt counted as failed and persists nothing when the provider does not verify', async () => {
@@ -284,6 +269,154 @@ describe('KycService', () => {
         BvnAlreadyLinkedException,
       );
       expect(attemptRepo.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('verified identity immutability', () => {
+    const key = encryptionKeyFromHex(TEST_ENCRYPTION_KEY);
+
+    function verifiedRecord(overrides: Partial<KycVerification>) {
+      kycVerificationRepo.findOneBy.mockResolvedValue({
+        userId: 'user-1',
+        bvnHash: null,
+        ninHash: null,
+        livenessVerified: false,
+        ...overrides,
+      } as KycVerification);
+    }
+
+    it.each([
+      ['BVN', 'bvnHash', 'verifyBvn'],
+      ['NIN', 'ninHash', 'verifyNin'],
+    ] as const)(
+      'returns the current state for the same %s without a provider call or attempt',
+      async (_label, hashField, method) => {
+        usersService.getKycTier.mockResolvedValue('tier1');
+        verifiedRecord({ [hashField]: hmacHex('12345678901', key) });
+
+        const result = await service[method]('user-1', '12345678901');
+
+        expect(result).toEqual({
+          tier: 'tier1',
+          bvnVerified: hashField === 'bvnHash',
+          ninVerified: hashField === 'ninHash',
+          livenessVerified: false,
+        });
+        expect(kycProvider.verifyBvn).not.toHaveBeenCalled();
+        expect(kycProvider.verifyNin).not.toHaveBeenCalled();
+        expect(attemptRepo.save).not.toHaveBeenCalled();
+        expect(kycVerificationRepo.save).not.toHaveBeenCalled();
+        expect(usersService.setKycTier).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ['BVN', 'bvnHash', 'verifyBvn', BvnAlreadyVerifiedException],
+      ['NIN', 'ninHash', 'verifyNin', NinAlreadyVerifiedException],
+    ] as const)(
+      'rejects a different %s before the provider, leaving data and attempts untouched',
+      async (_label, hashField, method, errorClass) => {
+        verifiedRecord({ [hashField]: hmacHex('12345678901', key) });
+
+        await expect(service[method]('user-1', '99999999999')).rejects.toThrow(
+          errorClass,
+        );
+
+        expect(kycProvider.verifyBvn).not.toHaveBeenCalled();
+        expect(kycProvider.verifyNin).not.toHaveBeenCalled();
+        expect(attemptRepo.save).not.toHaveBeenCalled();
+        expect(kycVerificationRepo.save).not.toHaveBeenCalled();
+      },
+    );
+
+    it('does not let a verified BVN block a first NIN, or the reverse', async () => {
+      verifiedRecord({ bvnHash: hmacHex('12345678901', key) });
+      usersService.getKycTier.mockResolvedValue('tier1');
+      await expect(
+        service.verifyNin('user-1', '22222222222'),
+      ).resolves.toMatchObject({ tier: 'tier2', ninVerified: true });
+
+      verifiedRecord({ ninHash: hmacHex('22222222222', key) });
+      await expect(
+        service.verifyBvn('user-1', '12345678901'),
+      ).resolves.toMatchObject({ tier: 'tier2', bvnVerified: true });
+    });
+  });
+
+  describe('verified legal name', () => {
+    function existing(name: string | null, bvnHash: string | null) {
+      kycVerificationRepo.findOneBy.mockResolvedValue({
+        userId: 'user-1',
+        bvnHash,
+        ninHash: null,
+        verifiedLegalName: name,
+        livenessVerified: false,
+      } as KycVerification);
+    }
+
+    it('replaces a NIN-sourced name with the BVN name', async () => {
+      existing('Nin Name', null);
+      kycProvider.verifyBvn.mockResolvedValue({
+        ...verifiedResult(),
+        legalName: 'Bvn Name',
+      });
+
+      await service.verifyBvn('user-1', '12345678901');
+
+      expect(kycVerificationRepo.save.mock.calls[0][0].verifiedLegalName).toBe(
+        'Bvn Name',
+      );
+    });
+
+    it('keeps the BVN name when a NIN is verified afterwards', async () => {
+      existing('Bvn Name', 'bvn-hash');
+      kycProvider.verifyNin.mockResolvedValue({
+        ...verifiedResult(),
+        legalName: 'Nin Name',
+      });
+
+      await service.verifyNin('user-1', '12345678901');
+
+      expect(kycVerificationRepo.save.mock.calls[0][0].verifiedLegalName).toBe(
+        'Bvn Name',
+      );
+    });
+
+    it('uses the NIN name while no BVN is verified', async () => {
+      kycProvider.verifyNin.mockResolvedValue({
+        ...verifiedResult(),
+        legalName: 'Nin Name',
+      });
+
+      await service.verifyNin('user-1', '12345678901');
+
+      expect(kycVerificationRepo.save.mock.calls[0][0].verifiedLegalName).toBe(
+        'Nin Name',
+      );
+    });
+
+    it('does not null an existing name when a NIN lookup returns none', async () => {
+      existing('Nin Name', null);
+      kycProvider.verifyNin.mockResolvedValue({
+        status: 'verified',
+      });
+
+      await service.verifyNin('user-1', '12345678901');
+
+      expect(kycVerificationRepo.save.mock.calls[0][0].verifiedLegalName).toBe(
+        'Nin Name',
+      );
+    });
+
+    it('does not null an existing name when a BVN lookup returns none', async () => {
+      existing('Nin Name', null);
+      kycProvider.verifyBvn.mockResolvedValue({ status: 'verified' });
+
+      await service.verifyBvn('user-1', '12345678901');
+
+      expect(kycVerificationRepo.save.mock.calls[0][0].verifiedLegalName).toBe(
+        'Nin Name',
+      );
     });
   });
 
@@ -350,7 +483,6 @@ describe('KycService', () => {
       kycVerificationRepo.findOneBy.mockResolvedValue({
         userId: 'user-1',
         bvnHash: 'bvn-hash',
-        ninHash: 'old-nin-hash',
         livenessVerified: false,
       } as KycVerification);
 
