@@ -55,24 +55,36 @@ call `usersService.setKycTier()` on upgrade — it never writes the tier
 column itself, mirroring how `disputes` calls `usersService.freeze()`/
 `unfreeze()` rather than reaching into `User` directly (ADR-0016).
 
-`kyc` exposes exactly one method the money-moving modules call:
+`kyc` exposes one method the debit paths (`transfers`, `withdrawals`) call:
 
 ```
-checkAndReserveLimit(manager: EntityManager, userId: string, amount: Money): Promise<void>
+checkAndReserveLimit(
+  manager: EntityManager,
+  userId: string,
+  amount: Money,
+  readDebitedSince: (manager: EntityManager, since: Date) => Promise<Money>,
+): Promise<void>
 ```
 
-Called by `transfers`, `withdrawals`, and `payments` (funding-initiation
-only — see the Phase 6 design notes on balance-cap enforcement) with their
-own already-open `EntityManager`, before they call into `ledger`'s posting
-methods. It:
+The caller passes its own already-open `EntityManager` and calls this before
+it calls into `ledger`'s posting methods. `kyc` owns the rule and the lock;
+the caller supplies the one ledger fact the rule needs, by wiring
+`readDebitedSince` to a new read-only `ledger.getDebitedSince(manager,
+userId, since)`. The method:
 
 1. Acquires `pg_advisory_xact_lock(hashtext(userId))` — a transaction-scoped
    advisory lock keyed by user ID, as the first statement, inside the
    caller's transaction.
-2. Sums the user's debit transactions (transfers-out + withdrawals) since
-   the start of the current calendar day in `Africa/Lagos` (WAT).
-3. Compares `sum + amount` against the user's tier's daily limit; throws if
-   it would exceed.
+2. Computes the start of the current calendar day in `Africa/Lagos` (WAT)
+   and calls `readDebitedSince(manager, thatInstant)` — only after the lock
+   is held, so the sum can't be read before a concurrent request commits.
+3. Compares `debited + amount` against the user's tier's daily limit; throws
+   if it would exceed.
+
+What counts as debited is `ledger`'s answer, not `kyc`'s: the principal
+`amount` of the user's `p2p_transfer` and `withdrawal` transactions in
+`pending` or `completed` status. Fees don't count, and `failed`/`reversed`
+transactions don't, so a rejected or reversed withdrawal frees the allowance.
 
 The advisory lock serializes all limit checks for a given user without
 `kyc` needing any relationship to `ledger`'s wallet-row lock or its private
@@ -81,11 +93,20 @@ matching the existing "everything happens in one `runInTransaction` call"
 convention (`src/database/transaction.util.ts`) already used throughout the
 money-moving path.
 
-`ledger` gains no new methods and no new dependency. `kyc` gains no
-dependency on `ledger` — it only reads `transactions`/`ledger_entries` via
-its own read query against `manager`, the same table-reading-without-
-module-coupling pattern `payments`' reconciliation job already uses for
-`float_<ccy>` balances.
+`ledger` gains exactly one read-only method (`getDebitedSince`) and still no
+dependency on any other module. `kyc` gains no dependency on `ledger` and
+reads no ledger table.
+
+Funding-initiation's balance cap is a separate, simpler `kyc` check (the
+caller supplies the current balance); it needs no lock because nothing
+debits.
+
+**Amended 2026-10-17, before implementation.** The first draft of this ADR
+had `kyc` read `transactions` directly by raw SQL, citing `payments`'
+reconciliation job as precedent. That precedent does not exist: no module
+outside `ledger` reads ledger tables, and reconciliation goes through
+`LedgerService`. Raw SQL would also have evaded the module-boundary lint
+while coupling `kyc` to ledger's schema.
 
 ## Alternatives considered
 
@@ -105,6 +126,16 @@ module-coupling pattern `payments`' reconciliation job already uses for
   and `ledger`'s lock-ordering convention, coupling it to `ledger`'s
   internals through duplicated knowledge instead of through an import,
   which is a worse coupling because nothing enforces the two stay in sync.
+- **`kyc` reads `transactions` by raw SQL through the caller's `manager`**
+  (the original draft of this ADR). Rejected — it is cross-module table
+  coupling the boundary lint cannot see, there is no precedent for it, and
+  `transactions` carries `sender_wallet_id`, so `kyc` would also need to know
+  how users map to wallets.
+- **`kyc` imports `LedgerService`** to read the sum itself. Rejected — it
+  adds a `kyc`→`ledger` dependency this ADR set out to avoid, and the
+  advisory-lock-before-read ordering would then depend on `kyc` reaching into
+  another module mid-check. Passing the reader in keeps `kyc` importing
+  `users` only.
 - **Fold tier limits into `users`.** Rejected on the same "different shape
   of thing" ground `isFrozen` didn't have to answer — `isFrozen` is a
   boolean flag on account state; `tier_limits` is a seeded reference table
