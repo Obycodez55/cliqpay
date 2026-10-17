@@ -97,9 +97,20 @@ money-moving path.
 dependency on any other module. `kyc` gains no dependency on `ledger` and
 reads no ledger table.
 
-Funding-initiation's balance cap is a separate, simpler `kyc` check (the
-caller supplies the current balance); it needs no lock because nothing
-debits.
+Funding-initiation's balance cap is a second `kyc` method with the same
+shape: `checkBalanceCap(manager, userId, requested, readBalanceAndPending)`.
+It takes the same per-user advisory lock, then calls a caller-supplied reader
+(backed by a new read-only `ledger` method) that returns the wallet balance
+and the total of the user's in-flight `pending` funding transactions, and
+rejects when `balance + pending + requested` would exceed the tier's cap. The
+lock is needed after all: funding initiation inserts a `pending` row before
+the provider is called, and without counting those rows (and serializing the
+check with that insert) a user could start several checkouts that each look
+fine against a balance that hasn't moved yet, then pay them all and overshoot
+the cap through the ordinary in-app flow. The check and the pending-row insert
+share one transaction; the provider call stays outside it. A credit that
+bypasses initiation entirely (an out-of-band bank credit) is still out of
+scope.
 
 **Amended 2026-10-17, before implementation.** The first draft of this ADR
 had `kyc` read `transactions` directly by raw SQL, citing `payments`'
