@@ -30,7 +30,6 @@ import {
 } from './dto/money-request-response.dto';
 import { TransfersService } from './transfers.service';
 import {
-  MoneyRequestAmountTooLargeException,
   MoneyRequestAmountTooSmallException,
   MoneyRequestNotFoundException,
   MoneyRequestNotPayableException,
@@ -114,15 +113,10 @@ export class MoneyRequestsService {
     requesterId: string,
     dto: CreateMoneyRequestDto,
   ): Promise<MoneyRequestResponseDto> {
-    const { minAmount, maxAmount } = this.config.transfers;
+    const { minAmount } = this.config.transfers;
     if (dto.amount < minAmount) {
       throw new MoneyRequestAmountTooSmallException(
         Money.of(minAmount, NGN).toDecimalString(),
-      );
-    }
-    if (dto.amount > maxAmount) {
-      throw new MoneyRequestAmountTooLargeException(
-        Money.of(maxAmount, NGN).toDecimalString(),
       );
     }
     if (dto.payerUserId === requesterId) {

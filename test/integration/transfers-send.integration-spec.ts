@@ -186,18 +186,6 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
     }).expect(422);
   });
 
-  it('rejects an amount above the configured maximum', async () => {
-    const sender = await seedFundedSender({ balanceMinor: 200_000_000n });
-    const recipient = await seedRecipient();
-
-    await send(tokenFor(sender.userId), {
-      recipientUserId: recipient.userId,
-      amount: 100_000_001,
-      reference: `cliqpay-xfer-max-${sender.userId}`,
-      pin: '1234',
-    }).expect(422);
-  });
-
   it("rejects when the sender's email is not verified", async () => {
     const sender = await seedFundedSender({ emailVerified: false });
     const recipient = await seedRecipient();

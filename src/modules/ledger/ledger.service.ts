@@ -465,6 +465,31 @@ export class LedgerService {
     }));
   }
 
+  // Principal only — fees never count toward a spend limit.
+  async getDebitedSince(
+    manager: EntityManager,
+    userId: string,
+    since: Date,
+  ): Promise<Money> {
+    const wallet = await manager
+      .getRepository(Account)
+      .findOneByOrFail({ userId, role: 'user_wallet' });
+    const row = await manager
+      .getRepository(Transaction)
+      .createQueryBuilder('transaction')
+      .select('COALESCE(SUM(transaction.amount), 0)', 'total')
+      .where('transaction.senderWalletId = :walletId', { walletId: wallet.id })
+      .andWhere('transaction.type IN (:...types)', {
+        types: ['p2p_transfer', 'withdrawal'],
+      })
+      .andWhere('transaction.status IN (:...statuses)', {
+        statuses: ['pending', 'completed'],
+      })
+      .andWhere('transaction.createdAt >= :since', { since })
+      .getRawOne<{ total: string }>();
+    return Money.of(BigInt(row?.total ?? 0), wallet.currency);
+  }
+
   // Feeds the withdrawal self-verify poll job (issue #31) — same shape as
   // findStaleFundingTransactions above, scoped to withdrawals instead of
   // funding.
@@ -1070,6 +1095,13 @@ export class LedgerService {
     return runInTransaction(this.dataSource, (manager) =>
       this.postWithdrawalEntries(manager, params),
     );
+  }
+
+  async postWithdrawalWithinTransaction(
+    manager: EntityManager,
+    params: PostWithdrawalParams,
+  ): Promise<PostWithdrawalResult> {
+    return this.postWithdrawalEntries(manager, params);
   }
 
   private async postWithdrawalEntries(

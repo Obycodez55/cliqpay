@@ -1,6 +1,8 @@
 import { AppConfig } from '../../../config';
 import { WithdrawalsService } from '../withdrawals.service';
 import { LedgerService } from '../../ledger/ledger.service';
+import { DataSource } from 'typeorm';
+import { KycService } from '../../kyc/kyc.service';
 import { UsersService } from '../../users/users.service';
 import { AuthService } from '../../auth/auth.service';
 import { PaymentsService } from '../../payments/payments.service';
@@ -13,7 +15,6 @@ const TEST_ENCRYPTION_KEY = 'a'.repeat(64);
 const testConfig = {
   withdrawals: {
     minAmount: 10_000,
-    maxAmount: 100_000_000,
     platformFee: 0,
     providerFee: 3_000,
   },
@@ -63,7 +64,9 @@ describe('WithdrawalsService.initiateWithdrawal', () => {
   let ledgerService: jest.Mocked<
     Pick<
       LedgerService,
-      'getUserWallet' | 'checkIdempotentReplay' | 'postWithdrawal'
+      | 'getUserWallet'
+      | 'checkIdempotentReplay'
+      | 'postWithdrawalWithinTransaction'
     >
   >;
   let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
@@ -84,17 +87,20 @@ describe('WithdrawalsService.initiateWithdrawal', () => {
     ledgerService = {
       getUserWallet: jest.fn().mockResolvedValue(wallet()),
       checkIdempotentReplay: jest.fn().mockResolvedValue({ outcome: 'none' }),
-      postWithdrawal: jest.fn(),
+      postWithdrawalWithinTransaction: jest.fn(),
     };
     usersService = { findById: jest.fn().mockResolvedValue(user()) };
     eventBus = { publish: jest.fn() };
 
     service = new WithdrawalsService(
-      bankAccountRepo as never,
+      {
+        getRepository: jest.fn().mockReturnValue(bankAccountRepo),
+      } as unknown as DataSource,
       authService as unknown as AuthService,
       paymentsService as unknown as PaymentsService,
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
+      {} as KycService,
       eventBus as unknown as EventBusService,
       testConfig,
     );
@@ -108,7 +114,9 @@ describe('WithdrawalsService.initiateWithdrawal', () => {
     ).rejects.toThrow(InitiatorAccountFrozenException);
 
     expect(authService.verifyTransactionPin).not.toHaveBeenCalled();
-    expect(ledgerService.postWithdrawal).not.toHaveBeenCalled();
+    expect(
+      ledgerService.postWithdrawalWithinTransaction,
+    ).not.toHaveBeenCalled();
   });
 
   it('proceeds past the frozen check to PIN verification for a non-frozen initiator', async () => {
@@ -125,6 +133,8 @@ describe('WithdrawalsService.initiateWithdrawal', () => {
       'withdrawer-1',
       '1234',
     );
-    expect(ledgerService.postWithdrawal).not.toHaveBeenCalled();
+    expect(
+      ledgerService.postWithdrawalWithinTransaction,
+    ).not.toHaveBeenCalled();
   });
 });

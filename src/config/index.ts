@@ -75,11 +75,6 @@ const envSchema = z
 
     TRANSFER_PLATFORM_FEE: z.coerce.number().int().nonnegative().default(0),
     TRANSFER_MIN_AMOUNT: z.coerce.number().int().nonnegative().default(10_000),
-    TRANSFER_MAX_AMOUNT: z.coerce
-      .number()
-      .int()
-      .positive()
-      .default(100_000_000),
 
     // Money requests (ADR-0012) — expiry is derived at read time, never
     // swept, so this only controls what gets stamped on `expires_at` at
@@ -98,11 +93,6 @@ const envSchema = z
       .int()
       .nonnegative()
       .default(10_000),
-    WITHDRAWAL_MAX_AMOUNT: z.coerce
-      .number()
-      .int()
-      .positive()
-      .default(100_000_000),
     WITHDRAWAL_PLATFORM_FEE: z.coerce.number().int().nonnegative().default(0),
     WITHDRAWAL_PROVIDER_FEE: z.coerce
       .number()
@@ -252,7 +242,6 @@ function buildConfig(env: Env) {
     transfers: {
       platformFee: env.TRANSFER_PLATFORM_FEE,
       minAmount: env.TRANSFER_MIN_AMOUNT,
-      maxAmount: env.TRANSFER_MAX_AMOUNT,
     },
     moneyRequests: {
       expiryDays: env.MONEY_REQUEST_EXPIRY_DAYS,
@@ -260,7 +249,6 @@ function buildConfig(env: Env) {
     },
     withdrawals: {
       minAmount: env.WITHDRAWAL_MIN_AMOUNT,
-      maxAmount: env.WITHDRAWAL_MAX_AMOUNT,
       platformFee: env.WITHDRAWAL_PLATFORM_FEE,
       providerFee: env.WITHDRAWAL_PROVIDER_FEE,
     },

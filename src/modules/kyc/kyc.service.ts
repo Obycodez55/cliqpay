@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, EntityManager, MoreThan } from 'typeorm';
+import { Money } from '../../shared/primitives/money';
 import { APP_CONFIG, AppConfig } from '../../config';
 import {
   encryptSecret,
@@ -11,6 +12,7 @@ import { isUniqueViolation } from '../../database/postgres-errors.util';
 import { runInTransaction } from '../../database/transaction.util';
 import { UsersService } from '../users/users.service';
 import { KycVerification } from './entities/kyc-verification.entity';
+import { TierLimit } from './entities/tier-limit.entity';
 import {
   KycIdentityType,
   KycVerificationAttempt,
@@ -21,17 +23,23 @@ import {
   KycVerificationResult,
 } from './providers/kyc-provider.interface';
 import { deriveTier, tierRank } from './internal/tier';
+import { startOfDay } from './internal/day-start';
 import {
   BvnAlreadyLinkedException,
   BvnAlreadyVerifiedException,
   BvnVerificationFailedException,
+  DailyLimitExceededException,
   NinAlreadyLinkedException,
   NinAlreadyVerifiedException,
   NinVerificationFailedException,
+  TierLimitNotConfiguredException,
   TooManyVerificationAttemptsException,
 } from './internal/errors';
 import { VerifyIdentityResponseDto } from './dto/verify-identity-response.dto';
 import { KycStatusResponseDto } from './dto/kyc-status-response.dto';
+
+// Becomes the user's own timezone once profiles carry one.
+const DEFAULT_USER_TIME_ZONE = 'Africa/Lagos';
 
 const MAX_FAILED_ATTEMPTS_PER_WINDOW = 5;
 const ATTEMPT_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -167,6 +175,42 @@ export class KycService {
       }
       throw error;
     }
+  }
+
+  async checkAndReserveLimit(
+    manager: EntityManager,
+    userId: string,
+    amount: Money,
+    readDebitedSince: (manager: EntityManager, since: Date) => Promise<Money>,
+  ): Promise<void> {
+    await this.lockUser(manager, userId);
+
+    const tier = await this.usersService.getKycTier(manager, userId);
+    const tierLimit = await manager
+      .getRepository(TierLimit)
+      .findOneBy({ tier, currency: amount.currency });
+    if (!tierLimit) {
+      throw new TierLimitNotConfiguredException();
+    }
+
+    const dailyLimit = Money.of(
+      tierLimit.dailyDebitLimitMinor,
+      amount.currency,
+    );
+    const debited = await readDebitedSince(
+      manager,
+      startOfDay(new Date(), this.timeZoneFor(userId)),
+    );
+    if (debited.add(amount).greaterThan(dailyLimit)) {
+      const remaining = dailyLimit.greaterThan(debited)
+        ? dailyLimit.subtract(debited)
+        : Money.zero(amount.currency);
+      throw new DailyLimitExceededException(dailyLimit, remaining);
+    }
+  }
+
+  private timeZoneFor(_userId: string): string {
+    return DEFAULT_USER_TIME_ZONE;
   }
 
   async getStatus(userId: string): Promise<KycStatusResponseDto> {

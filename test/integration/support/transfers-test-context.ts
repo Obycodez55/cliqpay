@@ -37,6 +37,7 @@ import { AddTransactionPinLockoutToCredentials1785491931164 } from '../../../src
 import { CreateNotifications1786812506579 } from '../../../src/database/migrations/1786812506579-CreateNotifications';
 import { CreateMoneyRequests1786900000000 } from '../../../src/database/migrations/1786900000000-CreateMoneyRequests';
 import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
+import { CreateTierLimits1787600000001 } from '../../../src/database/migrations/1787600000001-CreateTierLimits';
 import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
 import { AuthModule } from '../../../src/modules/auth/auth.module';
 import { AuthService } from '../../../src/modules/auth/auth.service';
@@ -48,7 +49,10 @@ import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
 import { User } from '../../../src/modules/users/entities/user.entity';
 import { UsersModule } from '../../../src/modules/users/users.module';
-import { UsersService } from '../../../src/modules/users/users.service';
+import {
+  KycTier,
+  UsersService,
+} from '../../../src/modules/users/users.service';
 import { TransfersModule } from '../../../src/modules/transfers/transfers.module';
 import { TransfersService } from '../../../src/modules/transfers/transfers.service';
 import { MoneyRequestsService } from '../../../src/modules/transfers/money-requests.service';
@@ -133,6 +137,7 @@ export async function createTransfersTestContext(
   await new CreateNotifications1786812506579().up(queryRunner);
   await new CreateMoneyRequests1786900000000().up(queryRunner);
   await new AddIsFrozenToUsers1787500000001().up(queryRunner);
+  await new CreateTierLimits1787600000001().up(queryRunner);
   await new AddKycTierToUsers1787600000002().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
@@ -145,7 +150,6 @@ export async function createTransfersTestContext(
     transfers: {
       platformFee,
       minAmount: 10_000,
-      maxAmount: 100_000_000,
     },
   });
 
@@ -240,6 +244,7 @@ export async function seedTransferUser(
     username: string;
     pin?: string;
     emailVerified?: boolean;
+    kycTier?: KycTier;
   },
 ): Promise<{ userId: string; walletId: string }> {
   const pin = overrides.pin ?? '1234';
@@ -256,6 +261,11 @@ export async function seedTransferUser(
         .getRepository(User)
         .update({ id: user.id }, { emailVerifiedAt: new Date() });
     }
+    await ctx.usersService.setKycTier(
+      manager,
+      user.id,
+      overrides.kycTier ?? 'tier3',
+    );
     const wallet = await ctx.ledgerService.createUserWallet(
       manager,
       user.id,

@@ -43,6 +43,7 @@ import { CreateBankAccounts1787200000000 } from '../../../src/database/migration
 import { AddWithdrawalReversalTransactionType1787300000000 } from '../../../src/database/migrations/1787300000000-AddWithdrawalReversalTransactionType';
 import { EncryptBankAccountNumbers1787400000000 } from '../../../src/database/migrations/1787400000000-EncryptBankAccountNumbers';
 import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
+import { CreateTierLimits1787600000001 } from '../../../src/database/migrations/1787600000001-CreateTierLimits';
 import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
 import { CreateTransactionsAndLedgerEntries1784707276066 } from '../../../src/database/migrations/1784707276066-CreateTransactionsAndLedgerEntries';
 import { AddFundingQueryIndexes1785488695081 } from '../../../src/database/migrations/1785488695081-AddFundingQueryIndexes';
@@ -65,11 +66,17 @@ import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
 import { User } from '../../../src/modules/users/entities/user.entity';
 import { UsersModule } from '../../../src/modules/users/users.module';
-import { UsersService } from '../../../src/modules/users/users.service';
+import {
+  KycTier,
+  UsersService,
+} from '../../../src/modules/users/users.service';
 import { PaymentsModule } from '../../../src/modules/payments/payments.module';
 import { PaymentsService } from '../../../src/modules/payments/payments.service';
 import { PAYMENT_PROVIDER_ADAPTER } from '../../../src/modules/payments/adapters/payment-provider.interface';
 import { FakeAdapter } from '../../../src/modules/payments/adapters/fake.adapter';
+import { KycService } from '../../../src/modules/kyc/kyc.service';
+import { TransfersModule } from '../../../src/modules/transfers/transfers.module';
+import { TransfersService } from '../../../src/modules/transfers/transfers.service';
 import { WithdrawalsModule } from '../../../src/modules/withdrawals/withdrawals.module';
 import { WithdrawalsService } from '../../../src/modules/withdrawals/withdrawals.service';
 import { BankAccount } from '../../../src/modules/withdrawals/entities/bank-account.entity';
@@ -102,6 +109,8 @@ export interface WithdrawalsTestContext {
   ledgerService: LedgerService;
   paymentsService: PaymentsService;
   withdrawalsService: WithdrawalsService;
+  transfersService: TransfersService;
+  kycService: KycService;
   dataSource: DataSource;
   userRepo: Repository<User>;
   credentialRepo: Repository<Credential>;
@@ -129,7 +138,6 @@ export interface WithdrawalsTestContext {
 export async function createWithdrawalsTestContext(
   withdrawalConfig: {
     minAmount?: number;
-    maxAmount?: number;
     platformFee?: number;
     providerFee?: number;
   } = {},
@@ -173,6 +181,7 @@ export async function createWithdrawalsTestContext(
   await new AddWithdrawalReversalTransactionType1787300000000().up(queryRunner);
   await new EncryptBankAccountNumbers1787400000000().up(queryRunner);
   await new AddIsFrozenToUsers1787500000001().up(queryRunner);
+  await new CreateTierLimits1787600000001().up(queryRunner);
   await new AddKycTierToUsers1787600000002().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
@@ -184,7 +193,6 @@ export async function createWithdrawalsTestContext(
     },
     withdrawals: {
       minAmount: withdrawalConfig.minAmount ?? 10_000,
-      maxAmount: withdrawalConfig.maxAmount ?? 100_000_000,
       platformFee: withdrawalConfig.platformFee ?? 0,
       providerFee: withdrawalConfig.providerFee ?? 3_000,
     },
@@ -203,6 +211,7 @@ export async function createWithdrawalsTestContext(
       AuthModule,
       PaymentsModule,
       WithdrawalsModule,
+      TransfersModule,
       NotificationsModule,
     ],
   }).compile();
@@ -249,6 +258,8 @@ export async function createWithdrawalsTestContext(
     ledgerService: moduleRef.get(LedgerService),
     paymentsService: moduleRef.get(PaymentsService),
     withdrawalsService: moduleRef.get(WithdrawalsService),
+    transfersService: moduleRef.get(TransfersService),
+    kycService: moduleRef.get(KycService),
     dataSource,
     userRepo: dataSource.getRepository(User),
     credentialRepo: dataSource.getRepository(Credential),
@@ -312,6 +323,7 @@ export async function seedWithdrawalUser(
     phone: string;
     username: string;
     pin?: string;
+    kycTier?: KycTier;
   },
 ): Promise<{ userId: string; walletId: string }> {
   const pin = overrides.pin ?? '1234';
@@ -326,6 +338,11 @@ export async function seedWithdrawalUser(
     await manager
       .getRepository(User)
       .update({ id: user.id }, { emailVerifiedAt: new Date() });
+    await ctx.usersService.setKycTier(
+      manager,
+      user.id,
+      overrides.kycTier ?? 'tier3',
+    );
     const wallet = await ctx.ledgerService.createUserWallet(
       manager,
       user.id,

@@ -35,16 +35,6 @@ export class WithdrawalAmountTooSmallException extends DomainException {
   }
 }
 
-export class WithdrawalAmountTooLargeException extends DomainException {
-  readonly code = 'WITHDRAWAL_AMOUNT_TOO_LARGE';
-  constructor(maxAmount: string) {
-    super(
-      `Withdrawal amount exceeds the maximum of ${maxAmount}`,
-      HttpStatus.UNPROCESSABLE_ENTITY,
-    );
-  }
-}
-
 export class InitiatorAccountFrozenException extends DomainException {
   readonly code = 'INITIATOR_ACCOUNT_FROZEN';
   constructor() {

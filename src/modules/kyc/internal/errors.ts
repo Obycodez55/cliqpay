@@ -1,5 +1,6 @@
 import { HttpStatus } from '@nestjs/common';
 import { DomainException } from '../../../common/exceptions/domain.exception';
+import { Money } from '../../../shared/primitives/money';
 
 export class BvnVerificationFailedException extends DomainException {
   readonly code = 'BVN_VERIFICATION_FAILED';
@@ -67,6 +68,31 @@ export class TooManyVerificationAttemptsException extends DomainException {
     super(
       'Too many failed verification attempts. Please try again later.',
       HttpStatus.TOO_MANY_REQUESTS,
+    );
+  }
+}
+
+export class DailyLimitExceededException extends DomainException {
+  readonly code = 'DAILY_LIMIT_EXCEEDED';
+  readonly details: { dailyLimit: object; remaining: object };
+  constructor(dailyLimit: Money, remaining: Money) {
+    super(
+      `This would exceed your daily limit of ${dailyLimit.toDecimalString()}. You can still send ${remaining.toDecimalString()} today.`,
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+    this.details = {
+      dailyLimit: dailyLimit.toJSON(),
+      remaining: remaining.toJSON(),
+    };
+  }
+}
+
+export class TierLimitNotConfiguredException extends DomainException {
+  readonly code = 'TIER_LIMIT_NOT_CONFIGURED';
+  constructor() {
+    super(
+      'Transaction limits are not configured for this account.',
+      HttpStatus.INTERNAL_SERVER_ERROR,
     );
   }
 }

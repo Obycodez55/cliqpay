@@ -56,6 +56,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
         statusCode: exception.getStatus(),
         code: exception.code,
         message: exception.message,
+        details: exception.details,
       };
     }
 

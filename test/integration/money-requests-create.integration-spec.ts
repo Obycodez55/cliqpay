@@ -135,17 +135,6 @@ describe('POST /money-requests — create', () => {
     );
   });
 
-  it('rejects an amount above the configured maximum', async () => {
-    const requester = await seedUser('maxreq');
-    const payer = await seedUser('maxpay');
-
-    await create(
-      tokenFor(requester.userId),
-      { payerUserId: payer.userId, amount: 100_000_001 },
-      422,
-    );
-  });
-
   it('rejects a request against a payer that does not exist', async () => {
     const requester = await seedUser('nopay');
 

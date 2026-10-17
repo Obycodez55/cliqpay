@@ -5,8 +5,8 @@ import {
   Logger,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { AuthService } from '../auth/auth.service';
 import { PaymentsService } from '../payments/payments.service';
@@ -18,6 +18,7 @@ import {
   WithdrawalTransactionMetadata,
 } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
+import { KycService } from '../kyc/kyc.service';
 import { Money } from '../../shared/primitives/money';
 import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
 import {
@@ -26,6 +27,7 @@ import {
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
 import { isUniqueViolation } from '../../database/postgres-errors.util';
+import { runInTransaction } from '../../database/transaction.util';
 import { BankAccount } from './entities/bank-account.entity';
 import { SaveBankAccountDto } from './dto/save-bank-account.dto';
 import {
@@ -45,7 +47,6 @@ import {
   BankAccountNotResolvableException,
   InitiatorAccountFrozenException,
   UnsupportedWithdrawalCurrencyException,
-  WithdrawalAmountTooLargeException,
   WithdrawalAmountTooSmallException,
   WithdrawalPayoutFailedException,
 } from './internal/errors';
@@ -89,16 +90,20 @@ export class WithdrawalsService {
   private readonly encryptionKey: Buffer;
 
   constructor(
-    @InjectRepository(BankAccount)
-    private readonly bankAccountRepo: Repository<BankAccount>,
+    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly authService: AuthService,
     private readonly paymentsService: PaymentsService,
     private readonly ledgerService: LedgerService,
     private readonly usersService: UsersService,
+    private readonly kycService: KycService,
     private readonly eventBus: EventBusService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {
     this.encryptionKey = encryptionKeyFromHex(config.encryption.key);
+  }
+
+  private get bankAccountRepo(): Repository<BankAccount> {
+    return this.dataSource.getRepository(BankAccount);
   }
 
   // docs/architecture.md §7 requires bank account numbers encrypted at
@@ -217,16 +222,10 @@ export class WithdrawalsService {
     userId: string,
     dto: InitiateWithdrawalDto,
   ): Promise<InitiateWithdrawalResponseDto> {
-    const { minAmount, maxAmount, platformFee, providerFee } =
-      this.config.withdrawals;
+    const { minAmount, platformFee, providerFee } = this.config.withdrawals;
     if (dto.amount < minAmount) {
       throw new WithdrawalAmountTooSmallException(
         Money.of(minAmount, NGN).toDecimalString(),
-      );
-    }
-    if (dto.amount > maxAmount) {
-      throw new WithdrawalAmountTooLargeException(
-        Money.of(maxAmount, NGN).toDecimalString(),
       );
     }
 
@@ -286,35 +285,45 @@ export class WithdrawalsService {
 
     let posted: PostWithdrawalResult;
     try {
-      posted = await this.ledgerService.postWithdrawal({
-        reference: dto.reference,
-        walletId: wallet.id,
-        provider: PROVIDER,
-        amount,
-        platformFee: platformFeeMoney,
-        providerFee: providerFeeMoney,
-        bankAccount: {
-          id: bankAccount.id,
-          bankCode: bankAccount.bankCode,
-          bankName: bankAccount.bankName,
-          accountNumber: maskAccountNumber(accountNumber),
-          accountName: bankAccount.accountName,
-        },
+      posted = await runInTransaction(this.dataSource, async (manager) => {
+        await this.kycService.checkAndReserveLimit(
+          manager,
+          userId,
+          amount,
+          (m, since) => this.ledgerService.getDebitedSince(m, userId, since),
+        );
+        return this.ledgerService.postWithdrawalWithinTransaction(manager, {
+          reference: dto.reference,
+          walletId: wallet.id,
+          provider: PROVIDER,
+          amount,
+          platformFee: platformFeeMoney,
+          providerFee: providerFeeMoney,
+          bankAccount: {
+            id: bankAccount.id,
+            bankCode: bankAccount.bankCode,
+            bankName: bankAccount.bankName,
+            accountNumber: maskAccountNumber(accountNumber),
+            accountName: bankAccount.accountName,
+          },
+        });
       });
     } catch (error) {
-      if (isUniqueViolation(error, 'UQ_transactions_reference')) {
-        const raced = await this.ledgerService.checkIdempotentReplay(
-          dto.reference,
-          userId,
-          fingerprint,
-        );
-        const racedResponse = this.resolveWithdrawalReplay(
-          raced,
-          dto.bankAccountId,
-        );
-        if (racedResponse) {
-          return racedResponse;
-        }
+      // A duplicate request racing this one may have committed first, in
+      // which case this one fails on the unique reference or on the limit
+      // its twin just consumed; either way the committed result is the
+      // answer.
+      const raced = await this.ledgerService.checkIdempotentReplay(
+        dto.reference,
+        userId,
+        fingerprint,
+      );
+      const racedResponse = this.resolveWithdrawalReplay(
+        raced,
+        dto.bankAccountId,
+      );
+      if (racedResponse) {
+        return racedResponse;
       }
       throw error;
     }

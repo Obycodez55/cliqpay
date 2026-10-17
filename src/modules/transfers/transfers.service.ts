@@ -5,7 +5,8 @@ import {
   Logger,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { EntityManager, EntityNotFoundError } from 'typeorm';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource, EntityManager, EntityNotFoundError } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import {
   IdempotentReplay,
@@ -13,8 +14,10 @@ import {
   PostTransferResult,
 } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
+import { KycService } from '../kyc/kyc.service';
 import { AuthService } from '../auth/auth.service';
 import { Money } from '../../shared/primitives/money';
+import { runInTransaction } from '../../database/transaction.util';
 import {
   TRANSFER_RECEIVED_EVENT,
   TRANSFER_SENT_EVENT,
@@ -29,7 +32,6 @@ import {
   SelfTransferException,
   SenderAccountFrozenException,
   SenderEmailNotVerifiedException,
-  TransferAmountTooLargeException,
   TransferAmountTooSmallException,
   UnsupportedTransferCurrencyException,
 } from './internal/errors';
@@ -77,8 +79,10 @@ export class TransfersService {
   private readonly logger = new Logger(TransfersService.name);
 
   constructor(
+    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly ledgerService: LedgerService,
     private readonly usersService: UsersService,
+    private readonly kycService: KycService,
     private readonly authService: AuthService,
     private readonly eventBus: EventBusService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
@@ -122,15 +126,10 @@ export class TransfersService {
     recipientUserId: string,
     amountMinor: number,
   ): Promise<PreparedTransfer> {
-    const { minAmount, maxAmount } = this.config.transfers;
+    const { minAmount } = this.config.transfers;
     if (amountMinor < minAmount) {
       throw new TransferAmountTooSmallException(
         Money.of(minAmount, NGN).toDecimalString(),
-      );
-    }
-    if (amountMinor > maxAmount) {
-      throw new TransferAmountTooLargeException(
-        Money.of(maxAmount, NGN).toDecimalString(),
       );
     }
     if (recipientUserId === senderId) {
@@ -225,6 +224,16 @@ export class TransfersService {
       platformFee: fee,
     };
 
+    const post = async (tx: EntityManager) => {
+      await this.kycService.checkAndReserveLimit(
+        tx,
+        senderId,
+        prepared.amount,
+        (m, since) => this.ledgerService.getDebitedSince(m, senderId, since),
+      );
+      return this.ledgerService.postTransferWithinTransaction(tx, postParams);
+    };
+
     if (manager) {
       // A duplicate-reference race against *this same request* is
       // impossible on this path — the caller already holds a row lock (see
@@ -243,10 +252,7 @@ export class TransfersService {
       // else's transaction — map it to the same clean conflict the
       // no-manager path produces instead of a raw 500.
       try {
-        return await this.ledgerService.postTransferWithinTransaction(
-          manager,
-          postParams,
-        );
+        return await post(manager);
       } catch (error) {
         if (isUniqueViolation(error, 'UQ_transactions_reference')) {
           throw new ConflictException(
@@ -258,17 +264,19 @@ export class TransfersService {
     }
 
     try {
-      return await this.ledgerService.postTransfer(postParams);
+      return await runInTransaction(this.dataSource, post);
     } catch (error) {
-      if (isUniqueViolation(error, 'UQ_transactions_reference')) {
-        const raced = await this.checkTransferReplay(
-          senderId,
-          prepared,
-          reference,
-        );
-        if (raced) {
-          return raced;
-        }
+      // A duplicate request racing this one may have committed first, in
+      // which case this one fails on the unique reference or on the limit
+      // its twin just consumed; either way the committed result is the
+      // answer.
+      const raced = await this.checkTransferReplay(
+        senderId,
+        prepared,
+        reference,
+      );
+      if (raced) {
+        return raced;
       }
       throw error;
     }

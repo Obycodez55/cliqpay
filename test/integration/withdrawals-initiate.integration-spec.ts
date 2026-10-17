@@ -197,19 +197,6 @@ describe('POST /withdrawals', () => {
     }).expect(422);
   });
 
-  it('rejects an amount above the configured maximum', async () => {
-    const sender = await seedFundedSenderWithBankAccount({
-      balanceMinor: 200_000_000n,
-    });
-
-    await initiate(tokenFor(sender.userId), {
-      bankAccountId: sender.bankAccount.id,
-      amount: 100_000_001,
-      reference: `cliqpay-wd-max-${sender.userId}`,
-      pin: '1234',
-    }).expect(422);
-  });
-
   it('rejects insufficient funds with a distinct 422, without moving anything', async () => {
     const sender = await seedFundedSenderWithBankAccount({
       balanceMinor: 100_000n,

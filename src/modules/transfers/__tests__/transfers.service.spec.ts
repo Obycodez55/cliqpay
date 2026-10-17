@@ -2,7 +2,7 @@ import {
   ConflictException,
   UnprocessableEntityException,
 } from '@nestjs/common';
-import { EntityNotFoundError } from 'typeorm';
+import { DataSource, EntityManager, EntityNotFoundError } from 'typeorm';
 import { AppConfig } from '../../../config';
 import { TransfersService } from '../transfers.service';
 import {
@@ -11,6 +11,7 @@ import {
   PostTransferResult,
 } from '../../ledger/ledger.service';
 import { UsersService } from '../../users/users.service';
+import { KycService } from '../../kyc/kyc.service';
 import { AuthService } from '../../auth/auth.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { Money } from '../../../shared/primitives/money';
@@ -19,7 +20,6 @@ import {
   SelfTransferException,
   SenderAccountFrozenException,
   SenderEmailNotVerifiedException,
-  TransferAmountTooLargeException,
   TransferAmountTooSmallException,
   UnsupportedTransferCurrencyException,
 } from '../internal/errors';
@@ -29,7 +29,7 @@ import {
 } from '../../../shared/events/domain-events';
 
 const testConfig = {
-  transfers: { minAmount: 10_000, maxAmount: 100_000_000, platformFee: 0 },
+  transfers: { minAmount: 10_000, platformFee: 0 },
 } as AppConfig;
 
 type User = Awaited<ReturnType<UsersService['findById']>>;
@@ -56,14 +56,25 @@ function wallet(overrides: Partial<Wallet> = {}): Wallet {
   } as Wallet;
 }
 
+const fakeManager = {} as EntityManager;
+const dataSource = {
+  transaction: jest.fn((work: (m: EntityManager) => Promise<unknown>) =>
+    work(fakeManager),
+  ),
+} as unknown as DataSource;
+
 describe('TransfersService.sendMoney', () => {
   let ledgerService: jest.Mocked<
     Pick<
       LedgerService,
-      'getUserWallet' | 'checkIdempotentReplay' | 'postTransfer'
+      | 'getUserWallet'
+      | 'checkIdempotentReplay'
+      | 'postTransferWithinTransaction'
+      | 'getDebitedSince'
     >
   >;
   let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
+  let kycService: jest.Mocked<Pick<KycService, 'checkAndReserveLimit'>>;
   let authService: jest.Mocked<Pick<AuthService, 'verifyTransactionPin'>>;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let service: TransfersService;
@@ -89,14 +100,18 @@ describe('TransfersService.sendMoney', () => {
     ledgerService = {
       getUserWallet: jest.fn(),
       checkIdempotentReplay: jest.fn(),
-      postTransfer: jest.fn(),
+      postTransferWithinTransaction: jest.fn(),
+      getDebitedSince: jest.fn(),
     };
     usersService = { findById: jest.fn() };
+    kycService = { checkAndReserveLimit: jest.fn() };
     authService = { verifyTransactionPin: jest.fn() };
     eventBus = { publish: jest.fn() };
     service = new TransfersService(
+      dataSource,
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
+      kycService as unknown as KycService,
       authService as unknown as AuthService,
       eventBus as unknown as EventBusService,
       testConfig,
@@ -113,7 +128,9 @@ describe('TransfersService.sendMoney', () => {
       ),
     );
     ledgerService.checkIdempotentReplay.mockResolvedValue({ outcome: 'none' });
-    ledgerService.postTransfer.mockResolvedValue(postTransferResult);
+    ledgerService.postTransferWithinTransaction.mockResolvedValue(
+      postTransferResult,
+    );
   });
 
   it('rejects an amount below the configured minimum before touching any service', async () => {
@@ -122,12 +139,6 @@ describe('TransfersService.sendMoney', () => {
     ).rejects.toThrow(TransferAmountTooSmallException);
 
     expect(usersService.findById).not.toHaveBeenCalled();
-  });
-
-  it('rejects an amount above the configured maximum', async () => {
-    await expect(
-      service.sendMoney('sender-1', { ...dto, amount: 100_000_001 }),
-    ).rejects.toThrow(TransferAmountTooLargeException);
   });
 
   it('rejects sending to yourself', async () => {
@@ -151,7 +162,7 @@ describe('TransfersService.sendMoney', () => {
       SenderAccountFrozenException,
     );
     expect(authService.verifyTransactionPin).not.toHaveBeenCalled();
-    expect(ledgerService.postTransfer).not.toHaveBeenCalled();
+    expect(ledgerService.postTransferWithinTransaction).not.toHaveBeenCalled();
   });
 
   it('maps a missing recipient wallet to a domain exception', async () => {
@@ -204,7 +215,7 @@ describe('TransfersService.sendMoney', () => {
       createdAt: '2026-08-16T00:00:00.000Z',
     });
     expect(authService.verifyTransactionPin).not.toHaveBeenCalled();
-    expect(ledgerService.postTransfer).not.toHaveBeenCalled();
+    expect(ledgerService.postTransferWithinTransaction).not.toHaveBeenCalled();
   });
 
   it('rejects a reference already used by a different user without exposing it', async () => {
@@ -246,13 +257,16 @@ describe('TransfersService.sendMoney', () => {
       'sender-1',
       '1234',
     );
-    expect(ledgerService.postTransfer).toHaveBeenCalledWith({
-      reference: 'cliqpay-xfer-1',
-      senderWalletId: 'wallet-sender',
-      recipientWalletId: 'wallet-recipient',
-      amount: Money.of(500_000n, 'NGN'),
-      platformFee: Money.zero('NGN'),
-    });
+    expect(ledgerService.postTransferWithinTransaction).toHaveBeenCalledWith(
+      fakeManager,
+      {
+        reference: 'cliqpay-xfer-1',
+        senderWalletId: 'wallet-sender',
+        recipientWalletId: 'wallet-recipient',
+        amount: Money.of(500_000n, 'NGN'),
+        platformFee: Money.zero('NGN'),
+      },
+    );
     expect(result.reference).toBe('cliqpay-xfer-1');
 
     expect(eventBus.publish).toHaveBeenCalledTimes(2);
@@ -268,13 +282,14 @@ describe('TransfersService.sendMoney', () => {
     const feeConfig = {
       transfers: {
         minAmount: 10_000,
-        maxAmount: 100_000_000,
         platformFee: 5_000,
       },
     } as AppConfig;
     service = new TransfersService(
+      dataSource,
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
+      kycService as unknown as KycService,
       authService as unknown as AuthService,
       eventBus as unknown as EventBusService,
       feeConfig,
@@ -282,7 +297,8 @@ describe('TransfersService.sendMoney', () => {
 
     await service.sendMoney('sender-1', dto);
 
-    expect(ledgerService.postTransfer).toHaveBeenCalledWith(
+    expect(ledgerService.postTransferWithinTransaction).toHaveBeenCalledWith(
+      fakeManager,
       expect.objectContaining({ platformFee: Money.of(5_000n, 'NGN') }),
     );
   });
@@ -296,7 +312,7 @@ describe('TransfersService.sendMoney', () => {
   });
 
   it('re-checks replay on a unique-violation race and returns the winner’s result', async () => {
-    ledgerService.postTransfer.mockRejectedValue({
+    ledgerService.postTransferWithinTransaction.mockRejectedValue({
       code: '23505',
       constraint: 'UQ_transactions_reference',
     });
@@ -318,8 +334,56 @@ describe('TransfersService.sendMoney', () => {
     expect(result.reference).toBe('cliqpay-xfer-1');
   });
 
+  it('reserves the limit and posts inside the same transaction, limit first', async () => {
+    const order: string[] = [];
+    kycService.checkAndReserveLimit.mockImplementation(() => {
+      order.push('limit');
+      return Promise.resolve();
+    });
+    ledgerService.postTransferWithinTransaction.mockImplementation(() => {
+      order.push('post');
+      return Promise.resolve(postTransferResult);
+    });
+
+    await service.sendMoney('sender-1', dto);
+
+    expect(order).toEqual(['limit', 'post']);
+    expect(kycService.checkAndReserveLimit).toHaveBeenCalledWith(
+      fakeManager,
+      'sender-1',
+      Money.of(500_000n, 'NGN'),
+      expect.any(Function),
+    );
+    expect(ledgerService.postTransferWithinTransaction).toHaveBeenCalledWith(
+      fakeManager,
+      expect.anything(),
+    );
+  });
+
+  it('wires the limit reader to ledger.getDebitedSince for the sender', async () => {
+    await service.sendMoney('sender-1', dto);
+
+    const reader = kycService.checkAndReserveLimit.mock.calls[0][3];
+    const since = new Date('2026-08-15T23:00:00Z');
+    await reader(fakeManager, since);
+
+    expect(ledgerService.getDebitedSince).toHaveBeenCalledWith(
+      fakeManager,
+      'sender-1',
+      since,
+    );
+  });
+
+  it('posts nothing when the limit check rejects', async () => {
+    kycService.checkAndReserveLimit.mockRejectedValue(new Error('limit'));
+
+    await expect(service.sendMoney('sender-1', dto)).rejects.toThrow('limit');
+
+    expect(ledgerService.postTransferWithinTransaction).not.toHaveBeenCalled();
+  });
+
   it('rethrows a unique-violation race when the raced replay is still not a match', async () => {
-    ledgerService.postTransfer.mockRejectedValue({
+    ledgerService.postTransferWithinTransaction.mockRejectedValue({
       code: '23505',
       constraint: 'UQ_transactions_reference',
     });
