@@ -87,6 +87,21 @@ export class DailyLimitExceededException extends DomainException {
   }
 }
 
+export class BalanceCapExceededException extends DomainException {
+  readonly code = 'BALANCE_CAP_EXCEEDED';
+  readonly details: { balanceCap: object; remaining: object };
+  constructor(balanceCap: Money, remaining: Money) {
+    super(
+      `This top-up would take your wallet over its balance limit of ${balanceCap.toDecimalString()}. You can add up to ${remaining.toDecimalString()} right now, counting any top-ups still in progress.`,
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+    this.details = {
+      balanceCap: balanceCap.toJSON(),
+      remaining: remaining.toJSON(),
+    };
+  }
+}
+
 export class TierLimitNotConfiguredException extends DomainException {
   readonly code = 'TIER_LIMIT_NOT_CONFIGURED';
   constructor() {

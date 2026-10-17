@@ -7,9 +7,13 @@ import {
   UnauthorizedException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { LedgerService } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
+import { KycService } from '../kyc/kyc.service';
+import { runInTransaction } from '../../database/transaction.util';
 import { Money } from '../../shared/primitives/money';
 import {
   FUNDING_COMPLETED_EVENT,
@@ -34,7 +38,6 @@ import {
   VerifyChargeResult,
   VerifyPayoutResult,
 } from './adapters/payment-provider.interface';
-import { isUniqueViolation } from '../../database/postgres-errors.util';
 import { extractTopLevelJsonField } from './internal/raw-json';
 import {
   CompleteWithdrawalResult,
@@ -149,8 +152,10 @@ export class PaymentsService {
   private readonly reconciliationAlertEmail: string;
 
   constructor(
+    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly ledgerService: LedgerService,
     private readonly usersService: UsersService,
+    private readonly kycService: KycService,
     private readonly eventBus: EventBusService,
     @Inject(PAYMENT_PROVIDER_ADAPTER)
     private readonly adapter: PaymentProviderAdapter,
@@ -200,25 +205,35 @@ export class PaymentsService {
     ]);
 
     try {
-      await this.ledgerService.createPendingFundingTransaction({
-        reference: dto.reference,
-        provider: 'kora',
-        providerReference: dto.reference,
-        amount,
-        recipientWalletId: wallet.id,
-        metadata: { checkoutUrl: null, grossAmount: null },
+      await runInTransaction(this.dataSource, async (manager) => {
+        await this.kycService.checkBalanceCap(manager, userId, amount, (m) =>
+          this.ledgerService.getBalanceAndPendingFunding(m, userId),
+        );
+        await this.ledgerService.createPendingFundingTransactionWithinTransaction(
+          manager,
+          {
+            reference: dto.reference,
+            provider: 'kora',
+            providerReference: dto.reference,
+            amount,
+            recipientWalletId: wallet.id,
+            metadata: { checkoutUrl: null, grossAmount: null },
+          },
+        );
       });
     } catch (error) {
-      if (isUniqueViolation(error, 'UQ_transactions_reference')) {
-        const raced = await this.ledgerService.checkIdempotentReplay(
-          dto.reference,
-          userId,
-          fingerprint,
-        );
-        const racedResponse = resolveFundingReplay(raced);
-        if (racedResponse) {
-          return racedResponse;
-        }
+      // A duplicate request racing this one may have committed first: its
+      // pending row then either collides on the unique reference or counts
+      // against the cap here. Either way the committed result is the answer,
+      // and it is read after the failed transaction has ended.
+      const raced = await this.ledgerService.checkIdempotentReplay(
+        dto.reference,
+        userId,
+        fingerprint,
+      );
+      const racedResponse = resolveFundingReplay(raced);
+      if (racedResponse) {
+        return racedResponse;
       }
       throw error;
     }

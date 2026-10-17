@@ -25,6 +25,7 @@ import {
 import { deriveTier, tierRank } from './internal/tier';
 import { startOfDay } from './internal/day-start';
 import {
+  BalanceCapExceededException,
   BvnAlreadyLinkedException,
   BvnAlreadyVerifiedException,
   BvnVerificationFailedException,
@@ -206,6 +207,38 @@ export class KycService {
         ? dailyLimit.subtract(debited)
         : Money.zero(amount.currency);
       throw new DailyLimitExceededException(dailyLimit, remaining);
+    }
+  }
+
+  async checkBalanceCap(
+    manager: EntityManager,
+    userId: string,
+    requested: Money,
+    readBalanceAndPending: (
+      manager: EntityManager,
+    ) => Promise<{ balance: Money; pending: Money }>,
+  ): Promise<void> {
+    await this.lockUser(manager, userId);
+
+    const tier = await this.usersService.getKycTier(manager, userId);
+    const tierLimit = await manager
+      .getRepository(TierLimit)
+      .findOneBy({ tier, currency: requested.currency });
+    if (!tierLimit) {
+      throw new TierLimitNotConfiguredException();
+    }
+    if (tierLimit.balanceCapMinor === null) {
+      return;
+    }
+
+    const cap = Money.of(tierLimit.balanceCapMinor, requested.currency);
+    const { balance, pending } = await readBalanceAndPending(manager);
+    const projected = balance.add(pending);
+    if (projected.add(requested).greaterThan(cap)) {
+      const remaining = cap.greaterThan(projected)
+        ? cap.subtract(projected)
+        : Money.zero(requested.currency);
+      throw new BalanceCapExceededException(cap, remaining);
     }
   }
 

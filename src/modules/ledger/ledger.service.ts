@@ -384,7 +384,17 @@ export class LedgerService {
   async createPendingFundingTransaction(
     data: CreatePendingFundingTransactionData,
   ): Promise<Transaction> {
-    const repo = this.dataSource.getRepository(Transaction);
+    return this.createPendingFundingTransactionWithinTransaction(
+      this.dataSource.manager,
+      data,
+    );
+  }
+
+  async createPendingFundingTransactionWithinTransaction(
+    manager: EntityManager,
+    data: CreatePendingFundingTransactionData,
+  ): Promise<Transaction> {
+    const repo = manager.getRepository(Transaction);
     const transaction = repo.create({
       reference: data.reference,
       provider: data.provider,
@@ -488,6 +498,37 @@ export class LedgerService {
       .andWhere('transaction.createdAt >= :since', { since })
       .getRawOne<{ total: string }>();
     return Money.of(BigInt(row?.total ?? 0), wallet.currency);
+  }
+
+  // One statement, so the balance and the pending total come from the same
+  // snapshot: a funding completing between two reads could otherwise be
+  // missed by both.
+  async getBalanceAndPendingFunding(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<{ balance: Money; pending: Money }> {
+    const rows = await manager.query<
+      { balance: string; currency: string; pending: string }[]
+    >(
+      `SELECT a.balance, a.currency,
+         COALESCE((
+           SELECT SUM(t.amount) FROM transactions t
+           WHERE t.recipient_wallet_id = a.id
+             AND t.type = 'funding'
+             AND t.status = 'pending'
+         ), 0) AS pending
+       FROM accounts a
+       WHERE a.user_id = $1 AND a.role = 'user_wallet'`,
+      [userId],
+    );
+    if (rows.length === 0) {
+      throw new Error(`No user wallet for user ${userId}`);
+    }
+    const { balance, currency, pending } = rows[0];
+    return {
+      balance: Money.of(BigInt(balance), currency),
+      pending: Money.of(BigInt(pending), currency),
+    };
   }
 
   // Feeds the withdrawal self-verify poll job (issue #31) — same shape as

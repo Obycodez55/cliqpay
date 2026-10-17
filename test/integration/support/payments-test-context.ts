@@ -27,6 +27,7 @@ import { EnforceLedgerEntriesAppendOnly1785491930164 } from '../../../src/databa
 import { CreateCredentials1784707276062 } from '../../../src/database/migrations/1784707276062-CreateCredentials';
 import { CreateNotifications1786812506579 } from '../../../src/database/migrations/1786812506579-CreateNotifications';
 import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
+import { CreateTierLimits1787600000001 } from '../../../src/database/migrations/1787600000001-CreateTierLimits';
 import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
@@ -35,7 +36,11 @@ import { LedgerEntry } from '../../../src/modules/ledger/entities/ledger-entry.e
 import { Transaction } from '../../../src/modules/ledger/entities/transaction.entity';
 import { User } from '../../../src/modules/users/entities/user.entity';
 import { UsersModule } from '../../../src/modules/users/users.module';
-import { UsersService } from '../../../src/modules/users/users.service';
+import {
+  KycTier,
+  UsersService,
+} from '../../../src/modules/users/users.service';
+import { KycService } from '../../../src/modules/kyc/kyc.service';
 import { PaymentsModule } from '../../../src/modules/payments/payments.module';
 import { PaymentsService } from '../../../src/modules/payments/payments.service';
 import { PAYMENT_PROVIDER_ADAPTER } from '../../../src/modules/payments/adapters/payment-provider.interface';
@@ -58,6 +63,7 @@ export interface PaymentsTestContext {
   usersService: UsersService;
   ledgerService: LedgerService;
   paymentsService: PaymentsService;
+  kycService: KycService;
   dataSource: DataSource;
   userRepo: Repository<User>;
   accountRepo: Repository<Account>;
@@ -99,6 +105,7 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
   await new EnforceLedgerEntriesAppendOnly1785491930164().up(queryRunner);
   await new CreateNotifications1786812506579().up(queryRunner);
   await new AddIsFrozenToUsers1787500000001().up(queryRunner);
+  await new CreateTierLimits1787600000001().up(queryRunner);
   await new AddKycTierToUsers1787600000002().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
@@ -160,6 +167,7 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
     usersService: moduleRef.get(UsersService),
     ledgerService: moduleRef.get(LedgerService),
     paymentsService: moduleRef.get(PaymentsService),
+    kycService: moduleRef.get(KycService),
     dataSource,
     userRepo: dataSource.getRepository(User),
     accountRepo: dataSource.getRepository(Account),
@@ -228,7 +236,12 @@ export async function destroyPaymentsTestContext(
 // composed atomically (see auth.service.ts's own registration flow).
 export async function seedUserWithWallet(
   ctx: PaymentsTestContext,
-  overrides: { email: string; phone: string; username: string },
+  overrides: {
+    email: string;
+    phone: string;
+    username: string;
+    kycTier?: KycTier;
+  },
 ): Promise<{ userId: string; walletId: string }> {
   return ctx.dataSource.transaction(async (manager) => {
     const user = await ctx.usersService.createUser(manager, {
@@ -238,6 +251,11 @@ export async function seedUserWithWallet(
       firstName: 'Ada',
       lastName: 'Lovelace',
     });
+    await ctx.usersService.setKycTier(
+      manager,
+      user.id,
+      overrides.kycTier ?? 'tier3',
+    );
     const wallet = await ctx.ledgerService.createUserWallet(
       manager,
       user.id,

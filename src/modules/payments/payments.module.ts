@@ -4,6 +4,7 @@ import { APP_CONFIG, AppConfig } from '../../config';
 import { EventBusModule } from '../../shared/events/event-bus.module';
 import { LedgerModule } from '../ledger/ledger.module';
 import { UsersModule } from '../users/users.module';
+import { KycModule } from '../kyc/kyc.module';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
 import {
@@ -40,6 +41,7 @@ const PAYMENT_ADAPTERS = {
   imports: [
     LedgerModule,
     UsersModule,
+    KycModule,
     EventBusModule,
     BullModule.registerQueue({
       name: FUNDING_POLL_QUEUE,

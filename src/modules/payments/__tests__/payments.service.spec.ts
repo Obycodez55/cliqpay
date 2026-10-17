@@ -1,8 +1,10 @@
 import { UnauthorizedException } from '@nestjs/common';
+import { DataSource } from 'typeorm';
 import { AppConfig } from '../../../config';
 import { PaymentsService } from '../payments.service';
 import { LedgerService, PostFundingResult } from '../../ledger/ledger.service';
 import { UsersService } from '../../users/users.service';
+import { KycService } from '../../kyc/kyc.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { Money } from '../../../shared/primitives/money';
 import { PaymentProviderAdapter } from '../adapters/payment-provider.interface';
@@ -65,8 +67,10 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
     eventBus = { publish: jest.fn() };
     adapter = mockAdapter();
     service = new PaymentsService(
+      {} as DataSource,
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
+      {} as KycService,
       eventBus as unknown as EventBusService,
       adapter,
       testConfig,
@@ -180,8 +184,10 @@ describe('PaymentsService.pollStaleFundingTransactions', () => {
     eventBus = { publish: jest.fn() };
     adapter = mockAdapter();
     service = new PaymentsService(
+      {} as DataSource,
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
+      {} as KycService,
       eventBus as unknown as EventBusService,
       adapter,
       testConfig,
@@ -301,8 +307,10 @@ describe('PaymentsService.reconcileFloatBalances', () => {
     eventBus = { publish: jest.fn() };
     adapter = new FakeAdapter();
     service = new PaymentsService(
+      {} as DataSource,
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
+      {} as KycService,
       eventBus as unknown as EventBusService,
       adapter,
       testConfig,
