@@ -86,15 +86,8 @@ import { EMAIL_SENDER } from '../../../src/modules/notifications/channels/email/
 import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/email/fake-email.adapter';
 import { SMS_SENDER } from '../../../src/modules/notifications/channels/sms/sms-sender.interface';
 import { FakeSmsAdapter } from '../../../src/modules/notifications/channels/sms/fake-sms.adapter';
-import { NotificationEventsProcessor } from '../../../src/modules/notifications/internal/notification-events.processor';
-import { OtpNotificationProcessor } from '../../../src/modules/notifications/internal/otp.processor';
-import { ChannelDispatchProcessor } from '../../../src/modules/notifications/internal/channel-dispatch.processor';
-import { FundingPollProcessor } from '../../../src/modules/payments/internal/funding-poll.processor';
-import { WithdrawalPollProcessor } from '../../../src/modules/payments/internal/withdrawal-poll.processor';
-import { ReconciliationProcessor } from '../../../src/modules/payments/internal/reconciliation.processor';
-import { NotificationRetentionProcessor } from '../../../src/modules/notifications/internal/retention.processor';
-import { LivenessPollProcessor } from '../../../src/modules/kyc/internal/liveness-poll.processor';
 import { Money } from '../../../src/shared/primitives/money';
+import { closeBullmqWorkers } from './bullmq-teardown';
 
 // A superset of AuthTestContext's own fields (plus payments/withdrawals'
 // own) so this context can be passed straight into
@@ -282,34 +275,11 @@ export async function createWithdrawalsTestContext(
   };
 }
 
-// Same BullMQ multi-worker shutdown hazard as payments-test-context.ts's
-// forceCloseWorkers — see that file's comment for the full explanation,
-// including the [v2] note on NotificationRetentionProcessor having been
-// missing from this same list here too.
-async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
-  const hosts = [
-    NotificationEventsProcessor,
-    OtpNotificationProcessor,
-    ChannelDispatchProcessor,
-    FundingPollProcessor,
-    WithdrawalPollProcessor,
-    ReconciliationProcessor,
-    NotificationRetentionProcessor,
-    LivenessPollProcessor,
-  ];
-  await Promise.all(
-    hosts.map(async (hostClass) => {
-      const host = app.get(hostClass, { strict: false });
-      await host?.worker?.close(true);
-    }),
-  );
-}
-
 export async function destroyWithdrawalsTestContext(
   ctx: Partial<WithdrawalsTestContext>,
 ): Promise<void> {
   if (ctx.app) {
-    await forceCloseWorkers(ctx.app);
+    await closeBullmqWorkers(ctx.app);
   }
   await ctx.app?.close();
   await ctx.postgres?.stop();

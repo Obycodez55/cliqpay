@@ -28,6 +28,7 @@ import { PaginatedResult } from '../../src/common/interfaces/paginated-result.in
 import { CreatePushTokens1784616220824 } from '../../src/database/migrations/1784616220824-CreatePushTokens';
 import { ConvertPushTokensTimestamps1784707276059 } from '../../src/database/migrations/1784707276059-ConvertPushTokensTimestamps';
 import { CreateNotifications1786812506579 } from '../../src/database/migrations/1786812506579-CreateNotifications';
+import { closeBullmqWorkers } from './support/bullmq-teardown';
 
 jest.setTimeout(120_000);
 
@@ -116,6 +117,9 @@ describe('Notifications API — list/unread-count/mark-read', () => {
   });
 
   afterAll(async () => {
+    if (app) {
+      await closeBullmqWorkers(app);
+    }
     await app?.close();
     await postgres?.stop();
     await redis?.stop();

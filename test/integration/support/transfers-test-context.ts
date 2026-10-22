@@ -65,13 +65,10 @@ import { EMAIL_SENDER } from '../../../src/modules/notifications/channels/email/
 import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/email/fake-email.adapter';
 import { PUSH_SENDER } from '../../../src/modules/notifications/channels/push/push-sender.interface';
 import { FakePushAdapter } from '../../../src/modules/notifications/channels/push/fake-push.adapter';
-import { NotificationEventsProcessor } from '../../../src/modules/notifications/internal/notification-events.processor';
-import { OtpNotificationProcessor } from '../../../src/modules/notifications/internal/otp.processor';
-import { ChannelDispatchProcessor } from '../../../src/modules/notifications/internal/channel-dispatch.processor';
 import { hashTransactionPin } from '../../../src/modules/auth/internal/pin.util';
 import { Money } from '../../../src/shared/primitives/money';
 
-import { LivenessPollProcessor } from '../../../src/modules/kyc/internal/liveness-poll.processor';
+import { closeBullmqWorkers } from './bullmq-teardown';
 export interface TransfersTestContext {
   postgres: StartedPostgreSqlContainer;
   redis: StartedTestContainer;
@@ -208,28 +205,11 @@ export async function createTransfersTestContext(
   };
 }
 
-// Same BullMQ multi-worker shutdown hazard as payments-test-context.ts's
-// forceCloseWorkers — see that file's comment for the full explanation.
-async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
-  const hosts = [
-    NotificationEventsProcessor,
-    OtpNotificationProcessor,
-    ChannelDispatchProcessor,
-    LivenessPollProcessor,
-  ];
-  await Promise.all(
-    hosts.map(async (hostClass) => {
-      const host = app.get(hostClass, { strict: false });
-      await host?.worker?.close(true);
-    }),
-  );
-}
-
 export async function destroyTransfersTestContext(
   ctx: Partial<TransfersTestContext>,
 ): Promise<void> {
   if (ctx.app) {
-    await forceCloseWorkers(ctx.app);
+    await closeBullmqWorkers(ctx.app);
   }
   await ctx.app?.close();
   await ctx.postgres?.stop();

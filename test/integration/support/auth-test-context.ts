@@ -57,6 +57,7 @@ import { EMAIL_SENDER } from '../../../src/modules/notifications/channels/email/
 import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/email/fake-email.adapter';
 import { SMS_SENDER } from '../../../src/modules/notifications/channels/sms/sms-sender.interface';
 import { FakeSmsAdapter } from '../../../src/modules/notifications/channels/sms/fake-sms.adapter';
+import { closeBullmqWorkers } from './bullmq-teardown';
 
 export interface AuthTestContext {
   postgres: StartedPostgreSqlContainer;
@@ -186,6 +187,9 @@ export async function createAuthTestContext(
 export async function destroyAuthTestContext(
   ctx: Partial<AuthTestContext>,
 ): Promise<void> {
+  if (ctx.app) {
+    await closeBullmqWorkers(ctx.app);
+  }
   await ctx.app?.close();
   await ctx.postgres?.stop();
   await ctx.redis?.stop();

@@ -43,6 +43,7 @@ import { KycVerification } from '../../../src/modules/kyc/entities/kyc-verificat
 import { KycVerificationAttempt } from '../../../src/modules/kyc/entities/kyc-verification-attempt.entity';
 import { KycLivenessJob } from '../../../src/modules/kyc/entities/kyc-liveness-job.entity';
 import { TierLimit } from '../../../src/modules/kyc/entities/tier-limit.entity';
+import { closeBullmqWorkers } from './bullmq-teardown';
 
 export interface KycTestContext {
   postgres: StartedPostgreSqlContainer;
@@ -127,7 +128,7 @@ export async function createKycTestContext(): Promise<KycTestContext> {
   // background poll must not race them.
   const pollHost = app.get(LivenessPollProcessor, { strict: false });
   await pollHost.worker.waitUntilReady();
-  await pollHost.worker.pause(true);
+  await pollHost.worker.pause();
 
   const dataSource = moduleRef.get(DataSource);
 
@@ -153,12 +154,7 @@ export async function destroyKycTestContext(
   ctx: Partial<KycTestContext>,
 ): Promise<void> {
   if (ctx.app) {
-    // @nestjs/bullmq's graceful worker close can hang under Jest's multi-process
-    // execution (see payments-test-context.ts's forceCloseWorkers).
-    const host = ctx.app.get(LivenessPollProcessor, { strict: false });
-    // Closing a worker that is still connecting can spin forever.
-    await host?.worker?.waitUntilReady();
-    await host?.worker?.close(true);
+    await closeBullmqWorkers(ctx.app);
   }
   await ctx.app?.close();
   await ctx.postgres?.stop();
