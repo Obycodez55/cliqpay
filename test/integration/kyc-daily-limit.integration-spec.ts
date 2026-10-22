@@ -1,5 +1,10 @@
 import { randomUUID } from 'crypto';
 import { EntityManager } from 'typeorm';
+import {
+  BALANCE_AND_PENDING_FUNDING_SQL,
+  PENDING_FUNDING_WINDOW_HOURS,
+  debitedSinceQuery,
+} from '../../src/modules/ledger/ledger.service';
 import { Money } from '../../src/shared/primitives/money';
 import { KycTier } from '../../src/modules/users/users.service';
 import {
@@ -120,26 +125,22 @@ describe('Daily debit limit', () => {
     }
 
     it('reads the debited sum through the sender-wallet index', async () => {
-      const result = await plan(
-        `SELECT COALESCE(SUM(amount), 0) FROM transactions
-         WHERE sender_wallet_id = $1
-           AND type IN ('p2p_transfer', 'withdrawal')
-           AND status IN ('pending', 'completed')
-           AND created_at >= $2`,
-        [randomUUID(), new Date()],
-      );
+      const [sql, params] = debitedSinceQuery(
+        ctx.dataSource.manager,
+        randomUUID(),
+        new Date(),
+      ).getQueryAndParameters();
 
-      expect(result).toContain('IDX_transactions_sender_wallet_created_at');
+      expect(await plan(sql, params)).toContain(
+        'IDX_transactions_sender_wallet_created_at',
+      );
     });
 
     it('reads pending funding through the partial recipient index', async () => {
-      const result = await plan(
-        `SELECT SUM(t.amount) FROM transactions t
-         WHERE t.recipient_wallet_id = $1
-           AND t.type = 'funding'
-           AND t.status = 'pending'`,
-        [randomUUID()],
-      );
+      const result = await plan(BALANCE_AND_PENDING_FUNDING_SQL, [
+        randomUUID(),
+        PENDING_FUNDING_WINDOW_HOURS,
+      ]);
 
       expect(result).toContain('IDX_transactions_pending_funding_recipient');
     });

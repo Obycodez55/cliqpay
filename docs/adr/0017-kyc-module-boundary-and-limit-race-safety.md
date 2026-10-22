@@ -114,6 +114,14 @@ share one transaction; the provider call stays outside it. A credit that
 bypasses initiation entirely (an out-of-band bank credit) is still out of
 scope.
 
+Only `pending` fundings created within the last 24 hours count towards the
+total (a named constant in `ledger`, not config). Kora documents no expiry for
+a hosted checkout and the funding poll leaves a still-pending charge pending,
+so an abandoned checkout would otherwise hold cap headroom indefinitely. The
+trade-off: a checkout link older than 24 hours that is paid late still
+completes through the webhook and can overshoot the cap, the same class as an
+out-of-band credit.
+
 **Amended 2026-10-17, before implementation.** The first draft of this ADR
 had `kyc` read `transactions` directly by raw SQL, citing `payments`'
 reconciliation job as precedent. That precedent does not exist: no module

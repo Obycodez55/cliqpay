@@ -58,6 +58,38 @@ export interface PostFundingResult {
   reference: string;
 }
 
+export function debitedSinceQuery(
+  manager: EntityManager,
+  walletId: string,
+  since: Date,
+) {
+  return manager
+    .getRepository(Transaction)
+    .createQueryBuilder('transaction')
+    .select('COALESCE(SUM(transaction.amount), 0)', 'total')
+    .where('transaction.senderWalletId = :walletId', { walletId })
+    .andWhere('transaction.type IN (:...types)', {
+      types: ['p2p_transfer', 'withdrawal'],
+    })
+    .andWhere('transaction.status IN (:...statuses)', {
+      statuses: ['pending', 'completed'],
+    })
+    .andWhere('transaction.createdAt >= :since', { since });
+}
+
+export const PENDING_FUNDING_WINDOW_HOURS = 24;
+
+export const BALANCE_AND_PENDING_FUNDING_SQL = `SELECT a.balance, a.currency,
+         COALESCE((
+           SELECT SUM(t.amount) FROM transactions t
+           WHERE t.recipient_wallet_id = a.id
+             AND t.type = 'funding'
+             AND t.status = 'pending'
+             AND t.created_at >= now() - make_interval(hours => $2)
+         ), 0) AS pending
+       FROM accounts a
+       WHERE a.user_id = $1 AND a.role = 'user_wallet'`;
+
 // Structurally narrow rather than the full `Transaction` entity — `payments`
 // (the only caller) needs the reference to poll on and the currency to
 // build zero-amount facts for a `failed` outcome, nothing else (ADR-0008).
@@ -484,43 +516,24 @@ export class LedgerService {
     const wallet = await manager
       .getRepository(Account)
       .findOneByOrFail({ userId, role: 'user_wallet' });
-    const row = await manager
-      .getRepository(Transaction)
-      .createQueryBuilder('transaction')
-      .select('COALESCE(SUM(transaction.amount), 0)', 'total')
-      .where('transaction.senderWalletId = :walletId', { walletId: wallet.id })
-      .andWhere('transaction.type IN (:...types)', {
-        types: ['p2p_transfer', 'withdrawal'],
-      })
-      .andWhere('transaction.status IN (:...statuses)', {
-        statuses: ['pending', 'completed'],
-      })
-      .andWhere('transaction.createdAt >= :since', { since })
-      .getRawOne<{ total: string }>();
+    const row = await debitedSinceQuery(manager, wallet.id, since).getRawOne<{
+      total: string;
+    }>();
     return Money.of(BigInt(row?.total ?? 0), wallet.currency);
   }
 
   // One statement, so the balance and the pending total come from the same
   // snapshot: a funding completing between two reads could otherwise be
-  // missed by both.
+  // missed by both. Only fundings inside the window count: Kora can leave an
+  // abandoned checkout pending indefinitely, which would otherwise hold
+  // headroom forever.
   async getBalanceAndPendingFunding(
     manager: EntityManager,
     userId: string,
   ): Promise<{ balance: Money; pending: Money }> {
     const rows = await manager.query<
       { balance: string; currency: string; pending: string }[]
-    >(
-      `SELECT a.balance, a.currency,
-         COALESCE((
-           SELECT SUM(t.amount) FROM transactions t
-           WHERE t.recipient_wallet_id = a.id
-             AND t.type = 'funding'
-             AND t.status = 'pending'
-         ), 0) AS pending
-       FROM accounts a
-       WHERE a.user_id = $1 AND a.role = 'user_wallet'`,
-      [userId],
-    );
+    >(BALANCE_AND_PENDING_FUNDING_SQL, [userId, PENDING_FUNDING_WINDOW_HOURS]);
     if (rows.length === 0) {
       throw new Error(`No user wallet for user ${userId}`);
     }

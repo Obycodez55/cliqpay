@@ -1,6 +1,7 @@
 import { createHmac } from 'crypto';
 import * as request from 'supertest';
 import { JwtService } from '@nestjs/jwt';
+import { PENDING_FUNDING_WINDOW_HOURS } from '../../src/modules/ledger/ledger.service';
 import { Money } from '../../src/shared/primitives/money';
 import { KycTier } from '../../src/modules/users/users.service';
 import { BalanceCapExceededException } from '../../src/modules/kyc/internal/errors';
@@ -82,7 +83,28 @@ describe('Balance cap at funding initiation', () => {
       .expect(200);
   }
 
+  function ageFunding(reference: string, offsetMinutes: number) {
+    return ctx.dataSource.query(
+      `UPDATE transactions
+       SET created_at = now() - make_interval(hours => $1, mins => $2)
+       WHERE reference = $3`,
+      [PENDING_FUNDING_WINDOW_HOURS, offsetMinutes, reference],
+    );
+  }
+
   describe('ledger.getBalanceAndPendingFunding', () => {
+    it('counts a pending funding just inside the window and ignores one just outside it', async () => {
+      const user = await seedUser();
+      await fund(user.userId, 1_000_000, 'cliqpay-cap-win-in').expect(201);
+      await fund(user.userId, 2_000_000, 'cliqpay-cap-win-out').expect(201);
+      await ageFunding('cliqpay-cap-win-in', -5);
+      await ageFunding('cliqpay-cap-win-out', 5);
+
+      expect((await exposure(user.userId)).pending).toEqual(
+        Money.of(1_000_000, 'NGN'),
+      );
+    });
+
     it('returns the cached balance and sums only the wallet’s own pending fundings', async () => {
       const user = await seedUser();
       const other = await seedUser();
@@ -295,5 +317,36 @@ describe('Balance cap at funding initiation', () => {
     });
     await fund(user.userId, 10_000_001, 'cliqpay-cap-done-over').expect(422);
     await fund(user.userId, 10_000_000, 'cliqpay-cap-done-fit').expect(201);
+  });
+
+  it('lets a stale pending funding stop blocking an initiation that a fresh one still blocks', async () => {
+    const stale = await seedUser();
+    const fresh = await seedUser();
+    await fund(stale.userId, 25_000_000, 'cliqpay-cap-stale-1').expect(201);
+    await fund(fresh.userId, 25_000_000, 'cliqpay-cap-fresh-1').expect(201);
+    await fund(stale.userId, 6_000_000, 'cliqpay-cap-stale-2').expect(422);
+
+    await ageFunding('cliqpay-cap-stale-1', 5);
+
+    await fund(stale.userId, 6_000_000, 'cliqpay-cap-stale-3').expect(201);
+    await fund(fresh.userId, 6_000_000, 'cliqpay-cap-fresh-2').expect(422);
+  });
+
+  it('still completes a stale pending funding that is paid late by webhook', async () => {
+    const user = await seedUser();
+    await fund(user.userId, 20_000_000, 'cliqpay-cap-late-1').expect(201);
+    await ageFunding('cliqpay-cap-late-1', 5);
+    expect((await exposure(user.userId)).pending).toEqual(Money.zero('NGN'));
+
+    await completeViaWebhook('cliqpay-cap-late-1', 20_000_000);
+
+    const completed = await ctx.transactionRepo.findOneByOrFail({
+      reference: 'cliqpay-cap-late-1',
+    });
+    expect(completed.status).toBe('completed');
+    expect(await exposure(user.userId)).toEqual({
+      balance: Money.of(20_000_000, 'NGN'),
+      pending: Money.zero('NGN'),
+    });
   });
 });
