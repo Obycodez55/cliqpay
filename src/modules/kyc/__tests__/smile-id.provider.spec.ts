@@ -232,8 +232,6 @@ describe('SmileIdKycProvider', () => {
       ['clear', 'passed'],
       ['block', 'failed'],
       ['attention', 'failed'],
-      ['error', 'failed'],
-      ['not_found', 'failed'],
     ])('maps a %s job status to %s', async (status, expected) => {
       fetchMock
         .mockResolvedValueOnce(jsonResponse(200, { token: 'jwt-1' }))
@@ -245,6 +243,70 @@ describe('SmileIdKycProvider', () => {
       );
       expect((fetchMock.mock.calls[1] as [string])[0]).toBe(
         'https://smile.example.test/v3/status/job_abc',
+      );
+    });
+
+    it.each(['error', 'not_found', 'something_new'])(
+      'rejects, rather than failing the job, on a %s job status',
+      async (status) => {
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse(200, { token: 'jwt-1' }))
+          .mockResolvedValueOnce(jsonResponse(200, { status }));
+        const provider = new SmileIdKycProvider(buildConfig());
+
+        await expect(provider.getLivenessResult('job_abc')).rejects.toThrow(
+          /unsettled job status/,
+        );
+      },
+    );
+
+    it('rejects when the status request is not OK, even with a JSON body', async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(200, { token: 'jwt-1' }))
+        .mockResolvedValueOnce(jsonResponse(503, { status: 'clear' }));
+      const provider = new SmileIdKycProvider(buildConfig());
+
+      await expect(provider.getLivenessResult('job_abc')).rejects.toThrow(
+        /unavailable \(503\)/,
+      );
+    });
+
+    it.each([500, 503, 429, 401, 403, 404, 408])(
+      'rejects on a %s response to the submission',
+      async (code) => {
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse(200, { token: 'jwt-1' }))
+          .mockResolvedValueOnce(jsonResponse(code, { message: 'busy' }));
+        const provider = new SmileIdKycProvider(buildConfig());
+
+        await expect(provider.submitLiveness(submission)).rejects.toThrow(
+          /unavailable/,
+        );
+      },
+    );
+
+    it.each([400, 422])(
+      'reports a failed liveness when the submission is rejected with %s',
+      async (code) => {
+        fetchMock
+          .mockResolvedValueOnce(jsonResponse(200, { token: 'jwt-1' }))
+          .mockResolvedValueOnce(jsonResponse(code, { message: 'bad' }));
+        const provider = new SmileIdKycProvider(buildConfig());
+
+        await expect(provider.submitLiveness(submission)).resolves.toEqual({
+          status: 'failed',
+        });
+      },
+    );
+
+    it('rejects when an accepted submission carries no job id', async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(200, { token: 'jwt-1' }))
+        .mockResolvedValueOnce(jsonResponse(202, { status: 'accepted' }));
+      const provider = new SmileIdKycProvider(buildConfig());
+
+      await expect(provider.submitLiveness(submission)).rejects.toThrow(
+        /no job id/,
       );
     });
 

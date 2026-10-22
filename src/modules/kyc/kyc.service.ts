@@ -504,12 +504,12 @@ export class KycService {
   }
 
   // A verified identity is immutable through the API: resubmitting it is a free
-  // no-op, a different one is rejected, so a freed hash can't be claimed by
+  // no-op and a different one is rejected, so a freed hash can't be claimed by
   // another account. The one exception is a liveness capture sent while
-  // liveness is still unverified.
-  // Counted as failed under the user's lock before the provider call so
-  // concurrent requests can't all pass the limit; a success flips it. The
-  // provider calls stay outside every transaction.
+  // liveness is still unverified. Anything that proceeds is counted as a
+  // failed attempt under the user's lock before the provider call, so
+  // concurrent requests can't all pass the limit; success flips it. Provider
+  // calls stay outside every transaction.
   private reserveAttempt(
     userId: string,
     identityType: KycIdentityType,

@@ -56,6 +56,7 @@ type FakeJobRepo = {
   save: jest.Mock<Promise<KycLivenessJob>, [KycLivenessJob]>;
   update: jest.Mock<Promise<unknown>, [unknown, unknown]>;
   findOneBy: jest.Mock<Promise<KycLivenessJob | null>, [unknown]>;
+  find: jest.Mock<Promise<KycLivenessJob[]>, [unknown]>;
 };
 
 const TEST_ENCRYPTION_KEY = 'a'.repeat(64);
@@ -145,6 +146,9 @@ describe('KycService', () => {
       findOneBy: jest
         .fn<Promise<KycLivenessJob | null>, [unknown]>()
         .mockResolvedValue(null),
+      find: jest
+        .fn<Promise<KycLivenessJob[]>, [unknown]>()
+        .mockResolvedValue([]),
     };
     managerQuery = jest
       .fn<Promise<unknown>, [string, unknown[]]>()
@@ -770,6 +774,27 @@ describe('KycService', () => {
         jobRepo.update.mock.calls,
       ]);
       expect(written).not.toContain(liveness.selfieImage);
+    });
+
+    it('leaves a job pending and the attempt untouched when the provider status call throws', async () => {
+      jobRepo.find.mockResolvedValue([
+        {
+          id: 'job-1',
+          userId: 'user-1',
+          attemptId: 'attempt-1',
+          providerJobId: 'provider-job-1',
+          status: 'pending',
+        } as KycLivenessJob,
+      ]);
+      kycProvider.getLivenessResult.mockRejectedValue(new Error('503'));
+
+      await service.pollPendingLivenessJobs();
+
+      expect(jobRepo.update).not.toHaveBeenCalledWith(
+        { id: 'job-1' },
+        expect.anything(),
+      );
+      expect(attemptRepo.update).not.toHaveBeenCalled();
     });
 
     it('ignores a webhook that names no pending job and never trusts its body', async () => {

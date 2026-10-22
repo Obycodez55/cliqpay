@@ -121,6 +121,12 @@ export async function createKycTestContext(): Promise<KycTestContext> {
   setupBodyParsers(app);
   await app.init();
 
+  // Tests settle liveness jobs themselves via pollPendingLivenessJobs(), so a
+  // background poll must not race them.
+  const pollHost = app.get(LivenessPollProcessor, { strict: false });
+  await pollHost.worker.waitUntilReady();
+  await pollHost.worker.pause(true);
+
   const dataSource = moduleRef.get(DataSource);
 
   return {
@@ -148,6 +154,8 @@ export async function destroyKycTestContext(
     // @nestjs/bullmq's graceful worker close can hang under Jest's multi-process
     // execution (see payments-test-context.ts's forceCloseWorkers).
     const host = ctx.app.get(LivenessPollProcessor, { strict: false });
+    // Closing a worker that is still connecting can spin forever.
+    await host?.worker?.waitUntilReady();
     await host?.worker?.close(true);
   }
   await ctx.app?.close();

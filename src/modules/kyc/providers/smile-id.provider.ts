@@ -41,6 +41,8 @@ interface SmileIdJobStatusResponse {
     | 'not_found';
 }
 
+const SUBMISSION_INFRASTRUCTURE_STATUSES = new Set([401, 403, 404, 408, 429]);
+
 const RESULT_CODE_MATCH = '1012';
 const RESULT_CODE_NOT_FOUND = '1013';
 
@@ -150,7 +152,7 @@ export class SmileIdKycProvider implements KycProvider {
       }),
     );
 
-    const { ok, body } = await requestJson<{ job_id?: string }>({
+    const { ok, status, body } = await requestJson<{ job_id?: string }>({
       provider: 'SmileIdKycProvider',
       url: `${this.baseUrl}/v3/biometric_kyc`,
       method: 'POST',
@@ -158,24 +160,47 @@ export class SmileIdKycProvider implements KycProvider {
       body: form,
       timeoutMs: SMILE_ID_TIMEOUT_MS,
     });
-    if (!ok || !body.job_id) {
+    // Our credentials, token or endpoint being wrong must not read as the
+    // user failing liveness.
+    if (status >= 500 || SUBMISSION_INFRASTRUCTURE_STATUSES.has(status)) {
+      throw new Error(`SmileIdKycProvider: submission unavailable (${status})`);
+    }
+    if (!ok) {
       return { status: 'failed' };
+    }
+    if (!body.job_id) {
+      throw new Error('SmileIdKycProvider: submission returned no job id');
     }
     return { status: 'pending', jobId: body.job_id };
   }
 
+  // Only a definite verdict settles a job: anything else throws so the poll
+  // retries on its next tick rather than recording a provider outage as a
+  // failed liveness.
   async getLivenessResult(jobId: string): Promise<LivenessOutcome | 'pending'> {
-    const { body } = await requestJson<SmileIdJobStatusResponse>({
+    const { ok, status, body } = await requestJson<SmileIdJobStatusResponse>({
       provider: 'SmileIdKycProvider',
       url: `${this.baseUrl}/v3/status/${encodeURIComponent(jobId)}`,
       method: 'GET',
       headers: { 'SmileID-Token': await this.fetchToken() },
       timeoutMs: SMILE_ID_TIMEOUT_MS,
     });
-    if (body.status === 'processing') {
-      return 'pending';
+    if (!ok) {
+      throw new Error(`SmileIdKycProvider: job status unavailable (${status})`);
     }
-    return body.status === 'clear' ? 'passed' : 'failed';
+    switch (body.status) {
+      case 'processing':
+        return 'pending';
+      case 'clear':
+        return 'passed';
+      case 'block':
+      case 'attention':
+        return 'failed';
+      default:
+        throw new Error(
+          `SmileIdKycProvider: unsettled job status "${String(body.status)}"`,
+        );
+    }
   }
 
   parseWebhookJobId(body: unknown): string | null {

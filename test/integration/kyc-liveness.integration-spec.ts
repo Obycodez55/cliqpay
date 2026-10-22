@@ -262,6 +262,36 @@ describe('KYC liveness (Tier 3)', () => {
       expect(await ctx.kycVerificationAttemptRepo.countBy({ userId })).toBe(0);
     });
 
+    it('applies the 1mb cap to unauthenticated or badly signed callers on the verify routes', async () => {
+      const padding = 'x'.repeat(2_000_000);
+      const forged = new JwtService({ secret: 'not-the-real-secret' }).sign({
+        sub: 'u',
+        sid: 's',
+      });
+
+      const anonymous = await request(ctx.app.getHttpServer())
+        .post('/kyc/verify-bvn')
+        .send({ bvn: '12345678901', padding });
+      const forgedToken = await request(ctx.app.getHttpServer())
+        .post('/kyc/verify-nin')
+        .set('Authorization', `Bearer ${forged}`)
+        .send({ nin: '12345678901', padding });
+
+      expect(anonymous.status).toBe(413);
+      expect(forgedToken.status).toBe(413);
+    });
+
+    it('still caps an authenticated capture above the stated maximum', async () => {
+      const { token } = await seedUser();
+
+      const res = await request(ctx.app.getHttpServer())
+        .post('/kyc/verify-bvn')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ bvn: id(PASS), padding: 'x'.repeat(9_100_000) });
+
+      expect(res.status).toBe(413);
+    });
+
     it('accepts a multi-megabyte capture on the verify routes only', async () => {
       const { token } = await seedUser();
       const large = '/9j/' + 'A'.repeat(700_000);
