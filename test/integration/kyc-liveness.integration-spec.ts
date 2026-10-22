@@ -1,3 +1,4 @@
+import { holdUserLock, trackSettled, waitBriefly } from './support/user-lock';
 import * as request from 'supertest';
 import { JwtService } from '@nestjs/jwt';
 import {
@@ -399,6 +400,30 @@ describe('KYC liveness (Tier 3)', () => {
         .send({ jobId: 'nope' });
 
       expect(res.status).toBe(200);
+    });
+  });
+
+  describe('settlement locking', () => {
+    it('settles a liveness job only while holding the user lock', async () => {
+      const { userId, token } = await seedUser();
+      await verify(token, 'bvn', id(ASYNC_PASS), capture());
+      const held = await holdUserLock(ctx.dataSource, userId);
+
+      const poll = trackSettled(ctx.kycService.pollPendingLivenessJobs());
+      await waitBriefly();
+      const settledWhileHeld = poll.isSettled();
+      const flagWhileHeld = (
+        await ctx.kycVerificationRepo.findOneByOrFail({ userId })
+      ).livenessVerified;
+
+      await held.release();
+      await poll.promise;
+      expect(settledWhileHeld).toBe(false);
+      expect(flagWhileHeld).toBe(false);
+      expect(
+        (await ctx.kycVerificationRepo.findOneByOrFail({ userId }))
+          .livenessVerified,
+      ).toBe(true);
     });
   });
 

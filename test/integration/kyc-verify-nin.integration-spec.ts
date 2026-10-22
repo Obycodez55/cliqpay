@@ -109,7 +109,8 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
       ninVerified: true,
       livenessVerified: false,
       livenessPending: false,
-      dailyAllowanceRemainingMinor: 0,
+      dailyDebitLimit: { amount: '5000000', currency: 'NGN' },
+      balanceCap: { amount: '30000000', currency: 'NGN' },
     });
   });
 

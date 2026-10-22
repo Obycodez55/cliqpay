@@ -11,6 +11,8 @@ import {
   seedUserWithWallet,
 } from './support/payments-test-context';
 
+import { holdUserLock, trackSettled, waitBriefly } from './support/user-lock';
+
 jest.setTimeout(180_000);
 
 const JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
@@ -161,11 +163,28 @@ describe('Balance cap at funding initiation', () => {
     ).toHaveLength(0);
   });
 
+  it('holds a funding initiation back while another transaction holds the user lock', async () => {
+    const user = await seedUser();
+    const held = await holdUserLock(ctx.dataSource, user.userId);
+
+    const call = trackSettled(fund(user.userId, 10_000, 'cliqpay-cap-lock-1'));
+    await waitBriefly();
+    const settledWhileHeld = call.isSettled();
+
+    await held.release();
+    const res = await call.promise;
+    expect(settledWhileHeld).toBe(false);
+    expect(res.status).toBe(201);
+  });
+
   it('rejects any funding for tier 0 and never caps tier 3', async () => {
     const tier0 = await seedUser('tier0');
     const tier3 = await seedUser('tier3');
 
-    await fund(tier0.userId, 10_000, 'cliqpay-cap-tier0-1').expect(422);
+    const res = await fund(tier0.userId, 10_000, 'cliqpay-cap-tier0-1').expect(
+      422,
+    );
+    expect(JSON.stringify(res.body)).toContain('Verify your BVN or NIN');
     await fund(tier3.userId, TIER1_CAP * 10, 'cliqpay-cap-tier3-1').expect(201);
   });
 

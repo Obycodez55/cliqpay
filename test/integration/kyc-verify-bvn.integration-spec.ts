@@ -1,3 +1,4 @@
+import { holdUserLock, trackSettled, waitBriefly } from './support/user-lock';
 import * as request from 'supertest';
 import { JwtService } from '@nestjs/jwt';
 import {
@@ -89,7 +90,8 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
       ninVerified: false,
       livenessVerified: false,
       livenessPending: false,
-      dailyAllowanceRemainingMinor: 0,
+      dailyDebitLimit: { amount: '5000000', currency: 'NGN' },
+      balanceCap: { amount: '30000000', currency: 'NGN' },
     });
   });
 
@@ -131,7 +133,8 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
       ninVerified: false,
       livenessVerified: false,
       livenessPending: false,
-      dailyAllowanceRemainingMinor: 0,
+      dailyDebitLimit: { amount: '0', currency: 'NGN' },
+      balanceCap: { amount: '0', currency: 'NGN' },
     });
   });
 
@@ -273,6 +276,42 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
       await queryRunner.commitTransaction();
       await queryRunner.release();
       expect((await pending).status).toBe(201);
+    });
+
+    it('takes the user lock when reserving an attempt, not only when persisting', async () => {
+      const userId = await seedUser();
+      const held = await holdUserLock(ctx.dataSource, userId);
+
+      // A lookup the provider rejects never reaches the persist step, so the
+      // only lock it can wait on is the one taken while reserving the attempt.
+      const call = trackSettled(verifyBvn(tokenFor(userId), '00000000002'));
+      await waitBriefly();
+      const settledWhileHeld = call.isSettled();
+
+      await held.release();
+      const res = await call.promise;
+      expect(settledWhileHeld).toBe(false);
+      expect(res.status).toBe(422);
+    });
+
+    it('serializes a held-back burst so exactly 5 failures are counted, never more', async () => {
+      const userId = await seedUser();
+      const held = await holdUserLock(ctx.dataSource, userId);
+
+      const calls = Array.from({ length: 8 }, () =>
+        trackSettled(verifyBvn(tokenFor(userId), '00000000003')),
+      );
+      await waitBriefly();
+      const settledWhileHeld = calls.filter((c) => c.isSettled()).length;
+
+      await held.release();
+      const statuses = (await Promise.all(calls.map((c) => c.promise))).map(
+        (r) => r.status,
+      );
+      expect(settledWhileHeld).toBe(0);
+      expect(statuses.filter((s) => s === 422)).toHaveLength(5);
+      expect(statuses.filter((s) => s === 429)).toHaveLength(3);
+      expect(await ctx.kycVerificationAttemptRepo.countBy({ userId })).toBe(5);
     });
 
     it('counts concurrent failing attempts before they reach the provider, capping them at 5 out of a burst of 30', async () => {

@@ -1,5 +1,8 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { MoneyDto } from '../../../common/dto/money-response.dto';
 import { KycTier } from '../../users/users.service';
+
+type MoneyResponse = { amount: string; currency: string };
 
 export class KycStatusResponseDto {
   @ApiProperty({ enum: ['tier0', 'tier1', 'tier2', 'tier3'] })
@@ -20,8 +23,15 @@ export class KycStatusResponseDto {
   livenessPending: boolean;
 
   @ApiProperty({
-    description:
-      "Today's remaining daily debit allowance, in minor units. Always 0 until limit enforcement is wired up.",
+    type: MoneyDto,
+    description: "The tier's daily debit limit (transfers and withdrawals).",
   })
-  dailyAllowanceRemainingMinor: number;
+  dailyDebitLimit: MoneyResponse;
+
+  @ApiProperty({
+    type: MoneyDto,
+    nullable: true,
+    description: "The tier's wallet balance cap; null means no cap.",
+  })
+  balanceCap: MoneyResponse | null;
 }

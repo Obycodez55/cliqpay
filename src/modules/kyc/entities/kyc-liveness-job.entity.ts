@@ -37,6 +37,9 @@ export class KycLivenessJob {
   @Column({ type: 'varchar', nullable: true })
   providerJobId: string | null;
 
+  @Column({ type: 'int', default: 0 })
+  pollFailures: number;
+
   @Column('varchar')
   status: KycLivenessJobStatus;
 

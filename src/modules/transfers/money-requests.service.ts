@@ -326,7 +326,7 @@ export class MoneyRequestsService {
         throw new MoneyRequestNotPayableException();
       }
 
-      const result = await this.transfersService.finalizeTransfer(
+      const { result } = await this.transfersService.finalizeTransfer(
         payerId,
         prepared,
         dto.reference,

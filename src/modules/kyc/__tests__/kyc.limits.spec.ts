@@ -6,6 +6,7 @@ import { KycService } from '../kyc.service';
 import { TierLimit } from '../entities/tier-limit.entity';
 import {
   DailyLimitExceededException,
+  KycVerificationRequiredException,
   TierLimitNotConfiguredException,
 } from '../internal/errors';
 import { KycProvider } from '../providers/kyc-provider.interface';
@@ -112,13 +113,14 @@ describe('KycService.checkAndReserveLimit', () => {
     });
   });
 
-  it('rejects any positive amount for tier 0, whose limit is zero', async () => {
+  it('asks for verification, rather than quoting a ₦0 limit, when the tier limit is zero', async () => {
     tier = 'tier0';
     tierLimit = { dailyDebitLimitMinor: 0n };
 
     await expect(
       service.checkAndReserveLimit(manager, 'user-1', NGN(1), reader),
-    ).rejects.toThrow(DailyLimitExceededException);
+    ).rejects.toThrow(KycVerificationRequiredException);
+    expect(reader).not.toHaveBeenCalled();
   });
 
   it('fails closed with a configuration error when the tier has no limit row', async () => {

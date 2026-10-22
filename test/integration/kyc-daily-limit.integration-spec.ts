@@ -2,7 +2,11 @@ import { randomUUID } from 'crypto';
 import { EntityManager } from 'typeorm';
 import { Money } from '../../src/shared/primitives/money';
 import { KycTier } from '../../src/modules/users/users.service';
-import { DailyLimitExceededException } from '../../src/modules/kyc/internal/errors';
+import {
+  DailyLimitExceededException,
+  KycVerificationRequiredException,
+} from '../../src/modules/kyc/internal/errors';
+import { holdUserLock, trackSettled, waitBriefly } from './support/user-lock';
 import { startOfDay } from '../../src/modules/kyc/internal/day-start';
 import { WithdrawalPayoutFailedException } from '../../src/modules/withdrawals/internal/errors';
 import {
@@ -101,6 +105,45 @@ describe('Daily debit limit', () => {
   async function walletBalance(walletId: string): Promise<bigint> {
     return (await ctx.accountRepo.findOneByOrFail({ id: walletId })).balance;
   }
+
+  describe('limit-check query plans', () => {
+    async function plan(sql: string, params: unknown[]): Promise<string> {
+      return ctx.dataSource.transaction(async (manager) => {
+        // A near-empty table would otherwise favour a seq scan whatever the indexes.
+        await manager.query('SET LOCAL enable_seqscan = off');
+        const rows = await manager.query<{ 'QUERY PLAN': string }[]>(
+          `EXPLAIN ${sql}`,
+          params,
+        );
+        return rows.map((row) => row['QUERY PLAN']).join('\n');
+      });
+    }
+
+    it('reads the debited sum through the sender-wallet index', async () => {
+      const result = await plan(
+        `SELECT COALESCE(SUM(amount), 0) FROM transactions
+         WHERE sender_wallet_id = $1
+           AND type IN ('p2p_transfer', 'withdrawal')
+           AND status IN ('pending', 'completed')
+           AND created_at >= $2`,
+        [randomUUID(), new Date()],
+      );
+
+      expect(result).toContain('IDX_transactions_sender_wallet_created_at');
+    });
+
+    it('reads pending funding through the partial recipient index', async () => {
+      const result = await plan(
+        `SELECT SUM(t.amount) FROM transactions t
+         WHERE t.recipient_wallet_id = $1
+           AND t.type = 'funding'
+           AND t.status = 'pending'`,
+        [randomUUID()],
+      );
+
+      expect(result).toContain('IDX_transactions_pending_funding_recipient');
+    });
+  });
 
   describe('ledger.getDebitedSince', () => {
     it('sums the principal of transfers and withdrawals, not fees', async () => {
@@ -264,16 +307,16 @@ describe('Daily debit limit', () => {
       await withdraw(sender.userId, sender.bankAccountId, 2_000_000);
     });
 
-    it('rejects every positive amount for a tier 0 user', async () => {
+    it('asks a tier 0 user to verify instead of quoting a ₦0 limit', async () => {
       const sender = await seedUser('tier0', 'tier0');
       const recipient = await seedUser('tier0rcpt', 'tier1', 0n);
 
       await expect(
         transfer(sender.userId, recipient.userId, 10_000),
-      ).rejects.toBeInstanceOf(DailyLimitExceededException);
+      ).rejects.toBeInstanceOf(KycVerificationRequiredException);
       await expect(
         withdraw(sender.userId, sender.bankAccountId, 10_000),
-      ).rejects.toBeInstanceOf(DailyLimitExceededException);
+      ).rejects.toBeInstanceOf(KycVerificationRequiredException);
     });
 
     it('fails closed when the tier has no limit row', async () => {
@@ -508,6 +551,27 @@ describe('Daily debit limit', () => {
       await first;
       await expect(second).rejects.toBeInstanceOf(DailyLimitExceededException);
     });
+
+    it.each(['transfer', 'withdrawal'] as const)(
+      'holds a %s back while another transaction holds the user lock',
+      async (kind) => {
+        const sender = await seedUser(`lock${kind}`);
+        const recipient = await seedUser(`lock${kind}rcpt`, 'tier1', 0n);
+        const held = await holdUserLock(ctx.dataSource, sender.userId);
+
+        const call = trackSettled<unknown>(
+          kind === 'transfer'
+            ? transfer(sender.userId, recipient.userId, 1_000_000)
+            : withdraw(sender.userId, sender.bankAccountId, 1_000_000),
+        );
+        await waitBriefly();
+        const settledWhileHeld = call.isSettled();
+
+        await held.release();
+        await call.promise;
+        expect(settledWhileHeld).toBe(false);
+      },
+    );
 
     it('answers concurrent duplicates of one reference with the original result, not a limit error', async () => {
       const sender = await seedUser('dupes');

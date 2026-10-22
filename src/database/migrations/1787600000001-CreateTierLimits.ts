@@ -15,7 +15,9 @@ export class CreateTierLimits1787600000001 implements MigrationInterface {
         "updated_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
         CONSTRAINT "PK_tier_limits_id" PRIMARY KEY ("id"),
         CONSTRAINT "UQ_tier_limits_tier_currency" UNIQUE ("tier", "currency"),
-        CONSTRAINT "CHK_tier_limits_tier" CHECK ("tier" IN ('tier0', 'tier1', 'tier2', 'tier3'))
+        CONSTRAINT "CHK_tier_limits_tier" CHECK ("tier" IN ('tier0', 'tier1', 'tier2', 'tier3')),
+        CONSTRAINT "CHK_tier_limits_daily_debit_limit_non_negative" CHECK ("daily_debit_limit_minor" >= 0),
+        CONSTRAINT "CHK_tier_limits_balance_cap_non_negative" CHECK ("balance_cap_minor" IS NULL OR "balance_cap_minor" >= 0)
       )
     `);
 

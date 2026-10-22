@@ -6,6 +6,7 @@ import { KycService } from '../kyc.service';
 import { TierLimit } from '../entities/tier-limit.entity';
 import {
   BalanceCapExceededException,
+  KycVerificationRequiredException,
   TierLimitNotConfiguredException,
 } from '../internal/errors';
 import { KycProvider } from '../providers/kyc-provider.interface';
@@ -122,13 +123,14 @@ describe('KycService.checkBalanceCap', () => {
     expect(reader).not.toHaveBeenCalled();
   });
 
-  it('rejects any positive amount for tier 0, whose cap is zero', async () => {
+  it('asks for verification, rather than quoting a ₦0 headroom, when the cap is zero', async () => {
     tier = 'tier0';
     tierLimit = { balanceCapMinor: 0n };
 
     await expect(
       service.checkBalanceCap(manager, 'user-1', NGN(1), reader),
-    ).rejects.toThrow(BalanceCapExceededException);
+    ).rejects.toThrow(KycVerificationRequiredException);
+    expect(reader).not.toHaveBeenCalled();
   });
 
   it('fails closed with a configuration error when the tier has no limit row', async () => {

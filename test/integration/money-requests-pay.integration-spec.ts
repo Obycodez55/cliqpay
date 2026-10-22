@@ -113,6 +113,27 @@ describe('POST /money-requests/:id/pay', () => {
       .send(body);
   }
 
+  it('asks an unverified (tier 0) payer to verify, leaving the request pending and posting nothing', async () => {
+    const requester = await seedRequester();
+    const payer = await seedPayer({
+      balanceMinor: 20_000_000n,
+      kycTier: 'tier0',
+    });
+    const created = await createRequest(requester.userId, payer.userId, 10_000);
+    const reference = `cliqpay-payreq-tier0-${payer.userId}`;
+
+    const res = await pay(tokenFor(payer.userId), created.id, {
+      reference,
+      pin: '1234',
+    }).expect(422);
+
+    expect(JSON.stringify(res.body)).toContain('Verify your BVN or NIN');
+    expect(
+      (await ctx.moneyRequestRepo.findOneByOrFail({ id: created.id })).status,
+    ).toBe('pending');
+    expect(await ctx.transactionRepo.findOneBy({ reference })).toBeNull();
+  });
+
   it('rejects paying a request that exceeds the payer’s daily limit, leaving the request pending and posting nothing', async () => {
     const requester = await seedRequester();
     const payer = await seedPayer({

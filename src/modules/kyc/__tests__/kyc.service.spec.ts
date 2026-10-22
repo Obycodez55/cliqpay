@@ -10,6 +10,7 @@ import { KycService } from '../kyc.service';
 import { KycVerification } from '../entities/kyc-verification.entity';
 import { KycVerificationAttempt } from '../entities/kyc-verification-attempt.entity';
 import { KycLivenessJob } from '../entities/kyc-liveness-job.entity';
+import { TierLimit } from '../entities/tier-limit.entity';
 import {
   KycProvider,
   KycVerificationResult,
@@ -57,6 +58,7 @@ type FakeJobRepo = {
   update: jest.Mock<Promise<unknown>, [unknown, unknown]>;
   findOneBy: jest.Mock<Promise<KycLivenessJob | null>, [unknown]>;
   find: jest.Mock<Promise<KycLivenessJob[]>, [unknown]>;
+  increment: jest.Mock<Promise<unknown>, [unknown, string, number]>;
 };
 
 const TEST_ENCRYPTION_KEY = 'a'.repeat(64);
@@ -91,6 +93,9 @@ describe('KycService', () => {
   >;
   let kycProvider: jest.Mocked<Pick<KycProvider, keyof KycProvider>>;
   let jobRepo: FakeJobRepo;
+  let tierLimitRepo: {
+    findOneBy: jest.Mock<Promise<TierLimit | null>, [unknown]>;
+  };
   let usersService: {
     findById: jest.Mock<Promise<Record<string, unknown>>, [string]>;
     getKycTier: jest.Mock<Promise<KycTier>, [EntityManager, string]>;
@@ -132,6 +137,19 @@ describe('KycService', () => {
         .fn<Promise<unknown>, [Partial<KycVerificationAttempt>]>()
         .mockResolvedValue(undefined),
     };
+    tierLimitRepo = {
+      findOneBy: jest.fn<Promise<TierLimit | null>, [unknown]>(
+        ({ tier }: { tier?: string } = {}) =>
+          Promise.resolve(
+            (tier === 'tier1'
+              ? {
+                  dailyDebitLimitMinor: 5_000_000n,
+                  balanceCapMinor: 30_000_000n,
+                }
+              : { dailyDebitLimitMinor: 0n, balanceCapMinor: 0n }) as TierLimit,
+          ),
+      ),
+    };
     jobRepo = {
       countBy: jest.fn<Promise<number>, [unknown]>().mockResolvedValue(0),
       create: jest.fn(
@@ -149,6 +167,9 @@ describe('KycService', () => {
       find: jest
         .fn<Promise<KycLivenessJob[]>, [unknown]>()
         .mockResolvedValue([]),
+      increment: jest
+        .fn<Promise<unknown>, [unknown, string, number]>()
+        .mockResolvedValue(undefined),
     };
     managerQuery = jest
       .fn<Promise<unknown>, [string, unknown[]]>()
@@ -157,6 +178,7 @@ describe('KycService', () => {
       if (entity === KycVerification) return kycVerificationRepo;
       if (entity === KycVerificationAttempt) return attemptRepo;
       if (entity === KycLivenessJob) return jobRepo;
+      if (entity === TierLimit) return tierLimitRepo;
       throw new Error('unexpected entity passed to getRepository');
     });
     fakeManager = {
@@ -776,25 +798,134 @@ describe('KycService', () => {
       expect(written).not.toContain(liveness.selfieImage);
     });
 
-    it('leaves a job pending and the attempt untouched when the provider status call throws', async () => {
-      jobRepo.find.mockResolvedValue([
-        {
-          id: 'job-1',
-          userId: 'user-1',
-          attemptId: 'attempt-1',
-          providerJobId: 'provider-job-1',
-          status: 'pending',
-        } as KycLivenessJob,
-      ]);
+    function pendingJob(
+      id: string,
+      overrides: Partial<KycLivenessJob> = {},
+    ): KycLivenessJob {
+      return {
+        id,
+        userId: 'user-1',
+        attemptId: `attempt-${id}`,
+        providerJobId: `provider-${id}`,
+        status: 'pending',
+        pollFailures: 0,
+        ...overrides,
+      } as KycLivenessJob;
+    }
+
+    function nextPollFinds(expired: KycLivenessJob[], live: KycLivenessJob[]) {
+      jobRepo.find.mockResolvedValueOnce(expired).mockResolvedValueOnce(live);
+    }
+
+    it('leaves a job pending and the attempt untouched when the provider status call throws, counting the failure', async () => {
+      const job = pendingJob('job-1');
+      nextPollFinds([], [job]);
       kycProvider.getLivenessResult.mockRejectedValue(new Error('503'));
 
       await service.pollPendingLivenessJobs();
 
-      expect(jobRepo.update).not.toHaveBeenCalledWith(
-        { id: 'job-1' },
-        expect.anything(),
-      );
+      expect(jobRepo.update).not.toHaveBeenCalled();
       expect(attemptRepo.update).not.toHaveBeenCalled();
+      expect(jobRepo.increment).toHaveBeenCalledWith(
+        { id: 'job-1' },
+        'pollFailures',
+        1,
+      );
+    });
+
+    it('only polls jobs that are unexpired and under the consecutive-failure cap', async () => {
+      nextPollFinds([], []);
+
+      await service.pollPendingLivenessJobs();
+
+      const liveQuery = jobRepo.find.mock.calls[1][0] as {
+        where: { pollFailures: unknown; createdAt: unknown };
+      };
+      expect(liveQuery.where.pollFailures).toBeDefined();
+      expect(liveQuery.where.createdAt).toBeDefined();
+    });
+
+    it('resets the failure count after a successful pending answer', async () => {
+      nextPollFinds([], [pendingJob('job-1', { pollFailures: 3 })]);
+      kycProvider.getLivenessResult.mockResolvedValue('pending');
+
+      await service.pollPendingLivenessJobs();
+
+      expect(jobRepo.update).toHaveBeenCalledWith(
+        { id: 'job-1' },
+        { pollFailures: 0 },
+      );
+    });
+
+    it('applies a verdict the provider reached before an expired job is given up on', async () => {
+      const job = pendingJob('job-1');
+      jobRepo.findOneBy.mockResolvedValue(job);
+      bvnVerifiedRecord();
+      nextPollFinds([job], []);
+      kycProvider.getLivenessResult.mockResolvedValue('passed');
+
+      await service.pollPendingLivenessJobs();
+
+      expect(jobRepo.update).toHaveBeenCalledWith(
+        { id: 'job-1' },
+        { status: 'passed' },
+      );
+      expect(jobRepo.update).not.toHaveBeenCalledWith(
+        { id: 'job-1', status: 'pending' },
+        { status: 'failed' },
+      );
+    });
+
+    it.each([
+      ['still processing', () => Promise.resolve('pending' as const)],
+      ['erroring', () => Promise.reject(new Error('503'))],
+    ])(
+      'fails an expired job whose final poll is %s',
+      async (_label, answer) => {
+        nextPollFinds([pendingJob('job-1')], []);
+        kycProvider.getLivenessResult.mockImplementation(answer);
+
+        await service.pollPendingLivenessJobs();
+
+        expect(jobRepo.update).toHaveBeenCalledWith(
+          { id: 'job-1', status: 'pending' },
+          { status: 'failed' },
+        );
+        expect(attemptRepo.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it('fails an expired job that never got a provider job id without calling the provider', async () => {
+      nextPollFinds([pendingJob('job-1', { providerJobId: null })], []);
+
+      await service.pollPendingLivenessJobs();
+
+      expect(kycProvider.getLivenessResult).not.toHaveBeenCalled();
+      expect(jobRepo.update).toHaveBeenCalledWith(
+        { id: 'job-1', status: 'pending' },
+        { status: 'failed' },
+      );
+    });
+
+    it('stops polling once the tick budget is spent and leaves the rest for the next tick', async () => {
+      nextPollFinds(
+        [],
+        [pendingJob('job-1'), pendingJob('job-2'), pendingJob('job-3')],
+      );
+      let now = 1_000_000;
+      jest.spyOn(Date, 'now').mockImplementation(() => now);
+      kycProvider.getLivenessResult.mockImplementation(() => {
+        now += 40_000;
+        return Promise.resolve('pending' as const);
+      });
+
+      try {
+        await service.pollPendingLivenessJobs();
+      } finally {
+        jest.restoreAllMocks();
+      }
+
+      expect(kycProvider.getLivenessResult).toHaveBeenCalledTimes(2);
     });
 
     it('ignores a webhook that names no pending job and never trusts its body', async () => {
@@ -829,7 +960,7 @@ describe('KycService', () => {
   });
 
   describe('getStatus', () => {
-    it('returns tier0 defaults with a 0 daily allowance placeholder when no verification row exists', async () => {
+    it('returns tier0 defaults and the tier0 limits when no verification row exists', async () => {
       const result = await service.getStatus('user-1');
 
       expect(result).toEqual({
@@ -838,7 +969,27 @@ describe('KycService', () => {
         ninVerified: false,
         livenessVerified: false,
         livenessPending: false,
-        dailyAllowanceRemainingMinor: 0,
+        dailyDebitLimit: { amount: '0', currency: 'NGN' },
+        balanceCap: { amount: '0', currency: 'NGN' },
+      });
+    });
+
+    it('reports a null balance cap for an uncapped tier', async () => {
+      usersService.findById.mockResolvedValue({
+        id: 'user-1',
+        kycTier: 'tier3',
+      });
+      tierLimitRepo.findOneBy.mockResolvedValue({
+        dailyDebitLimitMinor: 500_000_000n,
+        balanceCapMinor: null,
+      } as TierLimit);
+
+      const result = await service.getStatus('user-1');
+
+      expect(result.balanceCap).toBeNull();
+      expect(result.dailyDebitLimit).toEqual({
+        amount: '500000000',
+        currency: 'NGN',
       });
     });
 
@@ -861,7 +1012,8 @@ describe('KycService', () => {
         ninVerified: false,
         livenessVerified: false,
         livenessPending: false,
-        dailyAllowanceRemainingMinor: 0,
+        dailyDebitLimit: { amount: '5000000', currency: 'NGN' },
+        balanceCap: { amount: '30000000', currency: 'NGN' },
       });
     });
   });

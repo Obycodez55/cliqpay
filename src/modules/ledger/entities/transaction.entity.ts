@@ -133,6 +133,13 @@ export type TransactionMetadata =
   'type',
   'createdAt',
 ])
+@Index('IDX_transactions_sender_wallet_created_at', [
+  'senderWalletId',
+  'createdAt',
+])
+@Index('IDX_transactions_pending_funding_recipient', ['recipientWalletId'], {
+  where: `"type" = 'funding' AND "status" = 'pending'`,
+})
 export class Transaction {
   @PrimaryGeneratedColumn('uuid')
   id: string;

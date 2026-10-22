@@ -41,7 +41,13 @@ interface SmileIdJobStatusResponse {
     | 'not_found';
 }
 
-const SUBMISSION_INFRASTRUCTURE_STATUSES = new Set([401, 403, 404, 408, 429]);
+// Our credentials, token or endpoint being wrong, throttling and outages must
+// never read as a user-level verdict.
+const INFRASTRUCTURE_FAILURE_STATUSES = new Set([401, 403, 404, 408, 429]);
+
+function isInfrastructureFailure(status: number): boolean {
+  return status >= 500 || INFRASTRUCTURE_FAILURE_STATUSES.has(status);
+}
 
 const RESULT_CODE_MATCH = '1012';
 const RESULT_CODE_NOT_FOUND = '1013';
@@ -80,7 +86,7 @@ export class SmileIdKycProvider implements KycProvider {
   ): Promise<KycVerificationResult> {
     const timestamp = new Date().toISOString();
 
-    const { ok, body } = await requestJson<SmileIdEnhancedKycResponse>({
+    const { ok, status, body } = await requestJson<SmileIdEnhancedKycResponse>({
       provider: 'SmileIdKycProvider',
       url: `${this.baseUrl}/v1/id_verification`,
       method: 'POST',
@@ -100,11 +106,18 @@ export class SmileIdKycProvider implements KycProvider {
       timeoutMs: SMILE_ID_TIMEOUT_MS,
     });
 
+    if (status >= 500) {
+      throw new Error(`SmileIdKycProvider: lookup unavailable (${status})`);
+    }
+    // A recognised result code outranks the status: not-found may arrive as a 404.
     if (body.ResultCode === RESULT_CODE_NOT_FOUND) {
       return { status: 'not_found' };
     }
     if (!ok || body.ResultCode !== RESULT_CODE_MATCH) {
-      // Any other result code is an expected lookup outcome, not a system failure.
+      if (isInfrastructureFailure(status)) {
+        throw new Error(`SmileIdKycProvider: lookup unavailable (${status})`);
+      }
+      // A rejected lookup or any other result code is a genuine non-match.
       return { status: 'mismatch' };
     }
 
@@ -160,9 +173,7 @@ export class SmileIdKycProvider implements KycProvider {
       body: form,
       timeoutMs: SMILE_ID_TIMEOUT_MS,
     });
-    // Our credentials, token or endpoint being wrong must not read as the
-    // user failing liveness.
-    if (status >= 500 || SUBMISSION_INFRASTRUCTURE_STATUSES.has(status)) {
+    if (isInfrastructureFailure(status)) {
       throw new Error(`SmileIdKycProvider: submission unavailable (${status})`);
     }
     if (!ok) {

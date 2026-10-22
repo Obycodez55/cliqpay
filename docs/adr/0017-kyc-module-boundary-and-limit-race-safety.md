@@ -73,8 +73,10 @@ the caller supplies the one ledger fact the rule needs, by wiring
 userId, since)`. The method:
 
 1. Acquires `pg_advisory_xact_lock(hashtext(userId))` — a transaction-scoped
-   advisory lock keyed by user ID, as the first statement, inside the
-   caller's transaction.
+   advisory lock keyed by user ID, inside the caller's transaction. It is
+   the first statement of the check itself; a caller may already hold its own
+   row locks before calling (paying a money request locks the request row and
+   verifies the PIN first).
 2. Computes the start of the current calendar day in `Africa/Lagos` (WAT)
    and calls `readDebitedSince(manager, thatInstant)` — only after the lock
    is held, so the sum can't be read before a concurrent request commits.

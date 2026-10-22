@@ -48,6 +48,7 @@ import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations
 import { CreateTransactionsAndLedgerEntries1784707276066 } from '../../../src/database/migrations/1784707276066-CreateTransactionsAndLedgerEntries';
 import { AddFundingQueryIndexes1785488695081 } from '../../../src/database/migrations/1785488695081-AddFundingQueryIndexes';
 import { EnforceLedgerEntriesAppendOnly1785491930164 } from '../../../src/database/migrations/1785491930164-EnforceLedgerEntriesAppendOnly';
+import { AddKycLimitQueryIndexes1787600000005 } from '../../../src/database/migrations/1787600000005-AddKycLimitQueryIndexes';
 import { AuthModule } from '../../../src/modules/auth/auth.module';
 import { AuthService } from '../../../src/modules/auth/auth.service';
 import { MfaService } from '../../../src/modules/auth/mfa.service';
@@ -184,6 +185,7 @@ export async function createWithdrawalsTestContext(
   await new AddIsFrozenToUsers1787500000001().up(queryRunner);
   await new CreateTierLimits1787600000001().up(queryRunner);
   await new AddKycTierToUsers1787600000002().up(queryRunner);
+  await new AddKycLimitQueryIndexes1787600000005().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 

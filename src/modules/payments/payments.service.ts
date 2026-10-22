@@ -222,10 +222,7 @@ export class PaymentsService {
         );
       });
     } catch (error) {
-      // A duplicate request racing this one may have committed first: its
-      // pending row then either collides on the unique reference or counts
-      // against the cap here. Either way the committed result is the answer,
-      // and it is read after the failed transaction has ended.
+      // A racing duplicate may have committed first; its result is the answer.
       const raced = await this.ledgerService.checkIdempotentReplay(
         dto.reference,
         userId,

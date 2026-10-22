@@ -57,7 +57,7 @@ export class KycController {
   @UseGuards(JwtAuthGuard)
   @ApiOperation({
     summary:
-      'Get current KYC tier, verified identity pieces, and daily allowance',
+      "Get current KYC tier, verified identity pieces, and the tier's limits",
   })
   getStatus(@Req() req: AuthenticatedRequest): Promise<KycStatusResponseDto> {
     return this.kycService.getStatus(req.user.userId);

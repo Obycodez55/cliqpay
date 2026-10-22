@@ -182,38 +182,15 @@ export default tseslint.config(
             },
             {
               from: { element: { type: 'kyc-module' } },
-              disallow: { to: { element: { type: 'ledger-module' } } },
-              message: '`kyc` must never import from `ledger` — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
-            },
-            {
-              from: { element: { type: 'kyc-module' } },
-              disallow: { to: { element: { type: 'payments-module' } } },
-              message: '`kyc` must never import from `payments` — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
-            },
-            {
-              from: { element: { type: 'kyc-module' } },
-              disallow: { to: { element: { type: 'auth-module' } } },
-              message: '`kyc` must never import from `auth` — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
-            },
-            {
-              from: { element: { type: 'kyc-module' } },
-              disallow: { to: { element: { type: 'transfers-module' } } },
-              message: '`kyc` must never import from `transfers` — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
-            },
-            {
-              from: { element: { type: 'kyc-module' } },
-              disallow: { to: { element: { type: 'withdrawals-module' } } },
-              message: '`kyc` must never import from `withdrawals` — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
-            },
-            {
-              from: { element: { type: 'kyc-module' } },
-              disallow: { to: { element: { type: 'disputes-module' } } },
-              message: '`kyc` must never import from `disputes` — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
-            },
-            {
-              from: { element: { type: 'kyc-module' } },
-              disallow: { to: { element: { type: 'peripheral-module' } } },
-              message: '`kyc` must never import from another peripheral module — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
+              disallow: {
+                to: {
+                  element: {
+                    type: '!(kyc-module|users-module|shared)',
+                  },
+                },
+              },
+              message:
+                '`kyc` may import only `users` (and shared) — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
             },
             {
               from: { element: { type: 'ledger-module' } },

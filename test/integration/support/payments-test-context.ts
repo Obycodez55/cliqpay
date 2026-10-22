@@ -29,6 +29,7 @@ import { CreateNotifications1786812506579 } from '../../../src/database/migratio
 import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
 import { CreateTierLimits1787600000001 } from '../../../src/database/migrations/1787600000001-CreateTierLimits';
 import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
+import { AddKycLimitQueryIndexes1787600000005 } from '../../../src/database/migrations/1787600000005-AddKycLimitQueryIndexes';
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
 import { Account } from '../../../src/modules/ledger/entities/account.entity';
@@ -108,6 +109,7 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
   await new AddIsFrozenToUsers1787500000001().up(queryRunner);
   await new CreateTierLimits1787600000001().up(queryRunner);
   await new AddKycTierToUsers1787600000002().up(queryRunner);
+  await new AddKycLimitQueryIndexes1787600000005().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 

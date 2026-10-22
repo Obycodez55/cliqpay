@@ -309,10 +309,7 @@ export class WithdrawalsService {
         });
       });
     } catch (error) {
-      // A duplicate request racing this one may have committed first, in
-      // which case this one fails on the unique reference or on the limit
-      // its twin just consumed; either way the committed result is the
-      // answer.
+      // A racing duplicate may have committed first; its result is the answer.
       const raced = await this.ledgerService.checkIdempotentReplay(
         dto.reference,
         userId,

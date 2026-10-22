@@ -82,6 +82,16 @@ export class TooManyVerificationAttemptsException extends DomainException {
   }
 }
 
+export class KycVerificationRequiredException extends DomainException {
+  readonly code = 'KYC_VERIFICATION_REQUIRED';
+  constructor() {
+    super(
+      'Verify your BVN or NIN to start sending, withdrawing or adding money.',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
 export class DailyLimitExceededException extends DomainException {
   readonly code = 'DAILY_LIMIT_EXCEEDED';
   readonly details: { dailyLimit: object; remaining: object };

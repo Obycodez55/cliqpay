@@ -6,6 +6,7 @@ import {
   IsNull,
   LessThan,
   MoreThan,
+  MoreThanOrEqual,
   Not,
 } from 'typeorm';
 import { Money } from '../../shared/primitives/money';
@@ -41,6 +42,7 @@ import {
   BvnAlreadyVerifiedException,
   BvnVerificationFailedException,
   DailyLimitExceededException,
+  KycVerificationRequiredException,
   LivenessInProgressException,
   NinAlreadyLinkedException,
   NinAlreadyVerifiedException,
@@ -58,10 +60,15 @@ import { KycStatusResponseDto } from './dto/kyc-status-response.dto';
 // Becomes the user's own timezone once profiles carry one.
 const DEFAULT_USER_TIME_ZONE = 'Africa/Lagos';
 
+// The only currency with tier limits so far.
+const STATUS_CURRENCY = 'NGN';
+
 const MAX_FAILED_ATTEMPTS_PER_WINDOW = 5;
 const ATTEMPT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const LIVENESS_JOB_TTL_MS = 30 * 60 * 1000;
 const LIVENESS_POLL_BATCH = 100;
+const LIVENESS_POLL_TICK_BUDGET_MS = 60 * 1000;
+const LIVENESS_MAX_POLL_FAILURES = 5;
 
 const LIVENESS_PENDING_CONSTRAINT = 'UQ_kyc_liveness_jobs_user_pending';
 
@@ -326,23 +333,53 @@ export class KycService {
     });
   }
 
+  // Oldest first and bounded by a time budget, so a provider outage can't make
+  // one tick outrun the next; the following tick carries on where this one
+  // stopped.
   async pollPendingLivenessJobs(): Promise<void> {
     const repo = this.dataSource.getRepository(KycLivenessJob);
-    await repo.update(
-      {
-        status: 'pending',
-        createdAt: LessThan(new Date(Date.now() - LIVENESS_JOB_TTL_MS)),
-      },
-      { status: 'failed' },
-    );
+    const deadline = Date.now() + LIVENESS_POLL_TICK_BUDGET_MS;
+    const cutoff = new Date(Date.now() - LIVENESS_JOB_TTL_MS);
+
+    const expired = await repo.find({
+      where: { status: 'pending', createdAt: LessThan(cutoff) },
+      order: { createdAt: 'ASC' },
+      take: LIVENESS_POLL_BATCH,
+    });
+    for (const job of expired) {
+      if (Date.now() >= deadline) {
+        return;
+      }
+      await this.expireLivenessJob(job);
+    }
+
     const jobs = await repo.find({
-      where: { status: 'pending', providerJobId: Not(IsNull()) },
+      where: {
+        status: 'pending',
+        providerJobId: Not(IsNull()),
+        createdAt: MoreThanOrEqual(cutoff),
+        pollFailures: LessThan(LIVENESS_MAX_POLL_FAILURES),
+      },
       order: { createdAt: 'ASC' },
       take: LIVENESS_POLL_BATCH,
     });
     for (const job of jobs) {
+      if (Date.now() >= deadline) {
+        return;
+      }
       await this.pollLivenessJob(job);
     }
+  }
+
+  // One last look before giving up, so a verdict the provider reached during a
+  // long outage still counts.
+  private async expireLivenessJob(job: KycLivenessJob): Promise<void> {
+    if (job.providerJobId && (await this.pollLivenessJob(job))) {
+      return;
+    }
+    await this.dataSource
+      .getRepository(KycLivenessJob)
+      .update({ id: job.id, status: 'pending' }, { status: 'failed' });
   }
 
   async handleLivenessWebhook(body: unknown): Promise<void> {
@@ -358,18 +395,27 @@ export class KycService {
     }
   }
 
-  private async pollLivenessJob(job: KycLivenessJob): Promise<void> {
+  // True once the job has been settled from the provider's answer.
+  private async pollLivenessJob(job: KycLivenessJob): Promise<boolean> {
+    const repo = this.dataSource.getRepository(KycLivenessJob);
     try {
       const outcome = await this.kycProvider.getLivenessResult(
         job.providerJobId!,
       );
-      if (outcome !== 'pending') {
-        await this.applyLivenessOutcome(job.id, outcome);
+      if (outcome === 'pending') {
+        if (job.pollFailures > 0) {
+          await repo.update({ id: job.id }, { pollFailures: 0 });
+        }
+        return false;
       }
+      await this.applyLivenessOutcome(job.id, outcome);
+      return true;
     } catch (error) {
       this.logger.warn(
         `Liveness poll failed for job ${job.id}: ${(error as Error).message}`,
       );
+      await repo.increment({ id: job.id }, 'pollFailures', 1);
+      return false;
     }
   }
 
@@ -432,6 +478,10 @@ export class KycService {
       throw new TierLimitNotConfiguredException();
     }
 
+    if (tierLimit.dailyDebitLimitMinor === 0n) {
+      throw new KycVerificationRequiredException();
+    }
+
     const dailyLimit = Money.of(
       tierLimit.dailyDebitLimitMinor,
       amount.currency,
@@ -468,6 +518,9 @@ export class KycService {
     if (tierLimit.balanceCapMinor === null) {
       return;
     }
+    if (tierLimit.balanceCapMinor === 0n) {
+      throw new KycVerificationRequiredException();
+    }
 
     const cap = Money.of(tierLimit.balanceCapMinor, requested.currency);
     const { balance, pending } = await readBalanceAndPending(manager);
@@ -492,6 +545,12 @@ export class KycService {
         .getRepository(KycLivenessJob)
         .countBy({ userId, status: 'pending' }),
     ]);
+    const tierLimit = await this.dataSource
+      .getRepository(TierLimit)
+      .findOneBy({ tier: user.kycTier, currency: STATUS_CURRENCY });
+    if (!tierLimit) {
+      throw new TierLimitNotConfiguredException();
+    }
 
     return {
       tier: user.kycTier,
@@ -499,7 +558,14 @@ export class KycService {
       ninVerified: !!record?.ninHash,
       livenessVerified: record?.livenessVerified ?? false,
       livenessPending: pendingJobs > 0,
-      dailyAllowanceRemainingMinor: 0,
+      dailyDebitLimit: Money.of(
+        tierLimit.dailyDebitLimitMinor,
+        STATUS_CURRENCY,
+      ).toJSON(),
+      balanceCap:
+        tierLimit.balanceCapMinor === null
+          ? null
+          : Money.of(tierLimit.balanceCapMinor, STATUS_CURRENCY).toJSON(),
     };
   }
 

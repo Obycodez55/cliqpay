@@ -80,16 +80,65 @@ describe('SmileIdKycProvider', () => {
     });
   });
 
-  it('maps a non-ok response with a parseable body to a mismatch', async () => {
+  it.each([400, 422])(
+    'maps a %s rejection of the lookup itself to a mismatch',
+    async (code) => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(code, { ResultCode: '1012', ResultText: 'rejected' }),
+      );
+      const provider = new SmileIdKycProvider(buildConfig());
+
+      await expect(provider.verifyBvn('22222222222')).resolves.toEqual({
+        status: 'mismatch',
+      });
+    },
+  );
+
+  it('treats a 404 carrying result code 1013 as not_found, not an outage', async () => {
     fetchMock.mockResolvedValue(
-      jsonResponse(400, { ResultCode: '1012', ResultText: 'bad request' }),
+      jsonResponse(404, { ResultCode: '1013', ResultText: 'No Match' }),
     );
     const provider = new SmileIdKycProvider(buildConfig());
 
     await expect(provider.verifyBvn('22222222222')).resolves.toEqual({
-      status: 'mismatch',
+      status: 'not_found',
     });
   });
+
+  it.each([{}, { ResultCode: '9999' }])(
+    'throws on a 404 without a recognised result code (%j)',
+    async (body) => {
+      fetchMock.mockResolvedValue(jsonResponse(404, body));
+      const provider = new SmileIdKycProvider(buildConfig());
+
+      await expect(provider.verifyBvn('22222222222')).rejects.toThrow(
+        /lookup unavailable/,
+      );
+    },
+  );
+
+  it('never reads a 5xx as a verdict, even with result code 1013', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(500, { ResultCode: '1013' }));
+    const provider = new SmileIdKycProvider(buildConfig());
+
+    await expect(provider.verifyBvn('22222222222')).rejects.toThrow(
+      /lookup unavailable/,
+    );
+  });
+
+  it.each([401, 403, 404, 408, 429, 500, 503])(
+    'throws, rather than reporting a mismatch, on a %s response',
+    async (code) => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(code, { ResultCode: '1012', ResultText: 'whatever' }),
+      );
+      const provider = new SmileIdKycProvider(buildConfig());
+
+      await expect(provider.verifyBvn('22222222222')).rejects.toThrow(
+        /lookup unavailable/,
+      );
+    },
+  );
 
   it('posts the signed request to the id_verification endpoint', async () => {
     fetchMock.mockResolvedValue(jsonResponse(200, { ResultCode: '1013' }));

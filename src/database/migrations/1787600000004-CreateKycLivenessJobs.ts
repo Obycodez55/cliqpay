@@ -11,6 +11,7 @@ export class CreateKycLivenessJobs1787600000004 implements MigrationInterface {
         "attempt_id" uuid NOT NULL,
         "identity_type" varchar NOT NULL,
         "provider_job_id" varchar,
+        "poll_failures" integer NOT NULL DEFAULT 0,
         "status" varchar NOT NULL,
         "created_at" TIMESTAMPTZ NOT NULL DEFAULT now(),
         "updated_at" TIMESTAMPTZ NOT NULL DEFAULT now(),

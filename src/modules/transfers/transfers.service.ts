@@ -59,6 +59,13 @@ export interface ExecuteTransferParams {
   pin: string;
 }
 
+export interface FinalizeTransferOutcome {
+  result: PostTransferResult;
+  // True when a duplicate request racing this one committed first and its
+  // result is returned instead.
+  replayed: boolean;
+}
+
 export interface ExecuteTransferOutcome {
   result: PostTransferResult;
   // False only for the one call that actually posted new ledger entries —
@@ -209,7 +216,7 @@ export class TransfersService {
     reference: string,
     pin: string,
     manager?: EntityManager,
-  ): Promise<PostTransferResult> {
+  ): Promise<FinalizeTransferOutcome> {
     if (prepared.sender.isFrozen) {
       throw new SenderAccountFrozenException();
     }
@@ -252,7 +259,7 @@ export class TransfersService {
       // else's transaction — map it to the same clean conflict the
       // no-manager path produces instead of a raw 500.
       try {
-        return await post(manager);
+        return { result: await post(manager), replayed: false };
       } catch (error) {
         if (isUniqueViolation(error, 'UQ_transactions_reference')) {
           throw new ConflictException(
@@ -264,19 +271,22 @@ export class TransfersService {
     }
 
     try {
-      return await runInTransaction(this.dataSource, post);
+      return {
+        result: await runInTransaction(this.dataSource, post),
+        replayed: false,
+      };
     } catch (error) {
-      // A duplicate request racing this one may have committed first, in
-      // which case this one fails on the unique reference or on the limit
-      // its twin just consumed; either way the committed result is the
-      // answer.
+      // A duplicate request racing this one may have committed first, so this
+      // one fails on the unique reference or on the limit its twin just
+      // consumed; the committed result is the answer, read after the failed
+      // transaction has ended, and is reported as a replay.
       const raced = await this.checkTransferReplay(
         senderId,
         prepared,
         reference,
       );
       if (raced) {
-        return raced;
+        return { result: raced, replayed: true };
       }
       throw error;
     }
@@ -310,14 +320,14 @@ export class TransfersService {
     // PIN checked only after a replay match would have short-circuited
     // above — a retried, already-successful send shouldn't demand the PIN
     // again, mirroring funding's checkoutUrl replay.
-    const result = await this.finalizeTransfer(
+    const { result, replayed } = await this.finalizeTransfer(
       senderId,
       prepared,
       params.reference,
       params.pin,
       manager,
     );
-    return { result, replayed: false, sender: prepared.sender };
+    return { result, replayed, sender: prepared.sender };
   }
 
   private async publishTransferEvents(

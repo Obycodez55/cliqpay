@@ -43,6 +43,8 @@ covered two of the four.
 
 ## Decision
 
+The liveness part of this decision was later amended: see "Amendment (2026-10-21)" at the end.
+
 `KycProvider` is backed entirely by Smile ID: `SmileIdKycProvider` (real
 integration, Smile ID's sandbox environment — `sandbox_result` mocking, not
 real BVN/NIN/NIMC/NIBSS data, consistent with §6 Phase 6's existing
