@@ -1,0 +1,42 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/vnin",
+    "body": {
+      "number": "12345678901"
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 400,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "07fdf8f0"
+  },
+  "responseBody": {
+    "status": false,
+    "response_code": "05",
+    "message": "Invalid request data",
+    "detail": "Invalid request data",
+    "data": {},
+    "meta": {},
+    "billing_info": {
+      "was_charged": false,
+      "amount": 0,
+      "currency": ""
+    },
+    "verification": {
+      "status": "NOT-VERIFIED",
+      "reference": "cad59e19-4798-4138-ad30-d0c37f96be40",
+      "verification_id": "58dfad8b-44ca-46ca-811b-782b1b8f90e8"
+    },
+    "errors": {
+      "number_nin": [
+        "This field is required"
+      ]
+    },
+    "metadata": {}
+  }
+}

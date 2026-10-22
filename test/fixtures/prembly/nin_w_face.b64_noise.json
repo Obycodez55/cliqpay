@@ -1,0 +1,112 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/nin_w_face",
+    "body": {
+      "number": "12345678909",
+      "image": "<omitted 53400 chars>",
+      "face_confidence_threshold": 90
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 200,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "efd63747"
+  },
+  "responseBody": {
+    "status": true,
+    "response_code": "00",
+    "message": "Verification successful (SANDBOX MODE) - You are in sandbox mode. Switch to production mode for live data.",
+    "detail": "Verification successful (SANDBOX MODE) - You are in sandbox mode. Switch to production mode for live data.",
+    "data": {
+      "detail": "NIN Verification Successful",
+      "status": true,
+      "nin_data": {
+        "nin": "0123456789",
+        "vnin": "",
+        "email": null,
+        "photo": "base64_string",
+        "title": "",
+        "gender": "f",
+        "heigth": "",
+        "userid": "",
+        "nok_lga": "string",
+        "surname": "string",
+        "birthlga": "",
+        "nok_town": "string",
+        "psurname": "",
+        "religion": "",
+        "birthdate": "01-01-1990",
+        "centralID": "",
+        "face_data": {
+          "status": true,
+          "message": "Face Match",
+          "image_one": "base64_string",
+          "image_two": "base64_string",
+          "confidence": 99.98046875,
+          "response_code": "00"
+        },
+        "firstname": "string",
+        "nok_state": "",
+        "signature": "base64_string",
+        "birthstate": "",
+        "middlename": "string",
+        "pfirstname": "",
+        "profession": null,
+        "trackingId": "",
+        "nok_surname": "",
+        "ospokenlang": "",
+        "pmiddlename": "",
+        "telephoneno": "07000000002",
+        "birthcountry": "nigeria",
+        "nok_address1": "MASKED",
+        "nok_address2": "",
+        "maritalstatus": null,
+        "nok_firstname": "string",
+        "residence_lga": "",
+        "nok_middlename": "string",
+        "nok_postalcode": "",
+        "residence_town": "",
+        "residence_state": "",
+        "residencestatus": "",
+        "self_origin_lga": "",
+        "spoken_language": "",
+        "educationallevel": "",
+        "employmentstatus": "",
+        "residence_address": "MASKED ADDRESS",
+        "self_origin_place": "",
+        "self_origin_state": null
+      },
+      "face_data": {
+        "status": true,
+        "message": "Face Match",
+        "image_one": "base64_string",
+        "image_two": "base64_string",
+        "confidence": 99.98046875,
+        "response_code": "00"
+      },
+      "response_code": "00"
+    },
+    "meta": {},
+    "billing_info": {
+      "was_charged": false,
+      "amount": 0,
+      "currency": "NGN",
+      "note": "No charges in sandbox mode"
+    },
+    "verification": {
+      "status": "VERIFIED",
+      "reference": "266f0ed8-697a-4720-a296-297793e2d016",
+      "verification_id": "30624dc9-ae34-4590-a844-dd231e10f11e"
+    },
+    "reference_id": "SBX-NIN_W_FACE-GF7WOQM97J",
+    "is_sandbox": true,
+    "account_verified": true,
+    "verification_status": "sandbox",
+    "metadata": {}
+  }
+}

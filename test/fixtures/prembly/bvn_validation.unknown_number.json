@@ -1,0 +1,48 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/bvn_validation",
+    "body": {
+      "number": "12345678901"
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 200,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "076844d0"
+  },
+  "responseBody": {
+    "status": true,
+    "response_code": "00",
+    "message": "Verification successful (SANDBOX MODE) - You are in sandbox mode. Switch to production mode for live data.",
+    "detail": "Verification successful (SANDBOX MODE) - You are in sandbox mode. Switch to production mode for live data.",
+    "data": {
+      "lastName": "Jane",
+      "firstName": "John",
+      "middleName": "Doe",
+      "dateOfBirth": "01-Jan-2000",
+      "phoneNumber": "08012345678"
+    },
+    "meta": {},
+    "billing_info": {
+      "was_charged": false,
+      "amount": 0,
+      "currency": "NGN",
+      "note": "No charges in sandbox mode"
+    },
+    "verification": {
+      "status": "VERIFIED",
+      "reference": "14046cc7-445b-41d6-9542-605171658a57",
+      "verification_id": "ec975ab9-5d10-423a-8965-c2fc5c5cad3d"
+    },
+    "reference_id": "SBX-BVN_BASIC-OOLPM9O5RZ",
+    "is_sandbox": true,
+    "account_verified": true,
+    "verification_status": "sandbox",
+    "metadata": {}
+  }
+}

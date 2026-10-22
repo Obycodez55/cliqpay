@@ -1,0 +1,89 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/vnin",
+    "body": {
+      "number_nin": "12345678901"
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 200,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "f111e753"
+  },
+  "responseBody": {
+    "status": true,
+    "response_code": "00",
+    "message": "National Identity Number (NIN) verification successful - You are in sandbox mode. Switch to production mode for live data.",
+    "detail": "National Identity Number (NIN) verification successful - You are in sandbox mode. Switch to production mode for live data.",
+    "data": {
+      "nin": "12345678901",
+      "vnin": "",
+      "email": "",
+      "photo": "<omitted 206507 chars>",
+      "title": "",
+      "gender": "m",
+      "heigth": "",
+      "userid": "",
+      "nok_lga": "Shomolu",
+      "surname": "JOHNSON",
+      "birthlga": "",
+      "nok_town": "BARIGA",
+      "psurname": "",
+      "religion": "",
+      "birthdate": "22-05-1998",
+      "centralID": "",
+      "firstname": "CHIDERA",
+      "nok_state": "",
+      "signature": "",
+      "birthstate": "",
+      "middlename": "ANITA",
+      "pfirstname": "",
+      "profession": "",
+      "trackingId": "",
+      "nok_surname": "",
+      "ospokenlang": "",
+      "pmiddlename": "",
+      "telephoneno": "07000000002",
+      "birthcountry": "nigeria",
+      "nok_address1": "MASKED",
+      "nok_address2": "",
+      "maritalstatus": "",
+      "nok_firstname": "JOHNATHAN",
+      "residence_lga": "",
+      "nok_middlename": "",
+      "nok_postalcode": "",
+      "residence_town": "BARIGA",
+      "residence_state": "Lagos",
+      "residencestatus": "",
+      "self_origin_lga": "",
+      "spoken_language": "",
+      "educationallevel": "",
+      "employmentstatus": "",
+      "residence_address": "MASKED ADDRESS",
+      "self_origin_place": "",
+      "self_origin_state": ""
+    },
+    "meta": {},
+    "billing_info": {
+      "was_charged": false,
+      "amount": 0,
+      "currency": "NGN",
+      "note": "No charges in sandbox mode"
+    },
+    "verification": {
+      "status": "VERIFIED",
+      "reference": "c1ac993d-f237-480d-8910-25fbba1f54dd",
+      "verification_id": "ee3f62bf-5254-4a0a-9923-4c4b02639290"
+    },
+    "reference_id": "SBX-NIN-GNRYUJZDVA",
+    "is_sandbox": true,
+    "account_verified": true,
+    "verification_status": "sandbox",
+    "metadata": {}
+  }
+}

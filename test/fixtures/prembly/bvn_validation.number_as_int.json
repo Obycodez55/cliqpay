@@ -1,0 +1,42 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/bvn_validation",
+    "body": {
+      "number": 54651333604
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 400,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "a4c1fe96"
+  },
+  "responseBody": {
+    "status": false,
+    "response_code": "05",
+    "message": "Invalid request data",
+    "detail": "Invalid request data",
+    "data": {},
+    "meta": {},
+    "billing_info": {
+      "was_charged": false,
+      "amount": 0,
+      "currency": ""
+    },
+    "verification": {
+      "status": "NOT-VERIFIED",
+      "reference": "2c6d8292-1bed-493c-ac7d-5b8b315ba605",
+      "verification_id": "87bf7129-7b29-4ee5-b2c4-f077bea82bf0"
+    },
+    "errors": {
+      "number": [
+        "Expected string, got int"
+      ]
+    },
+    "metadata": {}
+  }
+}

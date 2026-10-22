@@ -1,0 +1,36 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/checker-widget/sdk/sessions/initiate/",
+    "body": {
+      "first_name": "Test",
+      "last_name": "User",
+      "email": "masked@example.invalid",
+      "phone": "08012345678",
+      "metadata": {
+        "user_ref": "u-1"
+      },
+      "widget_id": "00000000-0000-0000-0000-000000000000",
+      "widget_key": "bad"
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 401,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "02822c56"
+  },
+  "responseBody": {
+    "status": false,
+    "message": "Invalid widget ID or key",
+    "data": null,
+    "errors": null,
+    "meta": {
+      "timestamp": "2026-10-22T14:44:23.515028",
+      "version": "v1"
+    }
+  }
+}

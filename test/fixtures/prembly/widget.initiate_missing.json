@@ -1,0 +1,42 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/checker-widget/sdk/sessions/initiate/",
+    "body": {},
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 400,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "b8128294"
+  },
+  "responseBody": {
+    "status": false,
+    "message": "Invalid request data",
+    "data": null,
+    "errors": {
+      "first_name": [
+        "This field is required."
+      ],
+      "last_name": [
+        "This field is required."
+      ],
+      "email": [
+        "This field is required."
+      ],
+      "widget_id": [
+        "This field is required."
+      ],
+      "widget_key": [
+        "This field is required."
+      ]
+    },
+    "meta": {
+      "timestamp": "2026-10-22T14:44:21.862514",
+      "version": "v1"
+    }
+  }
+}

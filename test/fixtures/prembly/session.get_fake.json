@@ -1,0 +1,26 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/checker-widget/sdk/sessions/00000000-0000-0000-0000-000000000000/",
+    "body": null,
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 404,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "e2b5a381"
+  },
+  "responseBody": {
+    "status": false,
+    "message": "Session not found",
+    "data": null,
+    "errors": null,
+    "meta": {
+      "timestamp": "2026-10-22T14:42:27.118909",
+      "version": "v1"
+    }
+  }
+}

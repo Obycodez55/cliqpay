@@ -1,0 +1,30 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/bvn_validation",
+    "body": {
+      "number": "54651333604"
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<invalid placeholder>"
+    }
+  },
+  "httpStatus": 401,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "3a7b6abd"
+  },
+  "responseBody": {
+    "status": false,
+    "message": "Invalid API key or inactive organisation.",
+    "data": null,
+    "errors": {
+      "code": "authentication_failed"
+    },
+    "meta": {
+      "timestamp": "2026-10-22T14:40:57.655778",
+      "version": "v1"
+    }
+  }
+}

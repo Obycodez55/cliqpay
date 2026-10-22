@@ -1,0 +1,52 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/vnin-basic",
+    "body": {
+      "number": "54651333604"
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 200,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "daffd67e"
+  },
+  "responseBody": {
+    "status": true,
+    "response_code": "00",
+    "message": "Verification successful (SANDBOX MODE) - You are in sandbox mode. Switch to production mode for live data.",
+    "detail": "Verification successful (SANDBOX MODE) - You are in sandbox mode. Switch to production mode for live data.",
+    "data": {
+      "nin": "56182742701",
+      "photo": "<omitted 206507 chars>",
+      "gender": "f",
+      "surname": "AMANDA",
+      "birthdate": "23-05-1999",
+      "firstname": "GRACE",
+      "middlename": "CHIMAMANDA",
+      "telephoneno": "07000000002",
+      "residence_address": "MASKED ADDRESS"
+    },
+    "meta": {},
+    "billing_info": {
+      "was_charged": false,
+      "amount": 0,
+      "currency": "NGN",
+      "note": "No charges in sandbox mode"
+    },
+    "verification": {
+      "status": "VERIFIED",
+      "reference": "4dac35c5-cfbb-465e-b516-24bf0880c0fb",
+      "verification_id": "6aacb40d-bad7-43bc-b28f-3a64bf45f200"
+    },
+    "reference_id": "SBX-NIN_BASIC-6YYAPGMWHX",
+    "is_sandbox": true,
+    "account_verified": true,
+    "verification_status": "verified",
+    "metadata": {}
+  }
+}
