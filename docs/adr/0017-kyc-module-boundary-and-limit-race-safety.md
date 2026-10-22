@@ -177,3 +177,39 @@ while coupling `kyc` to ledger's schema.
 - A new `eslint-plugin-boundaries` entry is needed for `kyc`'s allowed
   imports (`users` only) and for `transfers`/`withdrawals`/`payments`'
   updated allowed imports (adding `kyc`).
+
+## Amendment (2026-10-22): the balance cap also bounds incoming transfers
+
+The cap limits the stored balance, so a P2P credit must respect the
+*recipient's* cap as well, for `sendMoney` and money-request payments alike
+(both go through `TransfersService.finalizeTransfer`). A new
+`kyc.checkTransferLimits(manager, senderId, recipientId, amount, readers)`
+runs the sender's daily-limit check (existing behaviour and errors), then the
+recipient's cap check using `ledger.getBalanceAndPendingFunding` for the
+recipient, which already counts their pending fundings. `kyc` still imports no
+ledger code; `transfers` supplies both readers.
+
+**Two user locks, taken in lock-key order.** A transfer now needs the sender's
+and the recipient's advisory locks. Taking them sender-then-recipient lets A->B
+and B->A each hold one and wait for the other. Both keys are computed with
+`hashtext` and locked in ascending numeric key order, once if the keys are
+equal. The order is by lock key, not by user id: two different ids can hash to
+the same key, and any order defined on the id strings would then disagree with
+the order Postgres actually serialises on. Withdrawals and funding remain
+single-lock.
+
+**The sender learns nothing about the recipient.** A refusal is
+`RECIPIENT_UNABLE_TO_RECEIVE` (422, "This recipient can't receive this amount
+right now.") with no details; a tier-0 recipient (cap zero) gets the same
+error, so a tier-0 recipient cannot receive any transfer until verified.
+
+**Replays are unaffected:** the idempotent replay check precedes the limit
+check, so a completed transfer still returns its original result if the
+recipient has since reached their cap.
+
+**Compensating credits are exempt.** `withdrawal_reversal`,
+`chargeback_reversal` and the other dispute/reversal postings never call `kyc`,
+so a cap can't strand money that is being returned. Funding initiation is
+unchanged; funding that completes by webhook after initiation is still outside
+the cap, as before.
+

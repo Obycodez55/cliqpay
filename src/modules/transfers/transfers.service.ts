@@ -49,6 +49,7 @@ export interface PreparedTransfer {
   sender: TransferSender;
   senderWallet: TransferWallet;
   recipientWallet: TransferWallet;
+  recipientUserId: string;
   amount: Money;
 }
 
@@ -170,6 +171,7 @@ export class TransfersService {
       sender,
       senderWallet,
       recipientWallet,
+      recipientUserId,
       amount: Money.of(amountMinor, NGN),
     };
   }
@@ -232,11 +234,20 @@ export class TransfersService {
     };
 
     const post = async (tx: EntityManager) => {
-      await this.kycService.checkAndReserveLimit(
+      await this.kycService.checkTransferLimits(
         tx,
         senderId,
+        prepared.recipientUserId,
         prepared.amount,
-        (m, since) => this.ledgerService.getDebitedSince(m, senderId, since),
+        {
+          readDebitedSince: (m, since) =>
+            this.ledgerService.getDebitedSince(m, senderId, since),
+          readRecipientBalanceAndPending: (m) =>
+            this.ledgerService.getBalanceAndPendingFunding(
+              m,
+              prepared.recipientUserId,
+            ),
+        },
       );
       return this.ledgerService.postTransferWithinTransaction(tx, postParams);
     };

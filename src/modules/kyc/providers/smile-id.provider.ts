@@ -23,6 +23,7 @@ interface SmileIdEnhancedKycResponse {
   ResultCode: string;
   ResultText: string;
   FullName?: string;
+  DOB?: string; // field name unconfirmed
   Address?: {
     AddressLine1?: string;
     City?: string;
@@ -124,6 +125,7 @@ export class SmileIdKycProvider implements KycProvider {
     return {
       status: 'verified',
       legalName: body.FullName,
+      dateOfBirth: normaliseDateOfBirth(body.DOB),
       address: body.Address
         ? {
             street: body.Address.AddressLine1 ?? '',
@@ -233,6 +235,19 @@ export class SmileIdKycProvider implements KycProvider {
     }
     return body.token;
   }
+}
+
+// Accepts YYYY-MM-DD or YYYY/MM/DD, and DD-MM-YYYY or DD/MM/YYYY.
+function normaliseDateOfBirth(raw: string | undefined): string | undefined {
+  const parts = raw
+    ?.trim()
+    .match(/^(\d{4})[-/](\d{2})[-/](\d{2})$|^(\d{2})[-/](\d{2})[-/](\d{4})$/);
+  if (!parts) {
+    return undefined;
+  }
+  return parts[1]
+    ? `${parts[1]}-${parts[2]}-${parts[3]}`
+    : `${parts[6]}-${parts[5]}-${parts[4]}`;
 }
 
 function jpegBlob(base64: string): Blob {

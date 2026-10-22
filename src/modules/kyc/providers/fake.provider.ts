@@ -8,6 +8,8 @@ import {
 } from './kyc-provider.interface';
 
 // BVNs and NINs are digits-only, so sentinels are prefixes: "0000" is not_found, "1111" is mismatch.
+// The same fake person comes back from a BVN and a NIN (named differently in form, same date of birth);
+// the 5th digit "9" is a different person, "8" the same name with a different date of birth.
 // Liveness is driven by the ID number too: prefix "2222" fails liveness, "3333" is
 // asynchronous and passes on the first poll, "4444" is asynchronous and stays pending,
 // "5555" is asynchronous and fails on the first poll; "6666" throws; anything else passes synchronously.
@@ -19,11 +21,11 @@ export class FakeKycProvider implements KycProvider {
   >();
 
   verifyBvn(bvn: string): Promise<KycVerificationResult> {
-    return this.verify('Bvn Test User', bvn);
+    return this.verify('Ada Obi Lovelace', bvn);
   }
 
   verifyNin(nin: string): Promise<KycVerificationResult> {
-    return this.verify('Nin Test User', nin);
+    return this.verify('Lovelace Ada', nin);
   }
 
   // eslint-disable-next-line @typescript-eslint/require-await
@@ -73,9 +75,15 @@ export class FakeKycProvider implements KycProvider {
     if (idNumber.startsWith('1111')) {
       return { status: 'mismatch' };
     }
+    const otherPerson = idNumber[4] === '9';
     return {
       status: 'verified',
-      legalName,
+      legalName: otherPerson ? 'Grace Hopper' : legalName,
+      dateOfBirth: otherPerson
+        ? '1985-12-09'
+        : idNumber[4] === '8'
+          ? '1991-02-03'
+          : '1990-01-02',
       address: {
         street: '1 Test Street',
         town: 'Ikeja',

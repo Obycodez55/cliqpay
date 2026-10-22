@@ -12,6 +12,16 @@ export interface KycAddresses {
   nin?: KycAddress;
 }
 
+export interface KycIdentitySource {
+  legalName?: string;
+  dateOfBirth?: string;
+}
+
+export interface KycIdentities {
+  bvn?: KycIdentitySource;
+  nin?: KycIdentitySource;
+}
+
 @Entity('kyc_verifications')
 export class KycVerification {
   @PrimaryGeneratedColumn('uuid')
@@ -34,6 +44,9 @@ export class KycVerification {
 
   @Column({ type: 'jsonb', nullable: true })
   address: KycAddresses | null;
+
+  @Column({ type: 'jsonb', nullable: true })
+  identity: KycIdentities | null;
 
   @Column({ type: 'varchar', nullable: true })
   verifiedLegalName: string | null;

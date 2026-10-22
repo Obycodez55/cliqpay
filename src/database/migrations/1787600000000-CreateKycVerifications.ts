@@ -13,6 +13,7 @@ export class CreateKycVerifications1787600000000 implements MigrationInterface {
         "nin_ciphertext" varchar,
         "nin_hash" varchar,
         "address" jsonb,
+        "identity" jsonb,
         "verified_legal_name" varchar,
         "liveness_verified" boolean NOT NULL DEFAULT false,
         "created_at" TIMESTAMPTZ NOT NULL DEFAULT now(),

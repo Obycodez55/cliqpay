@@ -23,6 +23,7 @@ import {
   NinAlreadyLinkedException,
   NinAlreadyVerifiedException,
   NinVerificationFailedException,
+  IdentityMismatchException,
   LivenessInProgressException,
   TooManyVerificationAttemptsException,
 } from '../internal/errors';
@@ -275,6 +276,7 @@ describe('KycService', () => {
       kycVerificationRepo.findOneBy.mockResolvedValue({
         userId: 'user-1',
         ninHash: 'nin-hash',
+        identity: { nin: { legalName: 'Ada Lovelace' } },
         livenessVerified: false,
         address: { nin: ninAddress },
       } as KycVerification);
@@ -412,13 +414,19 @@ describe('KycService', () => {
     );
 
     it('does not let a verified BVN block a first NIN, or the reverse', async () => {
-      verifiedRecord({ bvnHash: hmacHex('12345678901', key) });
+      verifiedRecord({
+        bvnHash: hmacHex('12345678901', key),
+        identity: { bvn: { legalName: 'Ada Lovelace' } },
+      });
       usersService.getKycTier.mockResolvedValue('tier1');
       await expect(
         service.verifyNin('user-1', '22222222222'),
       ).resolves.toMatchObject({ tier: 'tier2', ninVerified: true });
 
-      verifiedRecord({ ninHash: hmacHex('22222222222', key) });
+      verifiedRecord({
+        ninHash: hmacHex('22222222222', key),
+        identity: { nin: { legalName: 'Ada Lovelace' } },
+      });
       await expect(
         service.verifyBvn('user-1', '12345678901'),
       ).resolves.toMatchObject({ tier: 'tier2', bvnVerified: true });
@@ -432,6 +440,7 @@ describe('KycService', () => {
         bvnHash,
         ninHash: null,
         verifiedLegalName: name,
+        identity: bvnHash ? { bvn: { legalName: name ?? undefined } } : null,
         livenessVerified: false,
       } as KycVerification);
     }
@@ -451,16 +460,16 @@ describe('KycService', () => {
     });
 
     it('keeps the BVN name when a NIN is verified afterwards', async () => {
-      existing('Bvn Name', 'bvn-hash');
+      existing('Ada Obi Lovelace', 'bvn-hash');
       kycProvider.verifyNin.mockResolvedValue({
         ...verifiedResult(),
-        legalName: 'Nin Name',
+        legalName: 'Lovelace Ada',
       });
 
       await service.verifyNin('user-1', '12345678901');
 
       expect(kycVerificationRepo.save.mock.calls[0][0].verifiedLegalName).toBe(
-        'Bvn Name',
+        'Ada Obi Lovelace',
       );
     });
 
@@ -514,6 +523,7 @@ describe('KycService', () => {
       kycVerificationRepo.findOneBy.mockResolvedValue({
         userId: 'user-1',
         bvnHash: 'bvn-hash',
+        identity: { bvn: { legalName: 'Ada Lovelace' } },
         livenessVerified: false,
         address: { bvn: bvnAddress },
       } as KycVerification);
@@ -566,6 +576,7 @@ describe('KycService', () => {
       kycVerificationRepo.findOneBy.mockResolvedValue({
         userId: 'user-1',
         bvnHash: 'bvn-hash',
+        identity: { bvn: { legalName: 'Ada Lovelace' } },
         livenessVerified: false,
       } as KycVerification);
 
@@ -610,6 +621,103 @@ describe('KycService', () => {
     });
   });
 
+  describe('same-person check between BVN and NIN', () => {
+    function stored(overrides: Partial<KycVerification>) {
+      kycVerificationRepo.findOneBy.mockResolvedValue({
+        userId: 'user-1',
+        bvnHash: null,
+        ninHash: null,
+        livenessVerified: false,
+        ...overrides,
+      } as KycVerification);
+    }
+
+    function expectNothingWritten() {
+      expect(kycVerificationRepo.save).not.toHaveBeenCalled();
+      expect(usersService.setKycTier).not.toHaveBeenCalled();
+      expect(attemptRepo.update).not.toHaveBeenCalled();
+      expect(attemptRepo.delete).not.toHaveBeenCalled();
+    }
+
+    it('rejects a NIN that belongs to a different person than the verified BVN, leaving the attempt counted as failed', async () => {
+      stored({
+        bvnHash: 'bvn-hash',
+        identity: { bvn: { legalName: 'Grace Hopper' } },
+      });
+
+      await expect(service.verifyNin('user-1', '12345678901')).rejects.toThrow(
+        IdentityMismatchException,
+      );
+      expect(attemptRepo.save).toHaveBeenCalledTimes(1);
+      expectNothingWritten();
+    });
+
+    it('rejects a BVN that belongs to a different person than the verified NIN', async () => {
+      stored({
+        ninHash: 'nin-hash',
+        identity: { nin: { legalName: 'Grace Hopper' } },
+      });
+
+      await expect(service.verifyBvn('user-1', '12345678901')).rejects.toThrow(
+        IdentityMismatchException,
+      );
+      expectNothingWritten();
+    });
+
+    it('rejects when the names match but the dates of birth differ', async () => {
+      stored({
+        bvnHash: 'bvn-hash',
+        identity: {
+          bvn: { legalName: 'Ada Lovelace', dateOfBirth: '1990-01-02' },
+        },
+      });
+      kycProvider.verifyNin.mockResolvedValue({
+        ...verifiedResult(),
+        dateOfBirth: '1991-02-03',
+      });
+
+      await expect(service.verifyNin('user-1', '12345678901')).rejects.toThrow(
+        IdentityMismatchException,
+      );
+      expectNothingWritten();
+    });
+
+    it('fails closed when the stored identifier has no name to compare', async () => {
+      stored({ bvnHash: 'bvn-hash', identity: { bvn: {} } });
+
+      await expect(service.verifyNin('user-1', '12345678901')).rejects.toThrow(
+        IdentityMismatchException,
+      );
+    });
+
+    it('accepts a matching identifier and records each source separately', async () => {
+      stored({
+        bvnHash: 'bvn-hash',
+        identity: {
+          bvn: { legalName: 'Ada Obi Lovelace', dateOfBirth: '1990-01-02' },
+        },
+      });
+      kycProvider.verifyNin.mockResolvedValue({
+        ...verifiedResult(),
+        legalName: 'Lovelace Ada',
+        dateOfBirth: '1990-01-02',
+      });
+
+      await service.verifyNin('user-1', '12345678901');
+
+      expect(kycVerificationRepo.save.mock.calls[0][0].identity).toEqual({
+        bvn: { legalName: 'Ada Obi Lovelace', dateOfBirth: '1990-01-02' },
+        nin: { legalName: 'Lovelace Ada', dateOfBirth: '1990-01-02' },
+      });
+    });
+
+    it('does not compare anything for the first identifier', async () => {
+      await service.verifyBvn('user-1', '12345678901');
+
+      expect(kycVerificationRepo.save).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('liveness', () => {
     const key = encryptionKeyFromHex(TEST_ENCRYPTION_KEY);
     const liveness: LivenessCaptureDto = {
@@ -632,6 +740,7 @@ describe('KycService', () => {
         userId: 'user-1',
         bvnHash: hmacHex('12345678901', key),
         bvnCiphertext: 'cipher',
+        identity: { bvn: { legalName: 'Ada Lovelace' } },
         ninHash: null,
         livenessVerified: false,
         ...overrides,

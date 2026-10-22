@@ -58,6 +58,24 @@ describe('SmileIdKycProvider', () => {
     });
   });
 
+  it.each([
+    ['1990-01-02', '1990-01-02'],
+    ['1990/01/02', '1990-01-02'],
+    ['02-01-1990', '1990-01-02'],
+    ['02/01/1990', '1990-01-02'],
+    ['January 2nd', undefined],
+    [undefined, undefined],
+  ])('normalises the date of birth %s to %s', async (raw, expected) => {
+    fetchMock.mockResolvedValue(
+      jsonResponse(200, { ResultCode: '1012', FullName: 'Jane Doe', DOB: raw }),
+    );
+    const provider = new SmileIdKycProvider(buildConfig());
+
+    await expect(provider.verifyBvn('22222222222')).resolves.toMatchObject({
+      dateOfBirth: expected,
+    });
+  });
+
   it('maps result code 1013 to not_found', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse(200, { ResultCode: '1013', ResultText: 'No Match' }),

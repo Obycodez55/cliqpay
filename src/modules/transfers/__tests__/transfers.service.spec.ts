@@ -71,10 +71,11 @@ describe('TransfersService.sendMoney', () => {
       | 'checkIdempotentReplay'
       | 'postTransferWithinTransaction'
       | 'getDebitedSince'
+      | 'getBalanceAndPendingFunding'
     >
   >;
   let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
-  let kycService: jest.Mocked<Pick<KycService, 'checkAndReserveLimit'>>;
+  let kycService: jest.Mocked<Pick<KycService, 'checkTransferLimits'>>;
   let authService: jest.Mocked<Pick<AuthService, 'verifyTransactionPin'>>;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let service: TransfersService;
@@ -102,9 +103,10 @@ describe('TransfersService.sendMoney', () => {
       checkIdempotentReplay: jest.fn(),
       postTransferWithinTransaction: jest.fn(),
       getDebitedSince: jest.fn(),
+      getBalanceAndPendingFunding: jest.fn(),
     };
     usersService = { findById: jest.fn() };
-    kycService = { checkAndReserveLimit: jest.fn() };
+    kycService = { checkTransferLimits: jest.fn() };
     authService = { verifyTransactionPin: jest.fn() };
     eventBus = { publish: jest.fn() };
     service = new TransfersService(
@@ -336,7 +338,7 @@ describe('TransfersService.sendMoney', () => {
 
   it('reserves the limit and posts inside the same transaction, limit first', async () => {
     const order: string[] = [];
-    kycService.checkAndReserveLimit.mockImplementation(() => {
+    kycService.checkTransferLimits.mockImplementation(() => {
       order.push('limit');
       return Promise.resolve();
     });
@@ -348,11 +350,15 @@ describe('TransfersService.sendMoney', () => {
     await service.sendMoney('sender-1', dto);
 
     expect(order).toEqual(['limit', 'post']);
-    expect(kycService.checkAndReserveLimit).toHaveBeenCalledWith(
+    expect(kycService.checkTransferLimits).toHaveBeenCalledWith(
       fakeManager,
       'sender-1',
+      'recipient-1',
       Money.of(500_000n, 'NGN'),
-      expect.any(Function),
+      expect.objectContaining({
+        readDebitedSince: expect.any(Function) as unknown,
+        readRecipientBalanceAndPending: expect.any(Function) as unknown,
+      }),
     );
     expect(ledgerService.postTransferWithinTransaction).toHaveBeenCalledWith(
       fakeManager,
@@ -363,9 +369,10 @@ describe('TransfersService.sendMoney', () => {
   it('wires the limit reader to ledger.getDebitedSince for the sender', async () => {
     await service.sendMoney('sender-1', dto);
 
-    const reader = kycService.checkAndReserveLimit.mock.calls[0][3];
+    const { readDebitedSince } =
+      kycService.checkTransferLimits.mock.calls[0][4];
     const since = new Date('2026-08-15T23:00:00Z');
-    await reader(fakeManager, since);
+    await readDebitedSince(fakeManager, since);
 
     expect(ledgerService.getDebitedSince).toHaveBeenCalledWith(
       fakeManager,
@@ -374,8 +381,40 @@ describe('TransfersService.sendMoney', () => {
     );
   });
 
+  it("wires the cap reader to the RECIPIENT's balance and pending funding", async () => {
+    await service.sendMoney('sender-1', dto);
+
+    const { readRecipientBalanceAndPending } =
+      kycService.checkTransferLimits.mock.calls[0][4];
+    await readRecipientBalanceAndPending(fakeManager);
+
+    expect(ledgerService.getBalanceAndPendingFunding).toHaveBeenCalledWith(
+      fakeManager,
+      'recipient-1',
+    );
+  });
+
+  it('returns a replay of a completed transfer without running any limit check', async () => {
+    ledgerService.checkIdempotentReplay.mockResolvedValue({
+      outcome: 'match',
+      transaction: {
+        reference: 'cliqpay-xfer-1',
+        amount: 500_000n,
+        currency: 'NGN',
+        metadata: { platformFee: { amount: '0', currency: 'NGN' } },
+        createdAt: new Date('2026-08-16T00:00:00Z'),
+      },
+    } as IdempotentReplay);
+    kycService.checkTransferLimits.mockRejectedValue(new Error('at cap'));
+
+    await expect(service.sendMoney('sender-1', dto)).resolves.toMatchObject({
+      reference: 'cliqpay-xfer-1',
+    });
+    expect(kycService.checkTransferLimits).not.toHaveBeenCalled();
+  });
+
   it('posts nothing when the limit check rejects', async () => {
-    kycService.checkAndReserveLimit.mockRejectedValue(new Error('limit'));
+    kycService.checkTransferLimits.mockRejectedValue(new Error('limit'));
 
     await expect(service.sendMoney('sender-1', dto)).rejects.toThrow('limit');
 

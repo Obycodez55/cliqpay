@@ -10,6 +10,7 @@ export interface KycVerificationResult {
   status: 'verified' | 'not_found' | 'mismatch';
   legalName?: string;
   address?: KycAddress;
+  dateOfBirth?: string; // ISO YYYY-MM-DD
 }
 
 export interface LivenessSubmission {

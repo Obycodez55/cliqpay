@@ -92,7 +92,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
     expect(record.ninCiphertext).toEqual(expect.any(String));
     expect(record.ninCiphertext).not.toContain('12345678901');
     expect(record.bvnHash).toBeNull();
-    expect(record.verifiedLegalName).toBe('Nin Test User');
+    expect(record.verifiedLegalName).toBe('Lovelace Ada');
     expect(record.address).toEqual({
       nin: {
         street: '1 Test Street',
@@ -133,7 +133,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
     expect(user.kycTier).toBe('tier2');
     const record = await ctx.kycVerificationRepo.findOneByOrFail({ userId });
     expect(Object.keys(record.address ?? {}).sort()).toEqual(['bvn', 'nin']);
-    expect(record.verifiedLegalName).toBe('Bvn Test User');
+    expect(record.verifiedLegalName).toBe('Ada Obi Lovelace');
   });
 
   it('reaches tier2 when the BVN is verified first and the NIN second', async () => {
@@ -156,7 +156,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
       ninVerified: true,
     });
     const record = await ctx.kycVerificationRepo.findOneByOrFail({ userId });
-    expect(record.verifiedLegalName).toBe('Bvn Test User');
+    expect(record.verifiedLegalName).toBe('Ada Obi Lovelace');
   });
 
   it('ends at tier2 when BVN and NIN verification run concurrently for the same user', async () => {
@@ -177,7 +177,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
       const record = await ctx.kycVerificationRepo.findOneByOrFail({ userId });
       expect(record.bvnHash).not.toBeNull();
       expect(record.ninHash).not.toBeNull();
-      expect(record.verifiedLegalName).toBe('Bvn Test User');
+      expect(record.verifiedLegalName).toBe('Ada Obi Lovelace');
     }
   });
 

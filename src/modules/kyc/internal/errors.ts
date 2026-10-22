@@ -72,6 +72,18 @@ export class LivenessInProgressException extends DomainException {
   }
 }
 
+export class IdentityMismatchException extends DomainException {
+  readonly code = 'IDENTITY_MISMATCH';
+  constructor(verifying: 'bvn' | 'nin') {
+    const [thisId, otherId] =
+      verifying === 'bvn' ? ['BVN', 'NIN'] : ['NIN', 'BVN'];
+    super(
+      `This ${thisId} doesn't match the ${otherId} already verified on your account.`,
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
 export class TooManyVerificationAttemptsException extends DomainException {
   readonly code = 'TOO_MANY_VERIFICATION_ATTEMPTS';
   constructor() {
@@ -119,6 +131,16 @@ export class BalanceCapExceededException extends DomainException {
       balanceCap: balanceCap.toJSON(),
       remaining: remaining.toJSON(),
     };
+  }
+}
+
+export class RecipientCannotReceiveException extends DomainException {
+  readonly code = 'RECIPIENT_UNABLE_TO_RECEIVE';
+  constructor() {
+    super(
+      "This recipient can't receive this amount right now.",
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
   }
 }
 

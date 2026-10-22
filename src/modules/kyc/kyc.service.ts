@@ -35,6 +35,7 @@ import {
 } from './providers/kyc-provider.interface';
 import { KycTier } from '../users/users.service';
 import { deriveTier, tierRank } from './internal/tier';
+import { identitiesMatch } from './internal/identity-match';
 import { startOfDay } from './internal/day-start';
 import {
   BalanceCapExceededException,
@@ -42,8 +43,10 @@ import {
   BvnAlreadyVerifiedException,
   BvnVerificationFailedException,
   DailyLimitExceededException,
+  IdentityMismatchException,
   KycVerificationRequiredException,
   LivenessInProgressException,
+  RecipientCannotReceiveException,
   NinAlreadyLinkedException,
   NinAlreadyVerifiedException,
   NinVerificationFailedException,
@@ -59,6 +62,10 @@ import { KycStatusResponseDto } from './dto/kyc-status-response.dto';
 
 // Becomes the user's own timezone once profiles carry one.
 const DEFAULT_USER_TIME_ZONE = 'Africa/Lagos';
+
+type BalanceAndPendingReader = (
+  manager: EntityManager,
+) => Promise<{ balance: Money; pending: Money }>;
 
 // The only currency with tier limits so far.
 const STATUS_CURRENCY = 'NGN';
@@ -202,8 +209,29 @@ export class KycService {
         if (storedHash && storedHash !== hash) {
           throw new spec.alreadyVerified();
         }
+        // Whichever identifier is verified second is checked against the first,
+        // before anything is written.
+        const otherType = identityType === 'bvn' ? 'nin' : 'bvn';
+        const otherHash =
+          otherType === 'bvn' ? existing?.bvnHash : existing?.ninHash;
+        if (
+          otherHash &&
+          !identitiesMatch(existing?.identity?.[otherType] ?? {}, {
+            legalName: result.legalName,
+            dateOfBirth: result.dateOfBirth,
+          })
+        ) {
+          throw new IdentityMismatchException(identityType);
+        }
         const record =
           existing ?? repo.create({ userId, livenessVerified: false });
+        record.identity = {
+          ...record.identity,
+          [identityType]: {
+            legalName: result.legalName,
+            dateOfBirth: result.dateOfBirth,
+          },
+        };
         if (identityType === 'bvn') {
           record.bvnCiphertext = ciphertext;
           record.bvnHash = hash;
@@ -469,14 +497,68 @@ export class KycService {
     readDebitedSince: (manager: EntityManager, since: Date) => Promise<Money>,
   ): Promise<void> {
     await this.lockUser(manager, userId);
+    await this.checkDailyLimitLocked(manager, userId, amount, readDebitedSince);
+  }
 
-    const tier = await this.usersService.getKycTier(manager, userId);
-    const tierLimit = await manager
-      .getRepository(TierLimit)
-      .findOneBy({ tier, currency: amount.currency });
-    if (!tierLimit) {
-      throw new TierLimitNotConfiguredException();
-    }
+  async checkBalanceCap(
+    manager: EntityManager,
+    userId: string,
+    requested: Money,
+    readBalanceAndPending: BalanceAndPendingReader,
+  ): Promise<void> {
+    await this.lockUser(manager, userId);
+    await this.checkBalanceCapLocked(
+      manager,
+      userId,
+      requested,
+      readBalanceAndPending,
+      {
+        zeroCap: () => new KycVerificationRequiredException(),
+        overCap: (cap, remaining) =>
+          new BalanceCapExceededException(cap, remaining),
+      },
+    );
+  }
+
+  // A P2P transfer bounds both ends: the sender's daily limit and the
+  // recipient's balance cap. Both users' locks are taken before either check.
+  // The recipient's refusal reveals nothing about their tier or balance.
+  async checkTransferLimits(
+    manager: EntityManager,
+    senderId: string,
+    recipientId: string,
+    amount: Money,
+    readers: {
+      readDebitedSince: (manager: EntityManager, since: Date) => Promise<Money>;
+      readRecipientBalanceAndPending: BalanceAndPendingReader;
+    },
+  ): Promise<void> {
+    await this.lockUsersInKeyOrder(manager, senderId, recipientId);
+    await this.checkDailyLimitLocked(
+      manager,
+      senderId,
+      amount,
+      readers.readDebitedSince,
+    );
+    await this.checkBalanceCapLocked(
+      manager,
+      recipientId,
+      amount,
+      readers.readRecipientBalanceAndPending,
+      {
+        zeroCap: () => new RecipientCannotReceiveException(),
+        overCap: () => new RecipientCannotReceiveException(),
+      },
+    );
+  }
+
+  private async checkDailyLimitLocked(
+    manager: EntityManager,
+    userId: string,
+    amount: Money,
+    readDebitedSince: (manager: EntityManager, since: Date) => Promise<Money>,
+  ): Promise<void> {
+    const tierLimit = await this.tierLimitFor(manager, userId, amount.currency);
 
     if (tierLimit.dailyDebitLimitMinor === 0n) {
       throw new KycVerificationRequiredException();
@@ -498,28 +580,26 @@ export class KycService {
     }
   }
 
-  async checkBalanceCap(
+  private async checkBalanceCapLocked(
     manager: EntityManager,
     userId: string,
     requested: Money,
-    readBalanceAndPending: (
-      manager: EntityManager,
-    ) => Promise<{ balance: Money; pending: Money }>,
+    readBalanceAndPending: BalanceAndPendingReader,
+    errors: {
+      zeroCap: () => Error;
+      overCap: (cap: Money, remaining: Money) => Error;
+    },
   ): Promise<void> {
-    await this.lockUser(manager, userId);
-
-    const tier = await this.usersService.getKycTier(manager, userId);
-    const tierLimit = await manager
-      .getRepository(TierLimit)
-      .findOneBy({ tier, currency: requested.currency });
-    if (!tierLimit) {
-      throw new TierLimitNotConfiguredException();
-    }
+    const tierLimit = await this.tierLimitFor(
+      manager,
+      userId,
+      requested.currency,
+    );
     if (tierLimit.balanceCapMinor === null) {
       return;
     }
     if (tierLimit.balanceCapMinor === 0n) {
-      throw new KycVerificationRequiredException();
+      throw errors.zeroCap();
     }
 
     const cap = Money.of(tierLimit.balanceCapMinor, requested.currency);
@@ -529,8 +609,23 @@ export class KycService {
       const remaining = cap.greaterThan(projected)
         ? cap.subtract(projected)
         : Money.zero(requested.currency);
-      throw new BalanceCapExceededException(cap, remaining);
+      throw errors.overCap(cap, remaining);
     }
+  }
+
+  private async tierLimitFor(
+    manager: EntityManager,
+    userId: string,
+    currency: string,
+  ): Promise<TierLimit> {
+    const tier = await this.usersService.getKycTier(manager, userId);
+    const tierLimit = await manager
+      .getRepository(TierLimit)
+      .findOneBy({ tier, currency });
+    if (!tierLimit) {
+      throw new TierLimitNotConfiguredException();
+    }
+    return tierLimit;
   }
 
   private timeZoneFor(_userId: string): string {
@@ -648,5 +743,23 @@ export class KycService {
     userId: string,
   ): Promise<void> {
     await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [userId]);
+  }
+
+  // Ordered by the lock key itself, not by user id: two ids can hash to the
+  // same key, and any other order lets A->B and B->A each hold one lock and
+  // wait for the other. Equal keys are taken once.
+  private async lockUsersInKeyOrder(
+    manager: EntityManager,
+    firstUserId: string,
+    secondUserId: string,
+  ): Promise<void> {
+    const [row] = await manager.query<{ a: number; b: number }[]>(
+      'SELECT hashtext($1) AS a, hashtext($2) AS b',
+      [firstUserId, secondUserId],
+    );
+    const keys = [...new Set([row.a, row.b])].sort((x, y) => x - y);
+    for (const key of keys) {
+      await manager.query('SELECT pg_advisory_xact_lock($1)', [key]);
+    }
   }
 }
