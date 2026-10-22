@@ -15,6 +15,7 @@ const REDACT_PATHS = [
   'req.body.transactionPin',
   'req.body.bvn',
   'req.body.nin',
+  'req.body.liveness',
   'req.body.accountNumber',
   'req.body.cardNumber',
   'req.body.cvv',

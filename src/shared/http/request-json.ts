@@ -20,7 +20,7 @@ export interface RequestJsonOptions {
   url: string;
   method: 'GET' | 'POST';
   headers?: Record<string, string>;
-  body?: unknown;
+  body?: unknown; // FormData is sent as multipart, anything else as JSON
   timeoutMs: number;
 }
 
@@ -89,10 +89,13 @@ async function send<T>({
     response = await fetch(url, {
       method,
       headers:
-        body === undefined
+        body === undefined || body instanceof FormData
           ? headers
           : { ...headers, 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body:
+        body === undefined || body instanceof FormData
+          ? body
+          : JSON.stringify(body),
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {

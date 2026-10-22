@@ -84,6 +84,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
       bvnVerified: false,
       ninVerified: true,
       livenessVerified: false,
+      livenessResult: 'not_requested',
     });
 
     const record = await ctx.kycVerificationRepo.findOneByOrFail({ userId });
@@ -107,6 +108,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
       bvnVerified: false,
       ninVerified: true,
       livenessVerified: false,
+      livenessPending: false,
       dailyAllowanceRemainingMinor: 0,
     });
   });
@@ -124,6 +126,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
       bvnVerified: true,
       ninVerified: true,
       livenessVerified: false,
+      livenessResult: 'not_requested',
     });
     const user = await ctx.userRepo.findOneByOrFail({ id: userId });
     expect(user.kycTier).toBe('tier2');
@@ -240,6 +243,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
       bvnVerified: false,
       ninVerified: true,
       livenessVerified: false,
+      livenessResult: 'not_requested',
     });
 
     const different = await verifyNin(token, '73000000002');

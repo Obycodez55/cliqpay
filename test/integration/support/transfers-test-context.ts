@@ -70,6 +70,7 @@ import { ChannelDispatchProcessor } from '../../../src/modules/notifications/int
 import { hashTransactionPin } from '../../../src/modules/auth/internal/pin.util';
 import { Money } from '../../../src/shared/primitives/money';
 
+import { LivenessPollProcessor } from '../../../src/modules/kyc/internal/liveness-poll.processor';
 export interface TransfersTestContext {
   postgres: StartedPostgreSqlContainer;
   redis: StartedTestContainer;
@@ -212,6 +213,7 @@ async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
     NotificationEventsProcessor,
     OtpNotificationProcessor,
     ChannelDispatchProcessor,
+    LivenessPollProcessor,
   ];
   await Promise.all(
     hosts.map(async (hostClass) => {

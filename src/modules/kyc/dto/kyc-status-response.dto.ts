@@ -15,6 +15,11 @@ export class KycStatusResponseDto {
   livenessVerified: boolean;
 
   @ApiProperty({
+    description: 'A liveness check is submitted and awaiting its result.',
+  })
+  livenessPending: boolean;
+
+  @ApiProperty({
     description:
       "Today's remaining daily debit allowance, in minor units. Always 0 until limit enforcement is wired up.",
   })

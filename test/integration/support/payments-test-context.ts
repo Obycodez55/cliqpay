@@ -56,6 +56,7 @@ import { WithdrawalPollProcessor } from '../../../src/modules/payments/internal/
 import { ReconciliationProcessor } from '../../../src/modules/payments/internal/reconciliation.processor';
 import { NotificationRetentionProcessor } from '../../../src/modules/notifications/internal/retention.processor';
 
+import { LivenessPollProcessor } from '../../../src/modules/kyc/internal/liveness-poll.processor';
 export interface PaymentsTestContext {
   postgres: StartedPostgreSqlContainer;
   redis: StartedTestContainer;
@@ -210,6 +211,7 @@ async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
     WithdrawalPollProcessor,
     ReconciliationProcessor,
     NotificationRetentionProcessor,
+    LivenessPollProcessor,
   ];
   await Promise.all(
     hosts.map(async (hostClass) => {

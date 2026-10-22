@@ -2,6 +2,16 @@ import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import * as Sentry from '@sentry/node';
 import { APP_CONFIG, AppConfig } from '../config';
 
+// Request bodies carry BVNs, passwords and liveness images; none belong in an event.
+export function stripRequestBody<T extends { request?: { data?: unknown } }>(
+  event: T,
+): T {
+  if (event.request) {
+    delete event.request.data;
+  }
+  return event;
+}
+
 @Injectable()
 export class SentryService implements OnModuleInit {
   private enabled = false;
@@ -17,6 +27,7 @@ export class SentryService implements OnModuleInit {
     Sentry.init({
       dsn,
       environment: this.config.app.env,
+      beforeSend: stripRequestBody,
     });
     this.enabled = true;
   }

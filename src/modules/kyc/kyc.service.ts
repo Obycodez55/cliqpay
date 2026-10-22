@@ -1,6 +1,13 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager, MoreThan } from 'typeorm';
+import {
+  DataSource,
+  EntityManager,
+  IsNull,
+  LessThan,
+  MoreThan,
+  Not,
+} from 'typeorm';
 import { Money } from '../../shared/primitives/money';
 import { APP_CONFIG, AppConfig } from '../../config';
 import {
@@ -13,6 +20,7 @@ import { runInTransaction } from '../../database/transaction.util';
 import { UsersService } from '../users/users.service';
 import { KycVerification } from './entities/kyc-verification.entity';
 import { TierLimit } from './entities/tier-limit.entity';
+import { KycLivenessJob } from './entities/kyc-liveness-job.entity';
 import {
   KycIdentityType,
   KycVerificationAttempt,
@@ -21,7 +29,10 @@ import {
   KYC_PROVIDER,
   KycProvider,
   KycVerificationResult,
+  LivenessOutcome,
+  LivenessSubmissionResult,
 } from './providers/kyc-provider.interface';
+import { KycTier } from '../users/users.service';
 import { deriveTier, tierRank } from './internal/tier';
 import { startOfDay } from './internal/day-start';
 import {
@@ -30,13 +41,18 @@ import {
   BvnAlreadyVerifiedException,
   BvnVerificationFailedException,
   DailyLimitExceededException,
+  LivenessInProgressException,
   NinAlreadyLinkedException,
   NinAlreadyVerifiedException,
   NinVerificationFailedException,
   TierLimitNotConfiguredException,
   TooManyVerificationAttemptsException,
 } from './internal/errors';
-import { VerifyIdentityResponseDto } from './dto/verify-identity-response.dto';
+import {
+  LivenessResult,
+  VerifyIdentityResponseDto,
+} from './dto/verify-identity-response.dto';
+import { LivenessCaptureDto } from './dto/liveness-capture.dto';
 import { KycStatusResponseDto } from './dto/kyc-status-response.dto';
 
 // Becomes the user's own timezone once profiles carry one.
@@ -44,6 +60,10 @@ const DEFAULT_USER_TIME_ZONE = 'Africa/Lagos';
 
 const MAX_FAILED_ATTEMPTS_PER_WINDOW = 5;
 const ATTEMPT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const LIVENESS_JOB_TTL_MS = 30 * 60 * 1000;
+const LIVENESS_POLL_BATCH = 100;
+
+const LIVENESS_PENDING_CONSTRAINT = 'UQ_kyc_liveness_jobs_user_pending';
 
 const IDENTITY_SPECS = {
   bvn: {
@@ -62,6 +82,7 @@ const IDENTITY_SPECS = {
 
 @Injectable()
 export class KycService {
+  private readonly logger = new Logger(KycService.name);
   private readonly encryptionKey: Buffer;
 
   constructor(
@@ -73,27 +94,76 @@ export class KycService {
     this.encryptionKey = encryptionKeyFromHex(config.encryption.key);
   }
 
-  verifyBvn(userId: string, bvn: string): Promise<VerifyIdentityResponseDto> {
-    return this.verifyIdentity(userId, 'bvn', bvn);
+  verifyBvn(
+    userId: string,
+    bvn: string,
+    liveness?: LivenessCaptureDto,
+  ): Promise<VerifyIdentityResponseDto> {
+    return this.verifyIdentity(userId, 'bvn', bvn, liveness);
   }
 
-  verifyNin(userId: string, nin: string): Promise<VerifyIdentityResponseDto> {
-    return this.verifyIdentity(userId, 'nin', nin);
+  verifyNin(
+    userId: string,
+    nin: string,
+    liveness?: LivenessCaptureDto,
+  ): Promise<VerifyIdentityResponseDto> {
+    return this.verifyIdentity(userId, 'nin', nin, liveness);
   }
 
   private async verifyIdentity(
     userId: string,
     identityType: KycIdentityType,
     idNumber: string,
+    liveness?: LivenessCaptureDto,
   ): Promise<VerifyIdentityResponseDto> {
-    const spec = IDENTITY_SPECS[identityType];
     const hash = hmacHex(idNumber, this.encryptionKey);
-    const reservation = await this.reserveAttempt(userId, identityType, hash);
+    const reservation = await this.reserveAttempt(
+      userId,
+      identityType,
+      hash,
+      !!liveness,
+    );
     if ('currentState' in reservation) {
       return reservation.currentState;
     }
-    const { attemptId } = reservation;
+    const { attemptId, identityVerified, submitLiveness } = reservation;
 
+    if (!identityVerified) {
+      await this.verifyAndPersistIdentity(
+        userId,
+        identityType,
+        idNumber,
+        hash,
+        attemptId,
+        submitLiveness,
+      );
+    }
+
+    if (!liveness) {
+      return this.readState(userId, 'not_requested');
+    }
+    if (!submitLiveness) {
+      return this.readState(userId, 'passed');
+    }
+    const livenessResult = await this.runLiveness(
+      userId,
+      identityType,
+      idNumber,
+      attemptId,
+      liveness,
+    );
+    return this.readState(userId, livenessResult);
+  }
+
+  private async verifyAndPersistIdentity(
+    userId: string,
+    identityType: KycIdentityType,
+    idNumber: string,
+    hash: string,
+    attemptId: string,
+    awaitingLiveness: boolean,
+  ): Promise<void> {
+    const spec = IDENTITY_SPECS[identityType];
     let result: KycVerificationResult;
     try {
       result =
@@ -113,7 +183,7 @@ export class KycService {
     const ciphertext = encryptSecret(idNumber, this.encryptionKey);
 
     try {
-      return await runInTransaction(this.dataSource, async (manager) => {
+      await runInTransaction(this.dataSource, async (manager) => {
         await this.lockUser(manager, userId);
 
         const repo = manager.getRepository(KycVerification);
@@ -146,29 +216,14 @@ export class KycService {
         }
         await repo.save(record);
 
-        await manager
-          .getRepository(KycVerificationAttempt)
-          .update({ id: attemptId }, { succeeded: true });
-
-        const bvnVerified = !!record.bvnHash;
-        const ninVerified = !!record.ninHash;
-        const currentTier = await this.usersService.getKycTier(manager, userId);
-        const derivedTier = deriveTier({
-          bvnVerified,
-          ninVerified,
-          livenessVerified: record.livenessVerified,
-        });
-        const tierIncreased = tierRank(derivedTier) > tierRank(currentTier);
-        if (tierIncreased) {
-          await this.usersService.setKycTier(manager, userId, derivedTier);
+        // With a selfie the attempt only succeeds once liveness passes too.
+        if (!awaitingLiveness) {
+          await manager
+            .getRepository(KycVerificationAttempt)
+            .update({ id: attemptId }, { succeeded: true });
         }
 
-        return {
-          tier: tierIncreased ? derivedTier : currentTier,
-          bvnVerified,
-          ninVerified,
-          livenessVerified: record.livenessVerified,
-        };
+        await this.raiseTier(manager, userId, record);
       });
     } catch (error) {
       if (isUniqueViolation(error, spec.uniqueConstraint)) {
@@ -176,6 +231,189 @@ export class KycService {
       }
       throw error;
     }
+  }
+
+  private async runLiveness(
+    userId: string,
+    identityType: KycIdentityType,
+    idNumber: string,
+    attemptId: string,
+    liveness: LivenessCaptureDto,
+  ): Promise<LivenessResult> {
+    const jobRepo = this.dataSource.getRepository(KycLivenessJob);
+    let job: KycLivenessJob;
+    try {
+      job = await jobRepo.save(
+        jobRepo.create({
+          userId,
+          attemptId,
+          identityType,
+          providerJobId: null,
+          status: 'pending',
+        }),
+      );
+    } catch (error) {
+      if (isUniqueViolation(error, LIVENESS_PENDING_CONSTRAINT)) {
+        throw new LivenessInProgressException();
+      }
+      throw error;
+    }
+
+    const user = await this.usersService.findById(userId);
+    let submission: LivenessSubmissionResult;
+    try {
+      submission = await this.kycProvider.submitLiveness({
+        idType: identityType,
+        idNumber,
+        selfieImage: liveness.selfieImage,
+        livenessImages: liveness.livenessImages,
+        user: {
+          givenNames: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phone: user.phone,
+        },
+        consentGrantedAt: new Date(),
+      });
+    } catch (error) {
+      await this.dataSource
+        .getRepository(KycVerificationAttempt)
+        .delete({ id: attemptId });
+      throw error;
+    }
+
+    if (submission.status === 'pending') {
+      await jobRepo.update({ id: job.id }, { providerJobId: submission.jobId });
+      return 'pending';
+    }
+    await this.applyLivenessOutcome(job.id, submission.status);
+    return submission.status;
+  }
+
+  private async applyLivenessOutcome(
+    jobId: string,
+    outcome: LivenessOutcome,
+  ): Promise<void> {
+    const peeked = await this.dataSource
+      .getRepository(KycLivenessJob)
+      .findOneBy({ id: jobId });
+    if (!peeked) {
+      return;
+    }
+    const { userId } = peeked;
+
+    await runInTransaction(this.dataSource, async (manager) => {
+      await this.lockUser(manager, userId);
+
+      const jobRepo = manager.getRepository(KycLivenessJob);
+      const job = await jobRepo.findOneBy({ id: jobId });
+      if (!job || job.status !== 'pending') {
+        return;
+      }
+      await jobRepo.update({ id: jobId }, { status: outcome });
+      if (outcome !== 'passed') {
+        return;
+      }
+
+      const repo = manager.getRepository(KycVerification);
+      const record = await repo.findOneByOrFail({ userId });
+      record.livenessVerified = true;
+      await repo.save(record);
+      await manager
+        .getRepository(KycVerificationAttempt)
+        .update({ id: job.attemptId }, { succeeded: true });
+      await this.raiseTier(manager, userId, record);
+    });
+  }
+
+  async pollPendingLivenessJobs(): Promise<void> {
+    const repo = this.dataSource.getRepository(KycLivenessJob);
+    await repo.update(
+      {
+        status: 'pending',
+        createdAt: LessThan(new Date(Date.now() - LIVENESS_JOB_TTL_MS)),
+      },
+      { status: 'failed' },
+    );
+    const jobs = await repo.find({
+      where: { status: 'pending', providerJobId: Not(IsNull()) },
+      order: { createdAt: 'ASC' },
+      take: LIVENESS_POLL_BATCH,
+    });
+    for (const job of jobs) {
+      await this.pollLivenessJob(job);
+    }
+  }
+
+  async handleLivenessWebhook(body: unknown): Promise<void> {
+    const providerJobId = this.kycProvider.parseWebhookJobId(body);
+    if (!providerJobId) {
+      return;
+    }
+    const job = await this.dataSource
+      .getRepository(KycLivenessJob)
+      .findOneBy({ providerJobId, status: 'pending' });
+    if (job) {
+      await this.pollLivenessJob(job);
+    }
+  }
+
+  private async pollLivenessJob(job: KycLivenessJob): Promise<void> {
+    try {
+      const outcome = await this.kycProvider.getLivenessResult(
+        job.providerJobId!,
+      );
+      if (outcome !== 'pending') {
+        await this.applyLivenessOutcome(job.id, outcome);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Liveness poll failed for job ${job.id}: ${(error as Error).message}`,
+      );
+    }
+  }
+
+  private async raiseTier(
+    manager: EntityManager,
+    userId: string,
+    record: KycVerification,
+  ): Promise<void> {
+    const currentTier = await this.usersService.getKycTier(manager, userId);
+    const derivedTier = deriveTier({
+      bvnVerified: !!record.bvnHash,
+      ninVerified: !!record.ninHash,
+      livenessVerified: record.livenessVerified,
+    });
+    if (tierRank(derivedTier) > tierRank(currentTier)) {
+      await this.usersService.setKycTier(manager, userId, derivedTier);
+    }
+  }
+
+  private readState(
+    userId: string,
+    livenessResult: LivenessResult,
+  ): Promise<VerifyIdentityResponseDto> {
+    return runInTransaction(this.dataSource, (manager) =>
+      this.stateOf(manager, userId, livenessResult),
+    );
+  }
+
+  private async stateOf(
+    manager: EntityManager,
+    userId: string,
+    livenessResult: LivenessResult,
+  ): Promise<VerifyIdentityResponseDto> {
+    const record = await manager
+      .getRepository(KycVerification)
+      .findOneBy({ userId });
+    const tier: KycTier = await this.usersService.getKycTier(manager, userId);
+    return {
+      tier,
+      bvnVerified: !!record?.bvnHash,
+      ninVerified: !!record?.ninHash,
+      livenessVerified: record?.livenessVerified ?? false,
+      livenessResult,
+    };
   }
 
   async checkAndReserveLimit(
@@ -247,9 +485,12 @@ export class KycService {
   }
 
   async getStatus(userId: string): Promise<KycStatusResponseDto> {
-    const [record, user] = await Promise.all([
+    const [record, user, pendingJobs] = await Promise.all([
       this.dataSource.getRepository(KycVerification).findOneBy({ userId }),
       this.usersService.findById(userId),
+      this.dataSource
+        .getRepository(KycLivenessJob)
+        .countBy({ userId, status: 'pending' }),
     ]);
 
     return {
@@ -257,59 +498,63 @@ export class KycService {
       bvnVerified: !!record?.bvnHash,
       ninVerified: !!record?.ninHash,
       livenessVerified: record?.livenessVerified ?? false,
+      livenessPending: pendingJobs > 0,
       dailyAllowanceRemainingMinor: 0,
     };
   }
 
   // A verified identity is immutable through the API: resubmitting it is a free
   // no-op, a different one is rejected, so a freed hash can't be claimed by
-  // another account.
-  private async resolveVerifiedIdentity(
-    manager: EntityManager,
-    userId: string,
-    identityType: KycIdentityType,
-    hash: string,
-  ): Promise<VerifyIdentityResponseDto | null> {
-    const record = await manager
-      .getRepository(KycVerification)
-      .findOneBy({ userId });
-    const storedHash =
-      identityType === 'bvn' ? record?.bvnHash : record?.ninHash;
-    if (!record || !storedHash) {
-      return null;
-    }
-    if (storedHash !== hash) {
-      throw new IDENTITY_SPECS[identityType].alreadyVerified();
-    }
-    return {
-      tier: await this.usersService.getKycTier(manager, userId),
-      bvnVerified: !!record.bvnHash,
-      ninVerified: !!record.ninHash,
-      livenessVerified: record.livenessVerified,
-    };
-  }
-
+  // another account. The one exception is a liveness capture sent while
+  // liveness is still unverified.
   // Counted as failed under the user's lock before the provider call so
   // concurrent requests can't all pass the limit; a success flips it. The
-  // provider call stays outside every transaction.
+  // provider calls stay outside every transaction.
   private reserveAttempt(
     userId: string,
     identityType: KycIdentityType,
     hash: string,
+    livenessRequested: boolean,
   ): Promise<
-    { attemptId: string } | { currentState: VerifyIdentityResponseDto }
+    | { currentState: VerifyIdentityResponseDto }
+    | {
+        attemptId: string;
+        identityVerified: boolean;
+        submitLiveness: boolean;
+      }
   > {
     return runInTransaction(this.dataSource, async (manager) => {
       await this.lockUser(manager, userId);
 
-      const currentState = await this.resolveVerifiedIdentity(
-        manager,
-        userId,
-        identityType,
-        hash,
-      );
-      if (currentState) {
-        return { currentState };
+      const record = await manager
+        .getRepository(KycVerification)
+        .findOneBy({ userId });
+      const storedHash =
+        identityType === 'bvn' ? record?.bvnHash : record?.ninHash;
+      if (storedHash && storedHash !== hash) {
+        throw new IDENTITY_SPECS[identityType].alreadyVerified();
+      }
+      const identityVerified = !!storedHash;
+      const livenessAlreadyVerified = record?.livenessVerified ?? false;
+      const submitLiveness = livenessRequested && !livenessAlreadyVerified;
+
+      if (identityVerified && !submitLiveness) {
+        return {
+          currentState: await this.stateOf(
+            manager,
+            userId,
+            livenessRequested ? 'passed' : 'not_requested',
+          ),
+        };
+      }
+
+      if (submitLiveness) {
+        const pending = await manager
+          .getRepository(KycLivenessJob)
+          .countBy({ userId, status: 'pending' });
+        if (pending > 0) {
+          throw new LivenessInProgressException();
+        }
       }
 
       const repo = manager.getRepository(KycVerificationAttempt);
@@ -328,7 +573,7 @@ export class KycService {
       const attempt = await repo.save(
         repo.create({ userId, identityType, succeeded: false }),
       );
-      return { attemptId: attempt.id };
+      return { attemptId: attempt.id, identityVerified, submitLiveness };
     });
   }
 

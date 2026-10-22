@@ -92,6 +92,7 @@ import { FundingPollProcessor } from '../../../src/modules/payments/internal/fun
 import { WithdrawalPollProcessor } from '../../../src/modules/payments/internal/withdrawal-poll.processor';
 import { ReconciliationProcessor } from '../../../src/modules/payments/internal/reconciliation.processor';
 import { NotificationRetentionProcessor } from '../../../src/modules/notifications/internal/retention.processor';
+import { LivenessPollProcessor } from '../../../src/modules/kyc/internal/liveness-poll.processor';
 import { Money } from '../../../src/shared/primitives/money';
 
 // A superset of AuthTestContext's own fields (plus payments/withdrawals'
@@ -292,6 +293,7 @@ async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
     WithdrawalPollProcessor,
     ReconciliationProcessor,
     NotificationRetentionProcessor,
+    LivenessPollProcessor,
   ];
   await Promise.all(
     hosts.map(async (hostClass) => {

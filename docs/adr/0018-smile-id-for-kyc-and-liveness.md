@@ -112,3 +112,20 @@ assumed based on Kora's shape.
   Biometric KYC job takes the selfie inline in the same request/response
   as everything else in this phase — nothing is persisted beyond the
   verification result.
+
+## Amendment (2026-10-21): liveness is a separate, possibly asynchronous job
+
+Checked against Smile ID's v3 docs while building liveness: Biometric KYC is
+asynchronous only (`POST /v3/biometric_kyc` returns 202 with a `job_id`; the
+result arrives by webhook or `GET /v3/status/{jobId}`) and takes a selfie plus
+6-8 liveness frames, user details and a consent record, not a single selfie
+string. The "one combined call" shape above therefore doesn't hold.
+
+`KycProvider` keeps identity lookup (`verifyBvn`/`verifyNin`) synchronous and
+adds `submitLiveness`, `getLivenessResult` and `parseWebhookJobId`.
+`submitLiveness` returns either a final outcome (a synchronous provider) or a
+pending job id (an asynchronous one); the service handles both, so another
+provider of either kind can replace Smile ID without touching the service. A
+`kyc_liveness_jobs` row tracks each submission, settled by a recurring poll
+job and by a webhook that is only a trigger to re-poll (its body is never
+trusted). Images are sent inline in the submit request and never stored.

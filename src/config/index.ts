@@ -111,6 +111,7 @@ const envSchema = z
     SMILE_ID_API_KEY: z.string().optional(),
     SMILE_ID_PARTNER_ID: z.string().optional(),
     SMILE_ID_BASE_URL: z.url().optional(),
+    SMILE_ID_PRIVACY_POLICY_URL: z.url().optional(),
   })
   .superRefine((env, ctx) => {
     // A provider's own credentials are only required when it's the one actually selected
@@ -152,6 +153,10 @@ const envSchema = z
       { path: 'SMILE_ID_API_KEY', value: env.SMILE_ID_API_KEY },
       { path: 'SMILE_ID_PARTNER_ID', value: env.SMILE_ID_PARTNER_ID },
       { path: 'SMILE_ID_BASE_URL', value: env.SMILE_ID_BASE_URL },
+      {
+        path: 'SMILE_ID_PRIVACY_POLICY_URL',
+        value: env.SMILE_ID_PRIVACY_POLICY_URL,
+      },
     ]);
 
     // FakeAdapter validates webhook signatures against a hardcoded key
@@ -261,6 +266,7 @@ function buildConfig(env: Env) {
         apiKey: env.SMILE_ID_API_KEY,
         partnerId: env.SMILE_ID_PARTNER_ID,
         baseUrl: env.SMILE_ID_BASE_URL,
+        privacyPolicyUrl: env.SMILE_ID_PRIVACY_POLICY_URL,
       },
     },
   };

@@ -5,12 +5,15 @@ import {
   hmacHex,
 } from '../../../shared/crypto/secrets.util';
 import { KycTier, UsersService } from '../../users/users.service';
+import { LivenessCaptureDto } from '../dto/liveness-capture.dto';
 import { KycService } from '../kyc.service';
 import { KycVerification } from '../entities/kyc-verification.entity';
 import { KycVerificationAttempt } from '../entities/kyc-verification-attempt.entity';
+import { KycLivenessJob } from '../entities/kyc-liveness-job.entity';
 import {
   KycProvider,
   KycVerificationResult,
+  LivenessSubmissionResult,
 } from '../providers/kyc-provider.interface';
 import {
   BvnAlreadyLinkedException,
@@ -19,12 +22,17 @@ import {
   NinAlreadyLinkedException,
   NinAlreadyVerifiedException,
   NinVerificationFailedException,
+  LivenessInProgressException,
   TooManyVerificationAttemptsException,
 } from '../internal/errors';
 
 type FakeKycVerificationRepo = {
   findOneBy: jest.Mock<
     Promise<KycVerification | null>,
+    [Partial<KycVerification>]
+  >;
+  findOneByOrFail: jest.Mock<
+    Promise<KycVerification>,
     [Partial<KycVerification>]
   >;
   create: jest.Mock<KycVerification, [Partial<KycVerification>]>;
@@ -40,6 +48,14 @@ type FakeAttemptRepo = {
     [Partial<KycVerificationAttempt>, Partial<KycVerificationAttempt>]
   >;
   delete: jest.Mock<Promise<unknown>, [Partial<KycVerificationAttempt>]>;
+};
+
+type FakeJobRepo = {
+  countBy: jest.Mock<Promise<number>, [unknown]>;
+  create: jest.Mock<KycLivenessJob, [Partial<KycLivenessJob>]>;
+  save: jest.Mock<Promise<KycLivenessJob>, [KycLivenessJob]>;
+  update: jest.Mock<Promise<unknown>, [unknown, unknown]>;
+  findOneBy: jest.Mock<Promise<KycLivenessJob | null>, [unknown]>;
 };
 
 const TEST_ENCRYPTION_KEY = 'a'.repeat(64);
@@ -72,9 +88,10 @@ describe('KycService', () => {
   let dataSource: jest.Mocked<
     Pick<DataSource, 'getRepository' | 'transaction'>
   >;
-  let kycProvider: jest.Mocked<Pick<KycProvider, 'verifyBvn' | 'verifyNin'>>;
+  let kycProvider: jest.Mocked<Pick<KycProvider, keyof KycProvider>>;
+  let jobRepo: FakeJobRepo;
   let usersService: {
-    findById: jest.Mock<Promise<{ id: string; kycTier: KycTier }>, [string]>;
+    findById: jest.Mock<Promise<Record<string, unknown>>, [string]>;
     getKycTier: jest.Mock<Promise<KycTier>, [EntityManager, string]>;
     setKycTier: jest.Mock<Promise<void>, [EntityManager, string, KycTier]>;
   };
@@ -84,10 +101,16 @@ describe('KycService', () => {
       findOneBy: jest
         .fn<Promise<KycVerification | null>, [Partial<KycVerification>]>()
         .mockResolvedValue(null),
+      findOneByOrFail: jest.fn((where: Partial<KycVerification>) =>
+        kycVerificationRepo.findOneBy(where).then((record) => record!),
+      ),
       create: jest.fn(
         (data: Partial<KycVerification>) => data as KycVerification,
       ),
-      save: jest.fn((entity: KycVerification) => Promise.resolve(entity)),
+      save: jest.fn((entity: KycVerification) => {
+        kycVerificationRepo.findOneBy.mockResolvedValue(entity);
+        return Promise.resolve(entity);
+      }),
     };
     attemptRepo = {
       count: jest.fn<Promise<number>, [unknown]>().mockResolvedValue(0),
@@ -108,12 +131,28 @@ describe('KycService', () => {
         .fn<Promise<unknown>, [Partial<KycVerificationAttempt>]>()
         .mockResolvedValue(undefined),
     };
+    jobRepo = {
+      countBy: jest.fn<Promise<number>, [unknown]>().mockResolvedValue(0),
+      create: jest.fn(
+        (data: Partial<KycLivenessJob>) => data as KycLivenessJob,
+      ),
+      save: jest.fn((entity: KycLivenessJob) =>
+        Promise.resolve({ ...entity, id: 'job-1' }),
+      ),
+      update: jest
+        .fn<Promise<unknown>, [unknown, unknown]>()
+        .mockResolvedValue(undefined),
+      findOneBy: jest
+        .fn<Promise<KycLivenessJob | null>, [unknown]>()
+        .mockResolvedValue(null),
+    };
     managerQuery = jest
       .fn<Promise<unknown>, [string, unknown[]]>()
       .mockResolvedValue(undefined);
     const getRepositoryMock = jest.fn((entity: unknown) => {
       if (entity === KycVerification) return kycVerificationRepo;
       if (entity === KycVerificationAttempt) return attemptRepo;
+      if (entity === KycLivenessJob) return jobRepo;
       throw new Error('unexpected entity passed to getRepository');
     });
     fakeManager = {
@@ -136,17 +175,32 @@ describe('KycService', () => {
       verifyNin: jest
         .fn<Promise<KycVerificationResult>, [string]>()
         .mockResolvedValue(verifiedResult()),
-    };
+      submitLiveness: jest
+        .fn<Promise<LivenessSubmissionResult>, [unknown]>()
+        .mockResolvedValue({ status: 'passed' }),
+      getLivenessResult: jest.fn().mockResolvedValue('pending'),
+      parseWebhookJobId: jest.fn().mockReturnValue(null),
+    } as unknown as typeof kycProvider;
     usersService = {
       findById: jest
-        .fn<Promise<{ id: string; kycTier: KycTier }>, [string]>()
-        .mockResolvedValue({ id: 'user-1', kycTier: 'tier0' }),
+        .fn<Promise<Record<string, unknown>>, [string]>()
+        .mockResolvedValue({
+          id: 'user-1',
+          kycTier: 'tier0',
+          firstName: 'Ada',
+          lastName: 'Lovelace',
+          email: 'ada@example.com',
+          phone: '+2348000000000',
+        }),
       getKycTier: jest
         .fn<Promise<KycTier>, [EntityManager, string]>()
         .mockResolvedValue('tier0'),
       setKycTier: jest
         .fn<Promise<void>, [EntityManager, string, KycTier]>()
-        .mockResolvedValue(undefined),
+        .mockImplementation((_manager, _userId, tier) => {
+          usersService.getKycTier.mockResolvedValue(tier);
+          return Promise.resolve();
+        }),
     };
 
     service = new KycService(
@@ -181,6 +235,7 @@ describe('KycService', () => {
         bvnVerified: true,
         ninVerified: false,
         livenessVerified: false,
+        livenessResult: 'not_requested',
       });
     });
 
@@ -301,6 +356,7 @@ describe('KycService', () => {
           bvnVerified: hashField === 'bvnHash',
           ninVerified: hashField === 'ninHash',
           livenessVerified: false,
+          livenessResult: 'not_requested',
         });
         expect(kycProvider.verifyBvn).not.toHaveBeenCalled();
         expect(kycProvider.verifyNin).not.toHaveBeenCalled();
@@ -460,6 +516,7 @@ describe('KycService', () => {
         bvnVerified: true,
         ninVerified: true,
         livenessVerified: false,
+        livenessResult: 'not_requested',
       });
     });
 
@@ -527,6 +584,225 @@ describe('KycService', () => {
     });
   });
 
+  describe('liveness', () => {
+    const key = encryptionKeyFromHex(TEST_ENCRYPTION_KEY);
+    const liveness: LivenessCaptureDto = {
+      selfieImage: '/9j/AA==',
+      livenessImages: Array<string>(6).fill('/9j/AA=='),
+      consentGranted: true,
+    };
+
+    beforeEach(() => {
+      jobRepo.findOneBy.mockResolvedValue({
+        id: 'job-1',
+        userId: 'user-1',
+        attemptId: 'attempt-1',
+        status: 'pending',
+      } as KycLivenessJob);
+    });
+
+    function bvnVerifiedRecord(overrides: Partial<KycVerification> = {}) {
+      kycVerificationRepo.findOneBy.mockResolvedValue({
+        userId: 'user-1',
+        bvnHash: hmacHex('12345678901', key),
+        bvnCiphertext: 'cipher',
+        ninHash: null,
+        livenessVerified: false,
+        ...overrides,
+      } as KycVerification);
+    }
+
+    it('persists identity, passes liveness synchronously and only then marks the attempt successful', async () => {
+      const result = await service.verifyBvn('user-1', '12345678901', liveness);
+
+      expect(kycProvider.submitLiveness).toHaveBeenCalledWith(
+        expect.objectContaining({
+          idType: 'bvn',
+          idNumber: '12345678901',
+          selfieImage: liveness.selfieImage,
+          livenessImages: liveness.livenessImages,
+          user: {
+            givenNames: 'Ada',
+            lastName: 'Lovelace',
+            email: 'ada@example.com',
+            phone: '+2348000000000',
+          },
+        }),
+      );
+      expect(attemptRepo.update).toHaveBeenCalledTimes(1);
+      expect(attemptRepo.update).toHaveBeenCalledWith(
+        { id: 'attempt-1' },
+        { succeeded: true },
+      );
+      expect(jobRepo.update).toHaveBeenCalledWith(
+        { id: 'job-1' },
+        { status: 'passed' },
+      );
+      expect(result).toMatchObject({
+        livenessVerified: true,
+        livenessResult: 'passed',
+      });
+    });
+
+    it('keeps a verified identity but leaves the attempt failed when liveness fails', async () => {
+      kycProvider.submitLiveness.mockResolvedValue({ status: 'failed' });
+
+      const result = await service.verifyBvn('user-1', '12345678901', liveness);
+
+      expect(kycVerificationRepo.save).toHaveBeenCalledTimes(1);
+      expect(attemptRepo.update).not.toHaveBeenCalled();
+      expect(usersService.setKycTier).toHaveBeenCalledWith(
+        fakeManager,
+        'user-1',
+        'tier1',
+      );
+      expect(result).toEqual({
+        tier: 'tier1',
+        bvnVerified: true,
+        ninVerified: false,
+        livenessVerified: false,
+        livenessResult: 'failed',
+      });
+    });
+
+    it('records the provider job id and reports pending when the provider is asynchronous', async () => {
+      kycProvider.submitLiveness.mockResolvedValue({
+        status: 'pending',
+        jobId: 'provider-job-1',
+      });
+
+      const result = await service.verifyBvn('user-1', '12345678901', liveness);
+
+      expect(jobRepo.update).toHaveBeenCalledWith(
+        { id: 'job-1' },
+        { providerJobId: 'provider-job-1' },
+      );
+      expect(attemptRepo.update).not.toHaveBeenCalled();
+      expect(result.livenessResult).toBe('pending');
+      expect(result.livenessVerified).toBe(false);
+    });
+
+    it('attaches liveness to an already-verified identity without rewriting identity fields', async () => {
+      bvnVerifiedRecord({ verifiedLegalName: 'Stored Name' });
+
+      const result = await service.verifyBvn('user-1', '12345678901', liveness);
+
+      expect(kycProvider.verifyBvn).not.toHaveBeenCalled();
+      expect(kycVerificationRepo.save).toHaveBeenCalledTimes(1);
+      expect(kycVerificationRepo.save.mock.calls[0][0]).toMatchObject({
+        bvnCiphertext: 'cipher',
+        verifiedLegalName: 'Stored Name',
+        livenessVerified: true,
+      });
+      expect(result.livenessResult).toBe('passed');
+    });
+
+    it('is a free no-op when liveness is already verified, even with a selfie', async () => {
+      bvnVerifiedRecord({ livenessVerified: true });
+
+      const result = await service.verifyBvn('user-1', '12345678901', liveness);
+
+      expect(kycProvider.verifyBvn).not.toHaveBeenCalled();
+      expect(kycProvider.submitLiveness).not.toHaveBeenCalled();
+      expect(attemptRepo.save).not.toHaveBeenCalled();
+      expect(result.livenessResult).toBe('passed');
+    });
+
+    it('skips the liveness call on a first-time identity when liveness is already verified', async () => {
+      bvnVerifiedRecord({ livenessVerified: true });
+
+      const result = await service.verifyNin('user-1', '22222222222', liveness);
+
+      expect(kycProvider.submitLiveness).not.toHaveBeenCalled();
+      expect(attemptRepo.update).toHaveBeenCalledWith(
+        { id: 'attempt-1' },
+        { succeeded: true },
+      );
+      expect(result.livenessResult).toBe('passed');
+    });
+
+    it('still rejects a different identifier with a selfie', async () => {
+      bvnVerifiedRecord();
+
+      await expect(
+        service.verifyBvn('user-1', '99999999999', liveness),
+      ).rejects.toThrow(BvnAlreadyVerifiedException);
+      expect(kycProvider.submitLiveness).not.toHaveBeenCalled();
+      expect(attemptRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('rejects a selfie while another liveness job is pending, before any provider call', async () => {
+      jobRepo.countBy.mockResolvedValue(1);
+
+      await expect(
+        service.verifyBvn('user-1', '12345678901', liveness),
+      ).rejects.toThrow(LivenessInProgressException);
+      expect(kycProvider.verifyBvn).not.toHaveBeenCalled();
+      expect(attemptRepo.save).not.toHaveBeenCalled();
+    });
+
+    it('counts repeated selfie retries on a verified identifier toward the rate limit', async () => {
+      bvnVerifiedRecord();
+      attemptRepo.count.mockResolvedValue(5);
+
+      await expect(
+        service.verifyBvn('user-1', '12345678901', liveness),
+      ).rejects.toThrow(TooManyVerificationAttemptsException);
+      expect(kycProvider.submitLiveness).not.toHaveBeenCalled();
+    });
+
+    it('releases the reserved attempt when the liveness submission itself errors', async () => {
+      kycProvider.submitLiveness.mockRejectedValue(new Error('provider down'));
+
+      await expect(
+        service.verifyBvn('user-1', '12345678901', liveness),
+      ).rejects.toThrow('provider down');
+      expect(attemptRepo.delete).toHaveBeenCalledWith({ id: 'attempt-1' });
+    });
+
+    it('does not carry the images into the stored attempt, job or verification rows', async () => {
+      await service.verifyBvn('user-1', '12345678901', liveness);
+
+      const written = JSON.stringify([
+        kycVerificationRepo.save.mock.calls,
+        attemptRepo.save.mock.calls,
+        jobRepo.save.mock.calls,
+        jobRepo.update.mock.calls,
+      ]);
+      expect(written).not.toContain(liveness.selfieImage);
+    });
+
+    it('ignores a webhook that names no pending job and never trusts its body', async () => {
+      kycProvider.parseWebhookJobId.mockReturnValue(null);
+
+      await service.handleLivenessWebhook({ status: 'clear' });
+
+      expect(kycProvider.getLivenessResult).not.toHaveBeenCalled();
+    });
+
+    it('re-polls the provider for a job named by a webhook and applies the fetched outcome', async () => {
+      kycProvider.parseWebhookJobId.mockReturnValue('provider-job-1');
+      jobRepo.findOneBy.mockResolvedValue({
+        id: 'job-1',
+        userId: 'user-1',
+        attemptId: 'attempt-1',
+        providerJobId: 'provider-job-1',
+        status: 'pending',
+      } as KycLivenessJob);
+      kycProvider.getLivenessResult.mockResolvedValue('failed');
+
+      await service.handleLivenessWebhook({ whatever: 'clear' });
+
+      expect(kycProvider.getLivenessResult).toHaveBeenCalledWith(
+        'provider-job-1',
+      );
+      expect(jobRepo.update).toHaveBeenCalledWith(
+        { id: 'job-1' },
+        { status: 'failed' },
+      );
+    });
+  });
+
   describe('getStatus', () => {
     it('returns tier0 defaults with a 0 daily allowance placeholder when no verification row exists', async () => {
       const result = await service.getStatus('user-1');
@@ -536,6 +812,7 @@ describe('KycService', () => {
         bvnVerified: false,
         ninVerified: false,
         livenessVerified: false,
+        livenessPending: false,
         dailyAllowanceRemainingMinor: 0,
       });
     });
@@ -558,6 +835,7 @@ describe('KycService', () => {
         bvnVerified: true,
         ninVerified: false,
         livenessVerified: false,
+        livenessPending: false,
         dailyAllowanceRemainingMinor: 0,
       });
     });

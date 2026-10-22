@@ -6,7 +6,9 @@ import { requestJson } from '../../../shared/http/request-json';
 import {
   KycProvider,
   KycVerificationResult,
-  KycVerifyOptions,
+  LivenessOutcome,
+  LivenessSubmission,
+  LivenessSubmissionResult,
 } from './kyc-provider.interface';
 
 const SMILE_ID_TIMEOUT_MS = 15_000;
@@ -14,6 +16,9 @@ const SMILE_ID_TIMEOUT_MS = 15_000;
 // Request/response shapes and the signing scheme are unconfirmed against a live
 // Smile ID sandbox; a contract test must verify them before real use. The NIN
 // lookup is assumed to take id_type "NIN" and return the same response shape as BVN.
+// For the v3 liveness path, unconfirmed: the /v3/token header names (partner_id,
+// api_key), the multipart encoding of consent and user_details (JSON strings),
+// and that the webhook's partner_params.job_id equals the submit response's job_id.
 interface SmileIdEnhancedKycResponse {
   ResultCode: string;
   ResultText: string;
@@ -24,9 +29,16 @@ interface SmileIdEnhancedKycResponse {
     LGA?: string;
     State?: string;
   };
-  Actions?: {
-    LivenessCheck?: string; // assumed "Passed" | "Failed" | "Not Applicable"
-  };
+}
+
+interface SmileIdJobStatusResponse {
+  status:
+    | 'clear'
+    | 'attention'
+    | 'block'
+    | 'error'
+    | 'processing'
+    | 'not_found';
 }
 
 const RESULT_CODE_MATCH = '1012';
@@ -37,25 +49,21 @@ export class SmileIdKycProvider implements KycProvider {
   private readonly apiKey: string;
   private readonly partnerId: string;
   private readonly baseUrl: string;
+  private readonly privacyPolicyUrl: string;
 
   constructor(@Inject(APP_CONFIG) config: AppConfig) {
     this.apiKey = config.kyc.smileId.apiKey!;
     this.partnerId = config.kyc.smileId.partnerId!;
     this.baseUrl = config.kyc.smileId.baseUrl!;
+    this.privacyPolicyUrl = config.kyc.smileId.privacyPolicyUrl!;
   }
 
-  async verifyBvn(
-    bvn: string,
-    options?: KycVerifyOptions,
-  ): Promise<KycVerificationResult> {
-    return this.verify('BVN', bvn, options);
+  async verifyBvn(bvn: string): Promise<KycVerificationResult> {
+    return this.verify('BVN', bvn);
   }
 
-  async verifyNin(
-    nin: string,
-    options?: KycVerifyOptions,
-  ): Promise<KycVerificationResult> {
-    return this.verify('NIN', nin, options);
+  async verifyNin(nin: string): Promise<KycVerificationResult> {
+    return this.verify('NIN', nin);
   }
 
   private buildSignature(timestamp: string): string {
@@ -67,7 +75,6 @@ export class SmileIdKycProvider implements KycProvider {
   private async verify(
     idType: 'BVN' | 'NIN',
     idNumber: string,
-    options?: KycVerifyOptions,
   ): Promise<KycVerificationResult> {
     const timestamp = new Date().toISOString();
 
@@ -87,7 +94,6 @@ export class SmileIdKycProvider implements KycProvider {
           job_id: randomUUID(),
           job_type: 5,
         },
-        image: options?.selfie,
       },
       timeoutMs: SMILE_ID_TIMEOUT_MS,
     });
@@ -111,9 +117,88 @@ export class SmileIdKycProvider implements KycProvider {
             state: body.Address.State ?? '',
           }
         : undefined,
-      livenessPassed: options?.selfie
-        ? body.Actions?.LivenessCheck === 'Passed'
-        : undefined,
     };
   }
+
+  async submitLiveness(
+    submission: LivenessSubmission,
+  ): Promise<LivenessSubmissionResult> {
+    const form = new FormData();
+    form.append('selfie_image', jpegBlob(submission.selfieImage), 'selfie.jpg');
+    for (const [index, image] of submission.livenessImages.entries()) {
+      form.append('liveness_images', jpegBlob(image), `liveness-${index}.jpg`);
+    }
+    form.append('country', 'NG');
+    form.append('id_type', submission.idType.toUpperCase());
+    form.append('id_number', submission.idNumber);
+    form.append(
+      'user_details',
+      JSON.stringify({
+        given_names: submission.user.givenNames,
+        last_name: submission.user.lastName,
+        email: submission.user.email,
+        phone_number: submission.user.phone,
+      }),
+    );
+    form.append(
+      'consent',
+      JSON.stringify({
+        granted: true,
+        granted_at: submission.consentGrantedAt.toISOString(),
+        notice_language: 'EN',
+        notice_privacy_policy_url: this.privacyPolicyUrl,
+      }),
+    );
+
+    const { ok, body } = await requestJson<{ job_id?: string }>({
+      provider: 'SmileIdKycProvider',
+      url: `${this.baseUrl}/v3/biometric_kyc`,
+      method: 'POST',
+      headers: { 'SmileID-Token': await this.fetchToken() },
+      body: form,
+      timeoutMs: SMILE_ID_TIMEOUT_MS,
+    });
+    if (!ok || !body.job_id) {
+      return { status: 'failed' };
+    }
+    return { status: 'pending', jobId: body.job_id };
+  }
+
+  async getLivenessResult(jobId: string): Promise<LivenessOutcome | 'pending'> {
+    const { body } = await requestJson<SmileIdJobStatusResponse>({
+      provider: 'SmileIdKycProvider',
+      url: `${this.baseUrl}/v3/status/${encodeURIComponent(jobId)}`,
+      method: 'GET',
+      headers: { 'SmileID-Token': await this.fetchToken() },
+      timeoutMs: SMILE_ID_TIMEOUT_MS,
+    });
+    if (body.status === 'processing') {
+      return 'pending';
+    }
+    return body.status === 'clear' ? 'passed' : 'failed';
+  }
+
+  parseWebhookJobId(body: unknown): string | null {
+    const jobId = (body as { partner_params?: { job_id?: unknown } } | null)
+      ?.partner_params?.job_id;
+    return typeof jobId === 'string' ? jobId : null;
+  }
+
+  private async fetchToken(): Promise<string> {
+    const { body } = await requestJson<{ token?: string }>({
+      provider: 'SmileIdKycProvider',
+      url: `${this.baseUrl}/v3/token`,
+      method: 'POST',
+      headers: { partner_id: this.partnerId, api_key: this.apiKey },
+      timeoutMs: SMILE_ID_TIMEOUT_MS,
+    });
+    if (!body.token) {
+      throw new Error('SmileIdKycProvider: token request returned no token');
+    }
+    return body.token;
+  }
+}
+
+function jpegBlob(base64: string): Blob {
+  return new Blob([Buffer.from(base64, 'base64')], { type: 'image/jpeg' });
 }

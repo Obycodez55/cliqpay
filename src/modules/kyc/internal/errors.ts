@@ -62,6 +62,16 @@ export class NinAlreadyVerifiedException extends DomainException {
   }
 }
 
+export class LivenessInProgressException extends DomainException {
+  readonly code = 'LIVENESS_IN_PROGRESS';
+  constructor() {
+    super(
+      'A liveness check is already being processed for this account. Please wait for its result.',
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
 export class TooManyVerificationAttemptsException extends DomainException {
   readonly code = 'TOO_MANY_VERIFICATION_ATTEMPTS';
   constructor() {

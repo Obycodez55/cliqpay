@@ -35,6 +35,18 @@ describe('requestJson', () => {
     throw new Error('expected requestJson to reject');
   }
 
+  it('sends FormData as multipart without forcing a JSON content type', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(202, { job_id: 'job_1' }));
+    const form = new FormData();
+    form.append('selfie_image', new Blob(['x']), 'selfie.jpg');
+
+    await requestJson({ ...baseOptions, body: form });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.body).toBe(form);
+    expect(init.headers).toBeUndefined();
+  });
+
   it('returns status, ok and the parsed body', async () => {
     fetchMock.mockResolvedValue(jsonResponse(200, { status: true }));
 

@@ -54,7 +54,12 @@ function defaultTestAppConfig(): AppConfig {
     internal: { apiSecret: TEST_INTERNAL_API_SECRET },
     kyc: {
       provider: 'fake',
-      smileId: { apiKey: undefined, partnerId: undefined, baseUrl: undefined },
+      smileId: {
+        apiKey: undefined,
+        partnerId: undefined,
+        baseUrl: undefined,
+        privacyPolicyUrl: undefined,
+      },
     },
   };
 }

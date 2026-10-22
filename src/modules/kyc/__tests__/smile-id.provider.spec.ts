@@ -8,6 +8,7 @@ function buildConfig(): AppConfig {
         apiKey: 'test-api-key',
         partnerId: 'partner-1',
         baseUrl: 'https://smile.example.test',
+        privacyPolicyUrl: 'https://cliqpay.example.test/privacy',
       },
     },
   } as AppConfig;
@@ -54,7 +55,6 @@ describe('SmileIdKycProvider', () => {
         lga: 'Ikeja',
         state: 'Lagos',
       },
-      livenessPassed: undefined,
     });
   });
 
@@ -153,6 +153,109 @@ describe('SmileIdKycProvider', () => {
     expect(JSON.parse(init.body as string)).toMatchObject({
       id_type: 'NIN',
       id_number: '33333333333',
+    });
+  });
+
+  describe('liveness (Biometric KYC v3)', () => {
+    const submission = {
+      idType: 'bvn' as const,
+      idNumber: '22222222222',
+      selfieImage: '/9j/AA==',
+      livenessImages: Array<string>(6).fill('/9j/AA=='),
+      user: {
+        givenNames: 'Ada',
+        lastName: 'Lovelace',
+        email: 'ada@example.com',
+        phone: '+2348000000000',
+      },
+      consentGrantedAt: new Date('2026-01-01T00:00:00Z'),
+    };
+
+    it('fetches a token then posts the images as multipart and returns the pending job id', async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(200, { token: 'jwt-1' }))
+        .mockResolvedValueOnce(
+          jsonResponse(202, { status: 'accepted', job_id: 'job_abc' }),
+        );
+      const provider = new SmileIdKycProvider(buildConfig());
+
+      await expect(provider.submitLiveness(submission)).resolves.toEqual({
+        status: 'pending',
+        jobId: 'job_abc',
+      });
+
+      const [tokenUrl, tokenInit] = fetchMock.mock.calls[0] as [
+        string,
+        RequestInit,
+      ];
+      expect(tokenUrl).toBe('https://smile.example.test/v3/token');
+      expect(tokenInit.headers).toEqual({
+        partner_id: 'partner-1',
+        api_key: 'test-api-key',
+      });
+      const [url, init] = fetchMock.mock.calls[1] as [string, RequestInit];
+      expect(url).toBe('https://smile.example.test/v3/biometric_kyc');
+      expect(init.headers).toEqual({ 'SmileID-Token': 'jwt-1' });
+      const form = init.body as FormData;
+      expect(form.getAll('liveness_images')).toHaveLength(6);
+      expect(form.get('selfie_image')).toBeInstanceOf(Blob);
+      expect(form.get('id_type')).toBe('BVN');
+      expect(form.get('country')).toBe('NG');
+      expect(JSON.parse(form.get('consent') as string)).toMatchObject({
+        granted: true,
+        notice_privacy_policy_url: 'https://cliqpay.example.test/privacy',
+      });
+    });
+
+    it('reports a failed liveness when the job is rejected at submission', async () => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(200, { token: 'jwt-1' }))
+        .mockResolvedValueOnce(jsonResponse(400, { message: 'bad' }));
+      const provider = new SmileIdKycProvider(buildConfig());
+
+      await expect(provider.submitLiveness(submission)).resolves.toEqual({
+        status: 'failed',
+      });
+    });
+
+    it('throws when the token response carries no token', async () => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(401, {}));
+      const provider = new SmileIdKycProvider(buildConfig());
+
+      await expect(provider.submitLiveness(submission)).rejects.toThrow(
+        /token/,
+      );
+    });
+
+    it.each([
+      ['processing', 'pending'],
+      ['clear', 'passed'],
+      ['block', 'failed'],
+      ['attention', 'failed'],
+      ['error', 'failed'],
+      ['not_found', 'failed'],
+    ])('maps a %s job status to %s', async (status, expected) => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse(200, { token: 'jwt-1' }))
+        .mockResolvedValueOnce(jsonResponse(200, { status }));
+      const provider = new SmileIdKycProvider(buildConfig());
+
+      await expect(provider.getLivenessResult('job_abc')).resolves.toBe(
+        expected,
+      );
+      expect((fetchMock.mock.calls[1] as [string])[0]).toBe(
+        'https://smile.example.test/v3/status/job_abc',
+      );
+    });
+
+    it('reads the job id from a webhook body and ignores anything else', () => {
+      const provider = new SmileIdKycProvider(buildConfig());
+
+      expect(
+        provider.parseWebhookJobId({ partner_params: { job_id: 'job_abc' } }),
+      ).toBe('job_abc');
+      expect(provider.parseWebhookJobId({ partner_params: {} })).toBeNull();
+      expect(provider.parseWebhookJobId(null)).toBeNull();
     });
   });
 });

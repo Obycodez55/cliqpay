@@ -75,6 +75,7 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
       bvnVerified: true,
       ninVerified: false,
       livenessVerified: false,
+      livenessResult: 'not_requested',
     });
 
     const user = await ctx.userRepo.findOneByOrFail({ id: userId });
@@ -87,6 +88,7 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
       bvnVerified: true,
       ninVerified: false,
       livenessVerified: false,
+      livenessPending: false,
       dailyAllowanceRemainingMinor: 0,
     });
   });
@@ -128,6 +130,7 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
       bvnVerified: false,
       ninVerified: false,
       livenessVerified: false,
+      livenessPending: false,
       dailyAllowanceRemainingMinor: 0,
     });
   });
@@ -195,6 +198,7 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
         bvnVerified: true,
         ninVerified: false,
         livenessVerified: false,
+        livenessResult: 'not_requested',
       });
 
       const different = await verifyBvn(token, '71000000002');

@@ -25,12 +25,7 @@ import { PaymentsService } from './payments.service';
 import { FundWalletDto } from './dto/fund-wallet.dto';
 import { FundWalletResponseDto } from './dto/fund-wallet-response.dto';
 
-// Shares the `/wallet` namespace with ledger's WalletController by design,
-// not by accident: /v1/wallet is one user-facing surface, split by whether
-// a route needs a payment provider (here) or not (ledger). See ADR-0008.
-// Named after the module (matches auth.controller.ts as auth's primary
-// controller), not after `fund` specifically — withdrawal (Phase 4) lands
-// on this same controller, another provider-backed /wallet route.
+// Shares the `/wallet` namespace with ledger's WalletController by design
 @ApiTags('Wallet')
 @Controller('wallet')
 export class PaymentsController {
@@ -63,17 +58,8 @@ export class PaymentsController {
   @Post('webhook/kora')
   @Version(VERSION_NEUTRAL)
   @HttpCode(200)
-  // Its own bucket, not the global per-IP default (100/min) — Kora
-  // delivers from a small set of IPs on behalf of every user combined, and
-  // a burst of legitimate retries after an outage (Kora replaying a queued
-  // backlog) would otherwise get 429'd into a multi-hour drain.
+  // Its own bucket, not the global per-IP default (100/min)
   @Throttle({ default: { limit: 300, ttl: 60_000 } })
-  // Kora delivers every event type — charges, transfers/payouts (issue
-  // #29), refunds — to this one dashboard-configured URL (confirmed against
-  // developers.korapay.com/docs/webhooks; there's no per-event or
-  // per-request notification_url for payouts, unlike charges' own
-  // notification_url field). PaymentsService.handleKoraWebhook dispatches
-  // on the payload's `event` field internally.
   @ApiOperation({ summary: "Kora's webhook receiver (charges and payouts)" })
   handleKoraWebhook(
     @Req() req: Request,

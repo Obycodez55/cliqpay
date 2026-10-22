@@ -30,6 +30,9 @@ import { CreateKycVerifications1787600000000 } from '../../../src/database/migra
 import { CreateTierLimits1787600000001 } from '../../../src/database/migrations/1787600000001-CreateTierLimits';
 import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
 import { CreateKycVerificationAttempts1787600000003 } from '../../../src/database/migrations/1787600000003-CreateKycVerificationAttempts';
+import { CreateKycLivenessJobs1787600000004 } from '../../../src/database/migrations/1787600000004-CreateKycLivenessJobs';
+import { LivenessPollProcessor } from '../../../src/modules/kyc/internal/liveness-poll.processor';
+import { setupBodyParsers } from '../../../src/common/body-parsers';
 import { User } from '../../../src/modules/users/entities/user.entity';
 import { UsersModule } from '../../../src/modules/users/users.module';
 import { UsersService } from '../../../src/modules/users/users.service';
@@ -37,6 +40,7 @@ import { KycModule } from '../../../src/modules/kyc/kyc.module';
 import { KycService } from '../../../src/modules/kyc/kyc.service';
 import { KycVerification } from '../../../src/modules/kyc/entities/kyc-verification.entity';
 import { KycVerificationAttempt } from '../../../src/modules/kyc/entities/kyc-verification-attempt.entity';
+import { KycLivenessJob } from '../../../src/modules/kyc/entities/kyc-liveness-job.entity';
 import { TierLimit } from '../../../src/modules/kyc/entities/tier-limit.entity';
 
 export interface KycTestContext {
@@ -50,6 +54,7 @@ export interface KycTestContext {
   kycVerificationRepo: Repository<KycVerification>;
   tierLimitRepo: Repository<TierLimit>;
   kycVerificationAttemptRepo: Repository<KycVerificationAttempt>;
+  kycLivenessJobRepo: Repository<KycLivenessJob>;
   config: AppConfig;
 }
 
@@ -81,6 +86,7 @@ export async function createKycTestContext(): Promise<KycTestContext> {
   await new CreateTierLimits1787600000001().up(queryRunner);
   await new AddKycTierToUsers1787600000002().up(queryRunner);
   await new CreateKycVerificationAttempts1787600000003().up(queryRunner);
+  await new CreateKycLivenessJobs1787600000004().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 
@@ -112,6 +118,7 @@ export async function createKycTestContext(): Promise<KycTestContext> {
       transform: true,
     }),
   );
+  setupBodyParsers(app);
   await app.init();
 
   const dataSource = moduleRef.get(DataSource);
@@ -129,6 +136,7 @@ export async function createKycTestContext(): Promise<KycTestContext> {
     kycVerificationAttemptRepo: dataSource.getRepository(
       KycVerificationAttempt,
     ),
+    kycLivenessJobRepo: dataSource.getRepository(KycLivenessJob),
     config,
   };
 }
@@ -136,6 +144,12 @@ export async function createKycTestContext(): Promise<KycTestContext> {
 export async function destroyKycTestContext(
   ctx: Partial<KycTestContext>,
 ): Promise<void> {
+  if (ctx.app) {
+    // @nestjs/bullmq's graceful worker close can hang under Jest's multi-process
+    // execution (see payments-test-context.ts's forceCloseWorkers).
+    const host = ctx.app.get(LivenessPollProcessor, { strict: false });
+    await host?.worker?.close(true);
+  }
   await ctx.app?.close();
   await ctx.postgres?.stop();
   await ctx.redis?.stop();
