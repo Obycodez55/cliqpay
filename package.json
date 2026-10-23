@@ -30,6 +30,7 @@
     "migration:run": "pnpm typeorm migration:run -d data-source.ts",
     "migration:revert": "pnpm typeorm migration:revert -d data-source.ts",
     "db:rekey-identifier-hashes": "ts-node src/database/rekey-identifier-hashes.cli.ts",
+    "db:rotate-encryption-key": "ts-node src/database/rotate-encryption-key.cli.ts",
     "prepare": "husky"
   },
   "dependencies": {
