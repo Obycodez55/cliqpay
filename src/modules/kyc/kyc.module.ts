@@ -8,6 +8,10 @@ import {
   LIVENESS_POLL_QUEUE,
   LivenessPollProcessor,
 } from './internal/liveness-poll.processor';
+import {
+  KYC_RETENTION_QUEUE,
+  KycRetentionProcessor,
+} from './internal/kyc-retention.processor';
 import { KycService } from './kyc.service';
 import { KYC_PROVIDER, KycProvider } from './providers/kyc-provider.interface';
 import { SmileIdKycProvider } from './providers/smile-id.provider';
@@ -26,6 +30,13 @@ const KYC_PROVIDERS = {
     UsersModule,
     EventBusModule,
     BullModule.registerQueue({
+      name: KYC_RETENTION_QUEUE,
+      defaultJobOptions: {
+        removeOnComplete: { age: 3_600, count: 10 },
+        removeOnFail: { age: 86_400, count: 50 },
+      },
+    }),
+    BullModule.registerQueue({
       name: LIVENESS_POLL_QUEUE,
       defaultJobOptions: {
         removeOnComplete: { age: 3_600, count: 100 },
@@ -37,6 +48,7 @@ const KYC_PROVIDERS = {
   providers: [
     KycService,
     LivenessPollProcessor,
+    KycRetentionProcessor,
     {
       provide: KYC_PROVIDER,
       inject: [APP_CONFIG],

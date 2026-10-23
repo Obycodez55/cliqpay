@@ -76,6 +76,7 @@ const LIVENESS_JOB_TTL_MS = 30 * 60 * 1000;
 const LIVENESS_POLL_BATCH = 100;
 const LIVENESS_POLL_TICK_BUDGET_MS = 60 * 1000;
 const LIVENESS_MAX_POLL_FAILURES = 5;
+const PRUNE_BATCH_SIZE = 1000;
 
 const LIVENESS_PENDING_CONSTRAINT = 'UQ_kyc_liveness_jobs_user_pending';
 
@@ -399,6 +400,48 @@ export class KycService {
       }
       await this.pollLivenessJob(job);
     }
+  }
+
+  // Attempts hold a cascading foreign key to liveness jobs, so an attempt that
+  // still has a pending job is kept: deleting it would silently delete the job.
+  async pruneBookkeeping(
+    olderThan: Date,
+  ): Promise<{ livenessJobs: number; attempts: number }> {
+    const livenessJobs = await this.deleteInBatches(
+      `DELETE FROM kyc_liveness_jobs WHERE id IN (
+         SELECT id FROM kyc_liveness_jobs
+         WHERE status <> 'pending' AND created_at < $1
+         LIMIT $2
+       ) RETURNING id`,
+      olderThan,
+    );
+    const attempts = await this.deleteInBatches(
+      `DELETE FROM kyc_verification_attempts WHERE id IN (
+         SELECT a.id FROM kyc_verification_attempts a
+         WHERE a.created_at < $1
+           AND NOT EXISTS (
+             SELECT 1 FROM kyc_liveness_jobs j
+             WHERE j.attempt_id = a.id AND j.status = 'pending'
+           )
+         LIMIT $2
+       ) RETURNING id`,
+      olderThan,
+    );
+    return { livenessJobs, attempts };
+  }
+
+  private async deleteInBatches(sql: string, olderThan: Date): Promise<number> {
+    let total = 0;
+    let deleted: number;
+    do {
+      const [rows] = await this.dataSource.query<[{ id: string }[], number]>(
+        sql,
+        [olderThan, PRUNE_BATCH_SIZE],
+      );
+      deleted = rows.length;
+      total += deleted;
+    } while (deleted === PRUNE_BATCH_SIZE);
+    return total;
   }
 
   // One last look before giving up, so a verdict the provider reached during a

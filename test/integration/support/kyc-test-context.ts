@@ -32,6 +32,7 @@ import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations
 import { CreateKycVerificationAttempts1787600000003 } from '../../../src/database/migrations/1787600000003-CreateKycVerificationAttempts';
 import { CreateKycLivenessJobs1787600000004 } from '../../../src/database/migrations/1787600000004-CreateKycLivenessJobs';
 import { AddKycLimitQueryIndexes1787600000005 } from '../../../src/database/migrations/1787600000005-AddKycLimitQueryIndexes';
+import { KycRetentionProcessor } from '../../../src/modules/kyc/internal/kyc-retention.processor';
 import { LivenessPollProcessor } from '../../../src/modules/kyc/internal/liveness-poll.processor';
 import { setupBodyParsers } from '../../../src/common/body-parsers';
 import { User } from '../../../src/modules/users/entities/user.entity';
@@ -129,6 +130,9 @@ export async function createKycTestContext(): Promise<KycTestContext> {
   const pollHost = app.get(LivenessPollProcessor, { strict: false });
   await pollHost.worker.waitUntilReady();
   await pollHost.worker.pause();
+  const retentionHost = app.get(KycRetentionProcessor, { strict: false });
+  await retentionHost.worker.waitUntilReady();
+  await retentionHost.worker.pause();
 
   const dataSource = moduleRef.get(DataSource);
 

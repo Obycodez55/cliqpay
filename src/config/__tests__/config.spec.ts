@@ -52,3 +52,18 @@ describe('IDENTIFIER_HASH_KEY', () => {
     ).toThrow('must differ from TRANSACTION_PIN_PEPPER');
   });
 });
+
+describe('KYC_RETENTION_DAYS', () => {
+  it('defaults to 30 days', () => {
+    expect(loadConfig(baseEnv()).kyc.retentionDays).toBe(30);
+  });
+
+  it('cannot be set below the 24-hour rate-limit window', () => {
+    expect(() => loadConfig({ ...baseEnv(), KYC_RETENTION_DAYS: '1' })).toThrow(
+      'KYC_RETENTION_DAYS',
+    );
+    expect(
+      loadConfig({ ...baseEnv(), KYC_RETENTION_DAYS: '2' }).kyc.retentionDays,
+    ).toBe(2);
+  });
+});

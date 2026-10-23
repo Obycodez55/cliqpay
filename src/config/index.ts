@@ -118,6 +118,7 @@ const envSchema = z
     INTERNAL_API_SECRET: z.string().min(32),
 
     KYC_PROVIDER: z.enum(['smileid', 'fake']).default('fake'),
+    KYC_RETENTION_DAYS: z.coerce.number().int().min(2).default(30),
     SMILE_ID_API_KEY: z.string().optional(),
     SMILE_ID_PARTNER_ID: z.string().optional(),
     SMILE_ID_BASE_URL: z.url().optional(),
@@ -288,6 +289,7 @@ function buildConfig(env: Env) {
     },
     kyc: {
       provider: env.KYC_PROVIDER,
+      retentionDays: env.KYC_RETENTION_DAYS,
       smileId: {
         apiKey: env.SMILE_ID_API_KEY,
         partnerId: env.SMILE_ID_PARTNER_ID,
