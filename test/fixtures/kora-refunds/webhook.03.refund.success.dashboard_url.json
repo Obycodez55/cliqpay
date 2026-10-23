@@ -1,0 +1,12 @@
+{
+  "capturedAt": "2026-10-23T07:37:06.272Z",
+  "method": "POST",
+  "path": "/webhooks/kora",
+  "headers": {
+    "content-type": "application/json",
+    "x-korapay-signature": "<hmac-sha256-hex>"
+  },
+  "signatureValidOverRawDataSlice": true,
+  "signatureValidOverReserializedData": true,
+  "rawBody": "{\"event\":\"refund.success\",\"data\":{\"amount\":1000,\"status\":\"success\",\"currency\":\"NGN\",\"reference\":\"RFD-cliqpay-spike-bt-1792740961307-1\",\"payment_reference\":\"KPY-CA-C366jmDIXmLwxtV\",\"created_at\":\"2026-10-23T07:37:06.037Z\",\"completed_at\":\"2026-10-23T07:37:06.078Z\"}}"
+}

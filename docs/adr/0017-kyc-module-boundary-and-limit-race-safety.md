@@ -110,17 +110,17 @@ the provider is called, and without counting those rows (and serializing the
 check with that insert) a user could start several checkouts that each look
 fine against a balance that hasn't moved yet, then pay them all and overshoot
 the cap through the ordinary in-app flow. The check and the pending-row insert
-share one transaction; the provider call stays outside it. A credit that
-bypasses initiation entirely (an out-of-band bank credit) is still out of
-scope.
+share one transaction; the provider call stays outside it. A funding that
+completes after initiation is checked again at completion, and a breach is
+held and refunded ([ADR-0021](0021-hold-then-refund-for-cap-breaching-funding.md)).
 
 Only `pending` fundings created within the last 24 hours count towards the
 total (a named constant in `ledger`, not config). Kora documents no expiry for
 a hosted checkout and the funding poll leaves a still-pending charge pending,
 so an abandoned checkout would otherwise hold cap headroom indefinitely. The
 trade-off: a checkout link older than 24 hours that is paid late still
-completes through the webhook and can overshoot the cap, the same class as an
-out-of-band credit.
+completes through the webhook, where ADR-0021's completion check holds and
+refunds it if it breaches the cap.
 
 **Amended 2026-10-17, before implementation.** The first draft of this ADR
 had `kyc` read `transactions` directly by raw SQL, citing `payments`'
@@ -218,8 +218,8 @@ recipient has since reached their cap.
 **Compensating credits are exempt.** `withdrawal_reversal`,
 `chargeback_reversal` and the other dispute/reversal postings never call `kyc`,
 so a cap can't strand money that is being returned. Funding initiation is
-unchanged; funding that completes by webhook after initiation is still outside
-the cap, as before.
+unchanged; funding that completes by webhook after initiation is checked at
+completion and a breach is held and refunded, not credited (ADR-0021).
 
 
 **Money requests are checked against the requester's cap at creation.**
@@ -229,3 +229,13 @@ for tier 0, `BALANCE_CAP_EXCEEDED` with the cap and remaining headroom
 otherwise. It is advisory, so it takes no advisory lock and writes nothing, and
 the requester may see their own limits. The payer's error at payment time is
 still the generic `RECIPIENT_UNABLE_TO_RECEIVE`.
+
+## Amendment (2026-10-23): webhook-completed funding, and a recorded gap
+
+Funding completion now takes the per-user lock and checks the cap; see
+[ADR-0021](0021-hold-then-refund-for-cap-breaching-funding.md).
+
+A raced-twin transfer replay (the same transfer request arriving twice at once)
+returns the twin's committed result without re-running the recipient check.
+That is correct, since it is the same transfer, and is recorded here because
+issue #48 listed it as a gap.

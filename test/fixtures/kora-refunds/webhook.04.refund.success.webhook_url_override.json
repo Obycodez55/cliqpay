@@ -1,0 +1,12 @@
+{
+  "capturedAt": "2026-10-23T07:38:18.756Z",
+  "method": "POST",
+  "path": "/wh/refund-override",
+  "headers": {
+    "content-type": "application/json",
+    "x-korapay-signature": "<hmac-sha256-hex>"
+  },
+  "signatureValidOverRawDataSlice": true,
+  "signatureValidOverReserializedData": true,
+  "rawBody": "{\"event\":\"refund.success\",\"data\":{\"amount\":1053.75,\"status\":\"success\",\"currency\":\"NGN\",\"reference\":\"RFD-cliqpay-spike-bt-1792740976159-2\",\"payment_reference\":\"KPY-CA-G14LZ9UqLbBDQWo\",\"created_at\":\"2026-10-23T07:38:18.431Z\",\"completed_at\":\"2026-10-23T07:38:18.493Z\"}}"
+}

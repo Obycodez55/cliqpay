@@ -1,0 +1,12 @@
+{
+  "capturedAt": "2026-10-23T07:39:29.972Z",
+  "method": "POST",
+  "path": "/webhooks/kora",
+  "headers": {
+    "content-type": "application/json",
+    "x-korapay-signature": "<hmac-sha256-hex>"
+  },
+  "signatureValidOverRawDataSlice": true,
+  "signatureValidOverReserializedData": true,
+  "rawBody": "{\"event\":\"refund.failed\",\"data\":{\"amount\":1053.75,\"status\":\"failed\",\"status_reason\":\"spike simulated failure\",\"currency\":\"NGN\",\"reference\":\"RFD-c3-f1\",\"payment_reference\":\"KPY-CA-9IOSxwj1cNH2EFr\",\"created_at\":\"2026-10-23T07:39:29.720Z\",\"completed_at\":\"2026-10-23T07:39:29.758Z\"}}"
+}

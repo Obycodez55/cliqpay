@@ -1,0 +1,24 @@
+{
+  "label": "refund.list.empty_or_all",
+  "capturedAt": "2026-10-23T07:34:41.953Z",
+  "durationMs": 261,
+  "request": {
+    "method": "GET",
+    "path": "/refunds?limit=5",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": true,
+      "message": "Refunds retrieved successfully",
+      "data": {
+        "has_more": false,
+        "refunds": []
+      }
+    }
+  }
+}

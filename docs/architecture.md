@@ -1,6 +1,8 @@
-# Cliqpay — Project Documentation (v13)
+# Cliqpay — Project Documentation (v14)
 
 > Cliqpay is a production-grade peer-to-peer payment platform. A Venmo-equivalent for Africa — built on NestJS, PostgreSQL, TypeORM, currently integrated with Kora.
+
+> **v14 changes:** Issue #48 design pass (balance cap on webhook-completed funding). A funding that completes by webhook or poll and would take the wallet over its tier cap is no longer credited: it is posted into a new provider-scoped `suspense` liability account (`funding` row status `held`) and refunded to the payer through Kora's Refunds API after the transaction commits, with the cap check made under the per-user advisory lock, which also closes the previously unlocked webhook credit. §4.3 becomes `float = Σ wallets + fee_income + suspense`. Kora's refund behaviour was verified against its sandbox first (`docs/research/kora-refunds.md`): Kora keeps its pay-in fee, so the refund is for the credited principal and the payer bears the fee (provisional, ADR-0021). A failed refund stays in suspense and is recovered by a refund poll, bounded retry and ops alerts. New transaction type `funding_refund` (one row per attempt), funding statuses `held` and `refunded`. See [ADR-0021](adr/0021-hold-then-refund-for-cap-breaching-funding.md).
 
 > **v13 changes:** Phase 6 design pass (KYC tiers). Kora's Identity API, checked against its actual docs during design, returns BVN/NIN lookup data (including address — no separate address-verification product exists) but only a same-photo face-match, not true liveness — it can't back Tier 3's "full KYC + liveness check" as originally assumed (ADR-0018). `KycProvider` is backed by a dedicated KYC provider instead (BVN/NIN lookup via Prembly, ADR-0020, which supersedes ADR-0018's original provider choice), so this also corrects §3's original "Kora... built-in KYC/KYB verification APIs" rationale for identity verification specifically — Kora remains the payment/payout provider, unaffected. A new `kyc` module owns `tier_limits` and `kyc_verifications`, keeping `ledger`'s zero-peer-dependency property intact the same way `transfers`/`withdrawals`/`disputes` do (ADR-0017); the daily-limit race is closed with a transaction-scoped Postgres advisory lock (`pg_advisory_xact_lock`) rather than reaching into `ledger`'s private wallet-row lock, since there is no seam to hook a check into that private implementation without coupling the two modules. Also: the daily limit is one aggregate figure across transfers-out and withdrawals (not per-operation-type), reset on a calendar day pinned to `Africa/Lagos` rather than a literal rolling 24h window; the balance cap is enforced at funding-initiation and on incoming P2P transfers, with webhook-completed overflow explicitly out of scope; Tier 3 turned out not to need new object-storage infrastructure after all, since the selfie and liveness frames go inline in the submit request to the liveness provider's job and are discarded; `TRANSFER_MAX_AMOUNT`/`WITHDRAWAL_MAX_AMOUNT` are retired now that the tier daily limit subsumes them (§6 Phase 3/4's own notes already flagged these as interim).
 
@@ -126,7 +128,7 @@ Every money movement that touches multiple accounts must succeed or fail as a un
 
 **[v2] Lock ordering:** any operation that locks more than one wallet row (e.g. a P2P transfer locking sender + recipient) must acquire those locks in a single global order — by `account_id` ascending, regardless of transfer direction. Without this, two concurrent transfers between the same pair of accounts in opposite directions will deadlock under load. Lock rows first, *then* check balance, *then* write the debit — never check-then-lock (that's a TOCTOU race that lets a balance check pass and then get invalidated before the debit lands).
 
-**[v13] User-level locks:** KYC limit checks take a per-user advisory lock (`pg_advisory_xact_lock(hashtext(userId))`); a transfer that needs both the sender's and the recipient's takes them in ascending lock-key order, once when the keys are equal, and does so before any wallet-row lock (ADR-0017).
+**[v13] User-level locks:** KYC limit checks take a per-user advisory lock (`pg_advisory_xact_lock(hashtext(userId))`); a transfer that needs both the sender's and the recipient's takes them in ascending lock-key order, once when the keys are equal, and does so before any wallet-row lock (ADR-0017). **[v14]** The funding completion path (webhook and poll) takes the same lock before its cap check and before any row lock (ADR-0021).
 
 ### 3.6 Provider Abstraction — **[v3, new]**
 
@@ -170,9 +172,10 @@ MFA is a **challenge/verify** cycle (`mfa_challenges`), not a single check: a ch
 | `fee_expense`  | **Yes**                | Expense | **[v2]** That provider's own fee, gross, before recovery                                   |
 | `fee_recovery` | **Yes**                | Equity  | **[v2]** Offsetting recovery — always equals fee_expense above                             |
 | `fee_income`   | No — per currency only | Equity  | Cliqpay's own platform fee revenue, regardless of which provider processed the transaction |
+| `suspense`     | **Yes**                | Liability | **[v14]** Money in a provider's float that is owed back to a payer, not to a user wallet: a funding held because crediting it would breach the balance cap, until its refund settles |
 
 
-**[v3] Why the split:** `float`, `fee_expense`, and `fee_recovery` are provider-scoped because they represent something specific to *that* provider — real cash sitting there, and that provider's own fee structure. `fee_income` is Cliqpay's own margin and doesn't change based on which rail moved the money, so it stays per-currency only. Example for NGN with Kora as the only active provider: `float_ngn` (provider: `'kora'`), `fee_expense_ngn` (provider: `'kora'`), `fee_recovery_ngn` (provider: `'kora'`), `fee_income_ngn` (provider: `null`). If Paystack were added later for NGN, it would get its own `float_ngn` / `fee_expense_ngn` / `fee_recovery_ngn` rows (same role, same currency, different `provider` value) — `fee_income_ngn` stays a single shared account.
+**[v3] Why the split:** `float`, `fee_expense`, and `fee_recovery` are provider-scoped because they represent something specific to *that* provider — real cash sitting there, and that provider's own fee structure. `fee_income` is Cliqpay's own margin and doesn't change based on which rail moved the money, so it stays per-currency only. Example for NGN with Kora as the only active provider: `float_ngn` (provider: `'kora'`), `fee_expense_ngn` (provider: `'kora'`), `fee_recovery_ngn` (provider: `'kora'`), `fee_income_ngn` (provider: `null`). If Paystack were added later for NGN, it would get its own `float_ngn` / `fee_expense_ngn` / `fee_recovery_ngn` rows (same role, same currency, different `provider` value) — `fee_income_ngn` stays a single shared account. **[v14]** `suspense` is provider-scoped like `float`, because the held money sits in one provider's balance.
 
 **User Accounts** — one wallet per user per currency they hold, never provider-scoped:
 
@@ -215,6 +218,35 @@ transaction.provider_reference: <Kora's own reference for this payment>
 **Balance effect:** `float_ngn` ↑ by net_amount · `user_wallet` ↑ by net_amount · expense/recovery pair nets to zero.
 
 **Equation check:** Debits = net_amount + provider_fee = gross_amount. Credits = net_amount + provider_fee = gross_amount. ✓
+
+---
+
+#### Funding held, then refunded — **[v14, new]**
+
+*A funding that completes (webhook or poll) while crediting it would take the wallet over its tier balance cap. The wallet is not credited; the payment is held and refunded to the payer ([ADR-0021](adr/0021-hold-then-refund-for-cap-breaching-funding.md)).*
+
+Hold, on the funding row (`pending` -> `held`), in the transaction that took the user lock and found the breach:
+
+```
+DEBIT  float_ngn         net_amount
+CREDIT suspense_ngn      net_amount
+DEBIT  fee_expense_ngn   provider_fee
+CREDIT fee_recovery_ngn  provider_fee
+
+metadata: { gross_amount }
+transaction.provider: 'kora'
+
+```
+
+The same transaction creates a `funding_refund` attempt row (`pending`, no entries). After commit the refund is initiated through the provider for `net_amount`. When the refund succeeds (attempt row `pending` -> `completed`, funding `held` -> `refunded`):
+
+```
+DEBIT  suspense_ngn      net_amount
+CREDIT float_ngn         net_amount
+
+```
+
+A failed attempt posts nothing; the money stays in suspense and a later attempt (a new row and a new provider reference) can settle it. Only the credited principal is refunded: Kora keeps its pay-in fee, so the payer bears it and Cliqpay bears no provider cost. This is provisional until refunds of hosted-checkout and card payments are verified (`docs/research/kora-refunds.md` section 3); refunding the gross instead would reverse the fee recovery and would amend §4.3.
 
 ---
 
@@ -302,13 +334,15 @@ CREDIT float_ngn       amount
 At any point in time, per currency, this must hold across **all active providers for that currency**:
 
 ```
-Σ over active providers p: float_<ccy>[p] = Σ(user wallet balances in <ccy>) + fee_income_<ccy>
+Σ over active providers p: float_<ccy>[p] = Σ(user wallet balances in <ccy>) + fee_income_<ccy> + Σ over active providers p: suspense_<ccy>[p]
 
 ```
 
-With Kora as the only active provider, this collapses to exactly the v2 equation (`float_ngn[kora] = Σ(user wallets) + fee_income_ngn`) — the generalization only starts to matter the day a second provider is added, and it costs nothing to write it this way now.
+With Kora as the only active provider, this collapses to exactly the v2 equation (`float_ngn[kora] = Σ(user wallets) + fee_income_ngn + suspense_ngn[kora]`) — the generalization only starts to matter the day a second provider is added, and it costs nothing to write it this way now.
 
 **[v2] Note:** `fee_expense` and `fee_recovery` don't appear in this equation — they always move together in equal amounts, so they cancel out and never affect the invariant. They exist purely for fee reporting, not for reconciliation math.
+
+**[v14] Suspense:** held money is still in the provider's balance, so float does not change when a payment is held; it falls when the refund settles. Suspense is the one term added to the right-hand side since v2.
 
 **[v2] Important limitation:** this equation is guaranteed to hold by construction — every transaction posts balanced debits and credits, so internal self-consistency can't actually break unless someone bypasses the ledger layer. It tells you your books agree with themselves. It does **not** tell you your books agree with reality — see §4.4.
 
@@ -320,6 +354,7 @@ The check that actually catches real production failures — a dropped webhook, 
 - For each (provider, currency) pair: fetch that provider's reported balance, compare to `float_<ccy>[provider]`'s ledger balance
 - Mismatch → alert immediately, do not auto-correct — a human investigates before anything is adjusted
 - Every run's result (provider, currency, match/mismatch, both values, timestamp) is logged and queryable
+- **[v14]** Kora debits its balance when a refund is initiated, before the ledger settles it, so the comparison subtracts refunds initiated but not yet settled from float, and the report and the mismatch alert carry the suspense balance and the in-flight refund total
 
 This is a first-class production requirement, not a nice-to-have — it belongs in Phase 2, as soon as real money starts moving.
 
@@ -331,7 +366,7 @@ This is a first-class production requirement, not a nice-to-have — it belongs 
 accounts
   id                uuid PK
   type              enum (asset | liability | equity | expense)
-  role              enum (float | fee_income | fee_expense | fee_recovery | fx_clearing | fx_spread_income | user_wallet)
+  role              enum (float | fee_income | fee_expense | fee_recovery | suspense | fx_clearing | fx_spread_income | user_wallet)
   provider          varchar nullable   -- CHECK (provider IN ('kora')) — set for float / fee_expense / fee_recovery; null for fee_income, fx_*, user_wallet
   user_id           uuid FK nullable   -- null for system accounts
   currency          varchar            -- ISO 4217, e.g. 'NGN', 'USD'
@@ -343,8 +378,8 @@ transactions
   reference             varchar unique     -- Cliqpay's own idempotency key (client-supplied for client-initiated ops)
   provider              varchar nullable   -- CHECK (provider IN ('kora')) — which provider processed this; null for purely internal transactions (p2p, profit withdrawal)
   provider_reference     varchar nullable  -- the provider's own reference for this operation; indexed, used to correlate webhooks
-  type                  enum (funding | p2p_transfer | withdrawal | chargeback | profit_withdrawal | bill_split | scheduled)
-  status                enum (pending | completed | failed | reversed | disputed)
+  type                  enum (funding | funding_refund | p2p_transfer | withdrawal | withdrawal_reversal | chargeback | chargeback_reversal | profit_withdrawal | bill_split | scheduled)
+  status                enum (pending | completed | failed | reversed | disputed | held | refunded)   -- held/refunded: funding rows only ([v14])
   reverses_transaction_id uuid FK nullable  -- set on chargeback/reversal rows
   amount                bigint             -- minor units
   currency              varchar
@@ -423,6 +458,8 @@ disputes
   updated_at                timestamptz
 
 ```
+
+> **[v14] Note on** `funding_refund`**:** one row per refund attempt of a held funding, `reverses_transaction_id` pointing at the funding row, `reference` = `provider_reference` = the refund reference (`rfd-<funding id>-<attempt>`), `status` `pending` -> `completed` | `failed`. Only a `completed` attempt has ledger entries. `funding.status` `held` means the money is in suspense awaiting resolution; `refunded` means a refund attempt completed.
 
 > **[v9] Note on** `money_requests.status`**:** there is deliberately no
 > `expired` value. Expiry is derived from `expires_at` at read time and
@@ -512,6 +549,7 @@ Each phase exits with a working, production-quality slice of the system. No phas
 - **[v2]** External reconciliation job — scheduled diff of each provider's `float_<ccy>` against that provider's reported balance, alerting on mismatch
 - Transaction history endpoint (paginated)
 - Email notification on successful funding
+- **[v14]** A funding that would breach the balance cap when it completes is held and refunded instead of credited (§4.2, Phase 6)
 
 **Key concepts:** Webhooks, idempotency, event-driven money movement, atomic writes, external reconciliation, provider adapter pattern
 
@@ -607,7 +645,7 @@ Each phase exits with a working, production-quality slice of the system. No phas
 - `tier_limits` seeded with CBN-shaped reference defaults (daily limit + balance cap per tier per currency) — configuration data, not hardcoded, and explicitly labeled as a snapshot to reconfirm against the live circular before any real launch. **[v13]** The daily limit is one aggregate figure across transfers-out and withdrawals combined, not per-operation-type — funding (money in) isn't limited by it at all, only indirectly bounded by the balance cap.
 - **[v13]** A new `kyc` module owns `tier_limits`, `kyc_verifications`, and the verification/upgrade HTTP surface, keeping `ledger`'s zero-peer-dependency property intact the same way `transfers`/`withdrawals`/`disputes` do. Tier itself stays on `User`, owned by `users` (same shape as `isFrozen`, ADR-0016) — `kyc` calls `usersService.setKycTier()`, never writes the column directly. See [ADR-0017](adr/0017-kyc-module-boundary-and-limit-race-safety.md).
 - **[v13]** Limit checks run inside the same locked transaction as the money movement — `kyc.checkAndReserveLimit(manager, userId, amount, readDebitedSince)`, called by `transfers`/`withdrawals` with their own open `EntityManager` before posting; the caller supplies the ledger fact (the user's debited principal since the start of the WAT day, via a new read-only `ledger.getDebitedSince`), so `kyc` imports no ledger code and reads no ledger table. The race (concurrent requests jointly exceeding a limit) is closed with a transaction-scoped Postgres advisory lock (`pg_advisory_xact_lock(hashtext(userId))`), not by hooking into `ledger`'s private wallet-row lock, which has no seam for a caller to plug into. The window is a **calendar day reset in `Africa/Lagos` (WAT)**, not a literal rolling 24h window.
-- **[v13]** For funding, the balance cap is enforced at initiation (incoming transfers are covered by the next bullet), against the projected balance: the wallet balance plus the user's in-flight `pending` funding transactions plus the requested amount must not exceed the tier's cap, otherwise checkout is never started. `kyc.checkBalanceCap(manager, userId, requested, readBalanceAndPending)` takes the same per-user advisory lock as the daily-limit check and the caller supplies the ledger facts; the check and the pending-funding insert share one transaction, with the provider call outside it. Counting pending fundings is what stops several unpaid checkouts from each passing against a balance that hasn't moved. A webhook-completed funding transaction that pushes a wallet over the cap anyway (e.g. an out-of-band bank credit) is explicitly out of scope for this phase — a known gap, not an oversight. Only `pending` fundings created in the last 24 hours count (a named constant in `ledger`, not config): Kora documents no expiry for a hosted checkout, so an abandoned one would otherwise hold headroom forever. The trade-off: a link older than 24 hours that is paid late still completes through the webhook and can overshoot the cap.
+- **[v13]** For funding, the balance cap is enforced at initiation (incoming transfers are covered by the next bullet), against the projected balance: the wallet balance plus the user's in-flight `pending` funding transactions plus the requested amount must not exceed the tier's cap, otherwise checkout is never started. `kyc.checkBalanceCap(manager, userId, requested, readBalanceAndPending)` takes the same per-user advisory lock as the daily-limit check and the caller supplies the ledger facts; the check and the pending-funding insert share one transaction, with the provider call outside it. Counting pending fundings is what stops several unpaid checkouts from each passing against a balance that hasn't moved. **[v14]** A funding that completes by webhook or poll is checked again at completion, under the same per-user lock: `kyc.checkIncomingCredit` (non-throwing, caller supplies the ledger facts) compares the stored balance plus the credit with the cap, without counting other pending fundings, which are checked when they complete. A breach is held in `suspense` and refunded through the provider instead of credited (§4.2, ADR-0021). An out-of-band bank credit with no matching pending funding is not credited at all today (it surfaces as a reconciliation mismatch). Withdrawal and chargeback reversals stay exempt and can overshoot the cap by their own amount. Only `pending` fundings created in the last 24 hours count (a named constant in `ledger`, not config): Kora documents no expiry for a hosted checkout, so an abandoned one would otherwise hold headroom forever. The trade-off: a link older than 24 hours that is paid late still completes through the webhook, where the completion check holds and refunds it if it breaches the cap.
 - **[v13]** The balance cap also bounds incoming P2P transfers (`sendMoney` and money-request payments): `kyc.checkTransferLimits` takes the sender's and the recipient's advisory locks in ascending lock-key order (never sender-then-recipient, which deadlocks A->B against B->A), then checks the sender's daily limit and the recipient's cap (balance + pending funding + amount). A refusal is `RECIPIENT_UNABLE_TO_RECEIVE` with no details, so the sender learns nothing of the recipient's tier or balance; a tier-0 recipient cannot receive any transfer until verified. Replays still win over the check, and compensating credits (withdrawal and chargeback reversals) are exempt. See [ADR-0017](adr/0017-kyc-module-boundary-and-limit-race-safety.md).
 - **[v13]** Creating a money request also checks the requester's own receive headroom: `kyc.checkCanReceive` rejects a request the requester could not currently receive (`KYC_VERIFICATION_REQUIRED` for tier 0, `BALANCE_CAP_EXCEEDED` with the remaining headroom otherwise), so a request that is already unpayable is never sent. It is advisory (no lock, no write); a request can still become unpayable later, and the payer's error stays the generic `RECIPIENT_UNABLE_TO_RECEIVE`.
 - **[v13]** `TRANSFER_MAX_AMOUNT`/`WITHDRAWAL_MAX_AMOUNT` (§6 Phase 3/4's interim ceilings) are retired — a single transfer/withdrawal that alone exceeds the tier's daily limit already fails the same check a cumulative one would, so the flat config ceiling is redundant once tier limits exist. The `_MIN_AMOUNT` values are untouched.
@@ -749,6 +787,7 @@ These are non-negotiable standards applied across all phases, not deferred to a 
 - Ledger entries are append-only — never updated or deleted; reversals are compensating transactions, never mutations. **[v8]** DB-enforced, not just application convention: a trigger rejects any `UPDATE`/`DELETE` against `ledger_entries` outright, regardless of which code path issues it — added during Phase 2's audit (L2) after finding this held only because every code path happened to never violate it, not because anything stopped one from doing so.
 - **[v7]** This extends to migrations: no migration ever `UPDATE`s or `DELETE`s a row in `ledger_entries` or a historical `transactions` row, including "just this once" bug fixes — a correction is always a new compensating transaction, never a migration touching old data
 - **[v7]** Database backups with point-in-time recovery enabled from day one — usually a checkbox on managed Postgres, not custom work, and the one thing that actually protects against losing the ledger outright
+- **[v14]** Held money lives in the provider-scoped `suspense` liability account (§4.1); a refund settles it with a compensating posting, never a mutation of the hold
 - Internal invariant (§4.3) reconciliation runnable on demand and schedulable as a background job
 - **[v2] External reconciliation (§4.4), per provider, against each provider's reported balance — the check that actually catches real drift, not just self-consistency**
 - All monetary values stored and computed as integer minor units — never floating point, never a shared decimal type without a fixed scale

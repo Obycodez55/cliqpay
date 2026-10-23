@@ -1,0 +1,26 @@
+{
+  "label": "refund.initiate.already_fully_refunded",
+  "capturedAt": "2026-10-23T07:42:38.903Z",
+  "durationMs": 325,
+  "request": {
+    "method": "POST",
+    "path": "/refunds/initiate",
+    "body": {
+      "payment_reference": "cliqpay-spike-bt-1792740961307-1",
+      "reference": "RFD-bt1-again",
+      "amount": 100
+    }
+  },
+  "response": {
+    "status": 409,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": false,
+      "code": "AA021",
+      "message": "A full reversal has already been processed for this transaction",
+      "data": null
+    }
+  }
+}

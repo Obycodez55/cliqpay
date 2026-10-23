@@ -1,0 +1,12 @@
+{
+  "capturedAt": "2026-10-23T07:36:32.959Z",
+  "method": "POST",
+  "path": "/wh/charge",
+  "headers": {
+    "content-type": "application/json",
+    "x-korapay-signature": "<hmac-sha256-hex>"
+  },
+  "signatureValidOverRawDataSlice": true,
+  "signatureValidOverReserializedData": true,
+  "rawBody": "{\"event\":\"charge.success\",\"data\":{\"reference\":\"cliqpay-spike-bt-1792740961307-1\",\"payment_reference\":\"cliqpay-spike-bt-1792740961307-1\",\"currency\":\"NGN\",\"amount\":1000,\"fee\":53.75,\"payment_method\":\"bank_transfer\",\"status\":\"success\"}}"
+}

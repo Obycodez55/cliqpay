@@ -1,0 +1,35 @@
+{
+  "label": "refund.initiate.full_customer_bore_fee_webhook_override",
+  "capturedAt": "2026-10-23T07:38:18.605Z",
+  "durationMs": 405,
+  "request": {
+    "method": "POST",
+    "path": "/refunds/initiate",
+    "body": {
+      "payment_reference": "cliqpay-spike-bt-1792740976159-2",
+      "reference": "RFD-cliqpay-spike-bt-1792740976159-2",
+      "reason": "cliqpay spike",
+      "webhook_url": "https://tunnel.example.invalid/wh/refund-override"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": true,
+      "message": "Refund successfully initiated",
+      "data": {
+        "refund_reference": "RFD-cliqpay-spike-bt-1792740976159-2",
+        "refund_date": "2026-10-23T07:38:18.431Z",
+        "status": "processing",
+        "payment_reference": "cliqpay-spike-bt-1792740976159-2",
+        "reason": "cliqpay spike",
+        "amount_returned": 1053.75,
+        "channel": "api",
+        "currency": "NGN"
+      }
+    }
+  }
+}

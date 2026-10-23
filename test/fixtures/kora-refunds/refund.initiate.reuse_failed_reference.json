@@ -1,0 +1,25 @@
+{
+  "label": "refund.initiate.reuse_failed_reference",
+  "capturedAt": "2026-10-23T07:40:55.910Z",
+  "durationMs": 225,
+  "request": {
+    "method": "POST",
+    "path": "/refunds/initiate",
+    "body": {
+      "payment_reference": "cliqpay-spike-bt-1792741121266-c3",
+      "reference": "RFD-c3-f1"
+    }
+  },
+  "response": {
+    "status": 429,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": false,
+      "error": "too_many_requests",
+      "message": "Possible duplicate refund detected, please confirm and try again in 56 seconds",
+      "data": null
+    }
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "label": "refund.initiate.exceeds_paid",
+  "capturedAt": "2026-10-23T07:41:15.609Z",
+  "durationMs": 2235,
+  "request": {
+    "method": "POST",
+    "path": "/refunds/initiate",
+    "body": {
+      "payment_reference": "cliqpay-spike-bt-1792741121266-c5",
+      "reference": "RFD-c5-x",
+      "amount": 5000
+    }
+  },
+  "response": {
+    "status": 422,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": false,
+      "code": "AA025",
+      "message": "Refund amount can't be more than NGN 1053.75",
+      "data": null
+    }
+  }
+}

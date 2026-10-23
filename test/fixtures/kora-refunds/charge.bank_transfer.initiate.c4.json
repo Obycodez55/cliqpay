@@ -1,0 +1,53 @@
+{
+  "label": "charge.bank_transfer.initiate.c4",
+  "capturedAt": "2026-10-23T07:38:42.995Z",
+  "durationMs": 452,
+  "request": {
+    "method": "POST",
+    "path": "/charges/bank-transfer",
+    "body": {
+      "reference": "cliqpay-spike-bt-1792741121266-c4",
+      "amount": 1000,
+      "currency": "NGN",
+      "merchant_bears_cost": false,
+      "customer": {
+        "email": "spike@example.com",
+        "name": "Spike Tester"
+      },
+      "notification_url": "https://tunnel.example.invalid/wh/charge"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": true,
+      "message": "Bank transfer initiated successfully",
+      "data": {
+        "currency": "NGN",
+        "amount": 1000,
+        "amount_expected": 1053.75,
+        "fee": 50,
+        "vat": 3.75,
+        "reference": "cliqpay-spike-bt-1792741121266-c4",
+        "payment_reference": "cliqpay-spike-bt-1792741121266-c4",
+        "status": "processing",
+        "narration": "Payment on <merchant>",
+        "merchant_bears_cost": false,
+        "bank_account": {
+          "account_name": "<merchant>-CHKOUT",
+          "account_number": "7504009479",
+          "bank_name": "Test Bank",
+          "bank_code": "000",
+          "expiry_date_in_utc": "2026-10-23T09:38:42.925Z"
+        },
+        "customer": {
+          "name": "Spike Tester",
+          "email": "spike@example.com"
+        }
+      }
+    }
+  }
+}

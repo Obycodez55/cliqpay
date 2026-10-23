@@ -1,0 +1,26 @@
+{
+  "label": "refund.list.status_failed",
+  "capturedAt": "2026-10-23T07:44:18.901Z",
+  "durationMs": 266,
+  "request": {
+    "method": "GET",
+    "path": "/refunds?status=failed&limit=5",
+    "body": null
+  },
+  "response": {
+    "status": 400,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": false,
+      "code": "AA027",
+      "message": "invalid request data",
+      "data": {
+        "status": {
+          "message": "status must be an array"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "label": "refund.initiate.retry_after_failed_success.after65s",
+  "capturedAt": "2026-10-23T07:40:52.179Z",
+  "durationMs": 1320,
+  "request": {
+    "method": "POST",
+    "path": "/refunds/initiate",
+    "body": {
+      "payment_reference": "cliqpay-spike-bt-1792741121266-c3",
+      "reference": "RFD-c3-s2",
+      "completion_status": "success",
+      "status_reason": "spike retry"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": true,
+      "message": "Refund successfully initiated",
+      "data": {
+        "refund_reference": "RFD-c3-s2",
+        "refund_date": "2026-10-23T07:40:52.054Z",
+        "status": "processing",
+        "payment_reference": "cliqpay-spike-bt-1792741121266-c3",
+        "amount_returned": 1053.75,
+        "channel": "api",
+        "currency": "NGN"
+      }
+    }
+  }
+}

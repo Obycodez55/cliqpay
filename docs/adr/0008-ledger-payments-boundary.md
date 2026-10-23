@@ -183,3 +183,7 @@ supplies `getWalletCapacity`, which takes the ledger readers as arguments (the
 same shape as the enforcement checks) and reuses their internals, so the
 figures cannot disagree with what enforcement allows.
 
+ADR-0021 applies the same test to refunds: settling a refund (`DR suspense /
+CR float`) is a ledger posting rule; initiating a refund and reading its
+status is a `payments` concern, on the same seam: `payments` hands `ledger`
+provider facts.

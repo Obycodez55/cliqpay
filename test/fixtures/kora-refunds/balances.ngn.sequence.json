@@ -1,0 +1,109 @@
+{
+  "note": "Sandbox NGN balance after each step (GET /balances data.NGN)",
+  "steps": [
+    {
+      "label": "balances.after_bt1_success",
+      "at": "2026-10-23T07:36:51.923Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6817916.8
+      }
+    },
+    {
+      "label": "balances.before_r1",
+      "at": "2026-10-23T07:37:05.788Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6817916.8
+      }
+    },
+    {
+      "label": "balances.after_r1_initiate",
+      "at": "2026-10-23T07:37:06.412Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6816916.8
+      }
+    },
+    {
+      "label": "balances.after_r1_polls",
+      "at": "2026-10-23T07:37:50.687Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6816916.8
+      }
+    },
+    {
+      "label": "balances.before_r2",
+      "at": "2026-10-23T07:38:18.186Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6816916.8
+      }
+    },
+    {
+      "label": "balances.after_r2",
+      "at": "2026-10-23T07:38:21.960Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6815863.05
+      }
+    },
+    {
+      "label": "balances.before_c3",
+      "at": "2026-10-23T07:39:29.460Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6818863.05
+      }
+    },
+    {
+      "label": "balances.after_c3_failed",
+      "at": "2026-10-23T07:39:33.136Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6818863.05
+      }
+    },
+    {
+      "label": "balances.after_c3_retry",
+      "at": "2026-10-23T07:39:37.134Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6818863.05
+      }
+    },
+    {
+      "label": "balances.after_c3_retry_ok",
+      "at": "2026-10-23T07:40:55.457Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6817809.3
+      }
+    },
+    {
+      "label": "balances.before_c4_partial",
+      "at": "2026-10-23T07:41:18.614Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6817710.3
+      }
+    },
+    {
+      "label": "balances.after_c4_partial",
+      "at": "2026-10-23T07:41:22.676Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6816710.3
+      }
+    },
+    {
+      "label": "balances.final",
+      "at": "2026-10-23T07:44:18.635Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6816610.3
+      }
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  "label": "guard.balances",
+  "capturedAt": "2026-10-23T07:34:32.663Z",
+  "durationMs": 1361,
+  "request": {
+    "method": "GET",
+    "path": "/balances",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": true,
+      "message": "success",
+      "data": {
+        "EGP": {
+          "pending_balance": 0,
+          "available_balance": 5000000
+        },
+        "GHS": {
+          "pending_balance": 0,
+          "available_balance": 5000000
+        },
+        "KES": {
+          "pending_balance": 0,
+          "available_balance": 5000000
+        },
+        "NGN": {
+          "pending_balance": 0,
+          "available_balance": 6815970.55
+        },
+        "TZS": {
+          "pending_balance": 0,
+          "available_balance": 5000000
+        },
+        "USD": {
+          "pending_balance": 0,
+          "available_balance": 5000000,
+          "issuing_balance": 1000
+        },
+        "XAF": {
+          "pending_balance": 0,
+          "available_balance": 5000000
+        },
+        "XOF": {
+          "pending_balance": 0,
+          "available_balance": 5000000
+        },
+        "ZAR": {
+          "pending_balance": 0,
+          "available_balance": 5000000
+        }
+      }
+    }
+  }
+}

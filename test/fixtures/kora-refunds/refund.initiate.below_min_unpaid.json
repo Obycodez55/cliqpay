@@ -1,0 +1,26 @@
+{
+  "label": "refund.initiate.below_min_unpaid",
+  "capturedAt": "2026-10-23T07:36:18.267Z",
+  "durationMs": 299,
+  "request": {
+    "method": "POST",
+    "path": "/refunds/initiate",
+    "body": {
+      "payment_reference": "cliqpay-spike-1792740920729-a",
+      "reference": "RFD-spike-min-1792740977968",
+      "amount": 50
+    }
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": false,
+      "code": "AA026",
+      "message": "Transaction not found",
+      "data": null
+    }
+  }
+}
