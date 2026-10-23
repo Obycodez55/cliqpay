@@ -383,19 +383,66 @@ export class PaymentsService {
       }
     }
 
-    const result = await this.ledgerService.postFunding({
+    await this.completeFunding({
       reference: data.reference,
       netAmount,
       providerFee,
       providerStatus,
     });
-    if (!result) {
-      // Duplicate delivery of an already-resolved transaction, or a
-      // provider-reported failure — either way, nothing further to publish.
+  }
+
+  // The one path a funding outcome takes, from the webhook and the poll
+  // alike. A success is checked against the user's balance cap under their
+  // advisory lock, in the same transaction that posts it: credited when it
+  // fits, held in suspense when it would breach the cap (docs/adr/0021). A
+  // failed outcome moves no money, so it skips the check.
+  private async completeFunding(facts: PostFundingFacts): Promise<void> {
+    const owner =
+      facts.providerStatus === 'success'
+        ? await this.ledgerService.findPendingFundingOwner(facts.reference)
+        : null;
+    if (!owner) {
+      // Failed, unknown or already resolved: postFunding is idempotent and
+      // handles each.
+      const result = await this.ledgerService.postFunding(facts);
+      if (result) {
+        await this.publishFundingCompletedEvent(result);
+      }
       return;
     }
 
-    await this.publishFundingCompletedEvent(result);
+    const outcome = await runInTransaction(this.dataSource, async (manager) => {
+      const verdict = await this.kycService.checkIncomingCredit(
+        manager,
+        owner.userId,
+        facts.netAmount,
+        (m) => this.ledgerService.getWalletBalance(m, owner.userId),
+      );
+      if (verdict.allowed) {
+        const credited = await this.ledgerService.postFundingWithinTransaction(
+          manager,
+          facts,
+        );
+        return credited ? { kind: 'credited' as const, credited } : null;
+      }
+      const held = await this.ledgerService.holdFundingWithinTransaction(
+        manager,
+        facts,
+      );
+      return held ? { kind: 'held' as const, held } : null;
+    });
+    if (!outcome) {
+      // A duplicate delivery, or the poll and the webhook racing: the other
+      // one already resolved it.
+      return;
+    }
+    if (outcome.kind === 'credited') {
+      await this.publishFundingCompletedEvent(outcome.credited);
+      return;
+    }
+    this.logger.warn(
+      `completeFunding: funding "${outcome.held.fundingReference}" would take the wallet over its balance cap — held in suspense, refund attempt "${outcome.held.refundReference}" pending`,
+    );
   }
 
   // Issue #29. Resolves whichever of the two `pending` origins the
@@ -503,14 +550,7 @@ export class PaymentsService {
             providerStatus: 'failed',
           };
 
-    const result = await this.ledgerService.postFunding(facts);
-    if (!result) {
-      // The webhook (or an earlier poll tick) already resolved this —
-      // no-op, not a duplicate posting.
-      return;
-    }
-
-    await this.publishFundingCompletedEvent(result);
+    await this.completeFunding(facts);
   }
 
   // The withdrawal self-verify poll job (issue #31, mirrors #14's funding

@@ -254,7 +254,7 @@ describe('DisputesService', () => {
       );
     });
 
-    it.each(['pending', 'failed', 'reversed'] as const)(
+    it.each(['pending', 'failed', 'reversed', 'held', 'refunded'] as const)(
       'rejects a %s original transaction as not chargebackable',
       async (status) => {
         ledgerService.findFundingTransactionForChargeback.mockResolvedValue({

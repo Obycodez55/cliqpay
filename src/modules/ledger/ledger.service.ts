@@ -559,6 +559,37 @@ export class LedgerService {
     return Money.of(BigInt(row?.total ?? 0), wallet.currency);
   }
 
+  // The stored balance only, for a check that must not count pending
+  // fundings (a funding completing is itself still pending until it posts).
+  async getWalletBalance(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<Money> {
+    const wallet = await manager
+      .getRepository(Account)
+      .findOneByOrFail({ userId, role: 'user_wallet' });
+    return Money.of(wallet.balance, wallet.currency);
+  }
+
+  // Whose wallet a still-pending funding would credit, so a caller can take
+  // that user's lock before posting. Null for anything that is not a pending
+  // funding: nothing to lock for, and the posting itself decides what a
+  // duplicate or unknown reference means.
+  async findPendingFundingOwner(
+    reference: string,
+  ): Promise<{ userId: string } | null> {
+    const transaction = await this.dataSource
+      .getRepository(Transaction)
+      .findOneBy({ reference, type: 'funding', status: 'pending' });
+    if (!transaction?.recipientWalletId) {
+      return null;
+    }
+    const wallet = await this.dataSource
+      .getRepository(Account)
+      .findOneBy({ id: transaction.recipientWalletId });
+    return wallet?.userId ? { userId: wallet.userId } : null;
+  }
+
   // One statement, so the balance and the pending total come from the same
   // snapshot: a funding completing between two reads could otherwise be
   // missed by both. Only fundings inside the window count: Kora can leave an

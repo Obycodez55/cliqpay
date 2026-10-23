@@ -64,6 +64,15 @@ import { KycStatusResponseDto } from './dto/kyc-status-response.dto';
 // Becomes the user's own timezone once profiles carry one.
 const DEFAULT_USER_TIME_ZONE = 'Africa/Lagos';
 
+export type IncomingCreditVerdict =
+  | { allowed: true }
+  | {
+      allowed: false;
+      reason: 'zero_cap' | 'over_cap';
+      cap: Money;
+      remaining: Money;
+    };
+
 type BalanceAndPendingReader = (
   manager: EntityManager,
 ) => Promise<{ balance: Money; pending: Money }>;
@@ -654,6 +663,30 @@ export class KycService {
     };
   }
 
+  // For money that has already arrived (a funding completing by webhook or
+  // poll), where the answer is a decision, not an error: a breach is held
+  // and refunded by the caller. Only the stored balance counts — other
+  // pending fundings are checked when they complete, so counting them here
+  // would hold a payment that fits. A missing tier configuration still
+  // throws: that is a fault, not a verdict.
+  async checkIncomingCredit(
+    manager: EntityManager,
+    userId: string,
+    amount: Money,
+    readBalance: (manager: EntityManager) => Promise<Money>,
+  ): Promise<IncomingCreditVerdict> {
+    await this.lockUser(manager, userId);
+    return this.evaluateBalanceCapLocked(
+      manager,
+      userId,
+      amount,
+      async (m) => ({
+        balance: await readBalance(m),
+        pending: Money.zero(amount.currency),
+      }),
+    );
+  }
+
   // A P2P transfer bounds both ends: the sender's daily limit and the
   // recipient's balance cap. Both users' locks are taken before either check.
   // The recipient's refusal reveals nothing about their tier or balance.
@@ -724,24 +757,49 @@ export class KycService {
       overCap: (cap: Money, remaining: Money) => Error;
     },
   ): Promise<void> {
+    const verdict = await this.evaluateBalanceCapLocked(
+      manager,
+      userId,
+      requested,
+      readBalanceAndPending,
+    );
+    if (verdict.allowed) {
+      return;
+    }
+    throw verdict.reason === 'zero_cap'
+      ? errors.zeroCap()
+      : errors.overCap(verdict.cap, verdict.remaining);
+  }
+
+  private async evaluateBalanceCapLocked(
+    manager: EntityManager,
+    userId: string,
+    requested: Money,
+    readBalanceAndPending: BalanceAndPendingReader,
+  ): Promise<IncomingCreditVerdict> {
     const tierLimit = await this.tierLimitFor(
       manager,
       userId,
       requested.currency,
     );
     if (tierLimit.balanceCapMinor === null) {
-      return;
+      return { allowed: true };
     }
     if (tierLimit.balanceCapMinor === 0n) {
-      throw errors.zeroCap();
+      const zero = Money.zero(requested.currency);
+      return { allowed: false, reason: 'zero_cap', cap: zero, remaining: zero };
     }
 
     const cap = Money.of(tierLimit.balanceCapMinor, requested.currency);
     const { balance, pending } = await readBalanceAndPending(manager);
     const projected = balance.add(pending);
     if (projected.add(requested).greaterThan(cap)) {
-      throw errors.overCap(cap, remainingBelow(cap, projected));
+      const remaining = cap.greaterThan(projected)
+        ? cap.subtract(projected)
+        : Money.zero(requested.currency);
+      return { allowed: false, reason: 'over_cap', cap, remaining };
     }
+    return { allowed: true };
   }
 
   private async tierLimitFor(

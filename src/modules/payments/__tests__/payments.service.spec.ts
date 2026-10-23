@@ -2,7 +2,11 @@ import { UnauthorizedException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { AppConfig } from '../../../config';
 import { PaymentsService } from '../payments.service';
-import { LedgerService, PostFundingResult } from '../../ledger/ledger.service';
+import {
+  HoldFundingResult,
+  LedgerService,
+  PostFundingResult,
+} from '../../ledger/ledger.service';
 import { UsersService } from '../../users/users.service';
 import { KycService } from '../../kyc/kyc.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
@@ -30,6 +34,45 @@ const testConfig = {
   payments: { reconciliation: { alertEmail: 'ops@cliqpay.test' } },
 } as AppConfig;
 
+type CompletionLedger = jest.Mocked<
+  Pick<
+    LedgerService,
+    | 'postFunding'
+    | 'findPendingFundingOwner'
+    | 'getWalletBalance'
+    | 'postFundingWithinTransaction'
+    | 'holdFundingWithinTransaction'
+  >
+>;
+
+function completionLedger(): CompletionLedger {
+  return {
+    postFunding: jest.fn(),
+    findPendingFundingOwner: jest.fn().mockResolvedValue({ userId: 'user-1' }),
+    getWalletBalance: jest.fn(),
+    postFundingWithinTransaction: jest.fn(),
+    holdFundingWithinTransaction: jest.fn(),
+  };
+}
+
+function completionKyc() {
+  return {
+    checkIncomingCredit: jest.fn().mockResolvedValue({ allowed: true }),
+  };
+}
+
+const heldResult: HoldFundingResult = {
+  userId: 'user-1',
+  netAmount: Money.of(500_000n, 'NGN'),
+  fundingTransactionId: 'funding-1',
+  fundingReference: 'cliqpay-ref-1',
+  refundReference: 'rfd-funding-1-1',
+};
+
+const inlineTransaction = {
+  transaction: jest.fn((work: (manager: unknown) => unknown) => work({})),
+} as unknown as DataSource;
+
 function webhookBody(overrides: Partial<Record<string, unknown>> = {}) {
   return Buffer.from(
     JSON.stringify({
@@ -47,7 +90,8 @@ function webhookBody(overrides: Partial<Record<string, unknown>> = {}) {
 }
 
 describe('PaymentsService.handleKoraWebhook (charge events)', () => {
-  let ledgerService: jest.Mocked<Pick<LedgerService, 'postFunding'>>;
+  let ledgerService: CompletionLedger;
+  let kycService: ReturnType<typeof completionKyc>;
   let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let adapter: jest.Mocked<PaymentProviderAdapter>;
@@ -60,17 +104,16 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
   };
 
   beforeEach(() => {
-    ledgerService = {
-      postFunding: jest.fn(),
-    };
+    ledgerService = completionLedger();
+    kycService = completionKyc();
     usersService = { findById: jest.fn() };
     eventBus = { publish: jest.fn() };
     adapter = mockAdapter();
     service = new PaymentsService(
-      {} as DataSource,
+      inlineTransaction,
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
-      {} as KycService,
+      kycService as unknown as KycService,
       eventBus as unknown as EventBusService,
       adapter,
       testConfig,
@@ -95,8 +138,72 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
     expect(ledgerService.postFunding).not.toHaveBeenCalled();
   });
 
+  it('checks the cap for the pending funding owner before crediting', async () => {
+    ledgerService.postFundingWithinTransaction.mockResolvedValue(
+      postFundingResult,
+    );
+    usersService.findById.mockResolvedValue({
+      email: 'user@example.com',
+    } as Awaited<ReturnType<UsersService['findById']>>);
+
+    await service.handleKoraWebhook(webhookBody(), 'sig');
+
+    expect(kycService.checkIncomingCredit).toHaveBeenCalledWith(
+      expect.anything(),
+      'user-1',
+      Money.of(500_000n, 'NGN'),
+      expect.any(Function),
+    );
+    expect(ledgerService.holdFundingWithinTransaction).not.toHaveBeenCalled();
+  });
+
+  it('holds instead of crediting when the cap check refuses, and announces no completed funding', async () => {
+    kycService.checkIncomingCredit.mockResolvedValue({
+      allowed: false,
+      reason: 'over_cap',
+      cap: Money.of(30_000_000n, 'NGN'),
+      remaining: Money.zero('NGN'),
+    });
+    ledgerService.holdFundingWithinTransaction.mockResolvedValue(heldResult);
+
+    await service.handleKoraWebhook(webhookBody(), 'sig');
+
+    expect(ledgerService.holdFundingWithinTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        reference: 'cliqpay-ref-1',
+        netAmount: Money.of(500_000n, 'NGN'),
+        providerFee: Money.of(5_000n, 'NGN'),
+        providerStatus: 'success',
+      },
+    );
+    expect(ledgerService.postFundingWithinTransaction).not.toHaveBeenCalled();
+    expect(eventBus.publish).not.toHaveBeenCalled();
+  });
+
+  it('falls back to postFunding without a cap check when no pending funding exists for the reference', async () => {
+    ledgerService.findPendingFundingOwner.mockResolvedValue(null);
+    ledgerService.postFunding.mockResolvedValue(null);
+
+    await service.handleKoraWebhook(webhookBody(), 'sig');
+
+    expect(ledgerService.postFunding).toHaveBeenCalledTimes(1);
+    expect(kycService.checkIncomingCredit).not.toHaveBeenCalled();
+  });
+
+  it('records a provider-reported failure through postFunding without a cap check', async () => {
+    ledgerService.postFunding.mockResolvedValue(null);
+
+    await service.handleKoraWebhook(webhookBody({ status: 'failed' }), 'sig');
+
+    expect(ledgerService.postFunding).toHaveBeenCalledTimes(1);
+    expect(kycService.checkIncomingCredit).not.toHaveBeenCalled();
+  });
+
   it('publishes funding_completed after a successful posting', async () => {
-    ledgerService.postFunding.mockResolvedValue(postFundingResult);
+    ledgerService.postFundingWithinTransaction.mockResolvedValue(
+      postFundingResult,
+    );
     usersService.findById.mockResolvedValue({
       email: 'user@example.com',
     } as Awaited<ReturnType<UsersService['findById']>>);
@@ -118,8 +225,8 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
     });
   });
 
-  it('does not publish when postFunding reports a duplicate or unresolved delivery', async () => {
-    ledgerService.postFunding.mockResolvedValue(null);
+  it('does not publish when the posting reports a duplicate delivery', async () => {
+    ledgerService.postFundingWithinTransaction.mockResolvedValue(null);
 
     await service.handleKoraWebhook(webhookBody(), 'sig');
 
@@ -134,7 +241,9 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
   // permanently and silently dropping the notification despite the money
   // having posted correctly. See payments.service.ts's processFundingWebhookData.
   it('does not throw when publishing the completion notification fails, since the funding already posted', async () => {
-    ledgerService.postFunding.mockResolvedValue(postFundingResult);
+    ledgerService.postFundingWithinTransaction.mockResolvedValue(
+      postFundingResult,
+    );
     usersService.findById.mockResolvedValue({
       email: 'user@example.com',
     } as Awaited<ReturnType<UsersService['findById']>>);
@@ -148,7 +257,9 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
   });
 
   it('does not throw when looking up the user for notification fails, since the funding already posted', async () => {
-    ledgerService.postFunding.mockResolvedValue(postFundingResult);
+    ledgerService.postFundingWithinTransaction.mockResolvedValue(
+      postFundingResult,
+    );
     usersService.findById.mockRejectedValue(new Error('db blip'));
 
     await expect(
@@ -160,9 +271,9 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
 });
 
 describe('PaymentsService.pollStaleFundingTransactions', () => {
-  let ledgerService: jest.Mocked<
-    Pick<LedgerService, 'postFunding' | 'findStaleFundingTransactions'>
-  >;
+  let ledgerService: CompletionLedger &
+    jest.Mocked<Pick<LedgerService, 'findStaleFundingTransactions'>>;
+  let kycService: ReturnType<typeof completionKyc>;
   let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let adapter: jest.Mocked<PaymentProviderAdapter>;
@@ -177,17 +288,18 @@ describe('PaymentsService.pollStaleFundingTransactions', () => {
 
   beforeEach(() => {
     ledgerService = {
-      postFunding: jest.fn(),
+      ...completionLedger(),
       findStaleFundingTransactions: jest.fn().mockResolvedValue([]),
     };
+    kycService = completionKyc();
     usersService = { findById: jest.fn() };
     eventBus = { publish: jest.fn() };
     adapter = mockAdapter();
     service = new PaymentsService(
-      {} as DataSource,
+      inlineTransaction,
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
-      {} as KycService,
+      kycService as unknown as KycService,
       eventBus as unknown as EventBusService,
       adapter,
       testConfig,
@@ -201,7 +313,7 @@ describe('PaymentsService.pollStaleFundingTransactions', () => {
     expect(ledgerService.postFunding).not.toHaveBeenCalled();
   });
 
-  it('posts through postFunding and publishes when Kora reports success', async () => {
+  it('credits through the cap check and publishes when Kora reports success', async () => {
     ledgerService.findStaleFundingTransactions.mockResolvedValue([
       staleTransaction,
     ]);
@@ -210,19 +322,24 @@ describe('PaymentsService.pollStaleFundingTransactions', () => {
       netAmount: Money.of(500_000n, 'NGN'),
       providerFee: Money.of(5_000n, 'NGN'),
     });
-    ledgerService.postFunding.mockResolvedValue(postFundingResult);
+    ledgerService.postFundingWithinTransaction.mockResolvedValue(
+      postFundingResult,
+    );
     usersService.findById.mockResolvedValue({
       email: 'user@example.com',
     } as Awaited<ReturnType<UsersService['findById']>>);
 
     await service.pollStaleFundingTransactions();
 
-    expect(ledgerService.postFunding).toHaveBeenCalledWith({
-      reference: 'cliqpay-ref-1',
-      netAmount: Money.of(500_000n, 'NGN'),
-      providerFee: Money.of(5_000n, 'NGN'),
-      providerStatus: 'success',
-    });
+    expect(ledgerService.postFundingWithinTransaction).toHaveBeenCalledWith(
+      expect.anything(),
+      {
+        reference: 'cliqpay-ref-1',
+        netAmount: Money.of(500_000n, 'NGN'),
+        providerFee: Money.of(5_000n, 'NGN'),
+        providerStatus: 'success',
+      },
+    );
     expect(eventBus.publish).toHaveBeenCalledTimes(1);
   });
 
@@ -264,7 +381,7 @@ describe('PaymentsService.pollStaleFundingTransactions', () => {
       netAmount: Money.of(500_000n, 'NGN'),
       providerFee: Money.of(5_000n, 'NGN'),
     });
-    ledgerService.postFunding.mockResolvedValue(null);
+    ledgerService.postFundingWithinTransaction.mockResolvedValue(null);
 
     await service.pollStaleFundingTransactions();
 
@@ -283,14 +400,16 @@ describe('PaymentsService.pollStaleFundingTransactions', () => {
       netAmount: Money.of(100_000n, 'NGN'),
       providerFee: Money.of(1_000n, 'NGN'),
     });
-    ledgerService.postFunding.mockResolvedValue(postFundingResult);
+    ledgerService.postFundingWithinTransaction.mockResolvedValue(
+      postFundingResult,
+    );
     usersService.findById.mockResolvedValue({
       email: 'user@example.com',
     } as Awaited<ReturnType<UsersService['findById']>>);
 
     await service.pollStaleFundingTransactions();
 
-    expect(ledgerService.postFunding).toHaveBeenCalledTimes(1);
+    expect(ledgerService.postFundingWithinTransaction).toHaveBeenCalledTimes(1);
   });
 });
 
