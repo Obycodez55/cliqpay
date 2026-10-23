@@ -88,6 +88,7 @@ function maskAccountNumber(accountNumber: string): string {
 export class WithdrawalsService {
   private readonly logger = new Logger(WithdrawalsService.name);
   private readonly encryptionKey: Buffer;
+  private readonly identifierHashKey: Buffer;
 
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
@@ -100,6 +101,7 @@ export class WithdrawalsService {
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {
     this.encryptionKey = encryptionKeyFromHex(config.encryption.key);
+    this.identifierHashKey = encryptionKeyFromHex(config.identifierHash.key);
   }
 
   private get bankAccountRepo(): Repository<BankAccount> {
@@ -157,7 +159,7 @@ export class WithdrawalsService {
         dto.accountNumber,
         this.encryptionKey,
       ),
-      accountNumberHash: hmacHex(dto.accountNumber, this.encryptionKey),
+      accountNumberHash: hmacHex(dto.accountNumber, this.identifierHashKey),
       accountName: resolved.accountName,
     });
 

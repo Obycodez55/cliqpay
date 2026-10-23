@@ -82,7 +82,10 @@ describe('KycService.checkTransferLimits', () => {
       {} as DataSource,
       {} as KycProvider,
       usersService,
-      { encryption: { key: 'a'.repeat(64) } } as AppConfig,
+      {
+        encryption: { key: 'a'.repeat(64) },
+        identifierHash: { key: 'c'.repeat(64) },
+      } as AppConfig,
     );
   });
 

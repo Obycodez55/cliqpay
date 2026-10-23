@@ -6,7 +6,15 @@ import {
   destroyKycTestContext,
   seedKycUser,
 } from './support/kyc-test-context';
-import { TEST_JWT_SECRET } from './support/test-app-config';
+import {
+  TEST_ENCRYPTION_KEY,
+  TEST_IDENTIFIER_HASH_KEY,
+  TEST_JWT_SECRET,
+} from './support/test-app-config';
+import {
+  encryptionKeyFromHex,
+  hmacHex,
+} from '../../src/shared/crypto/secrets.util';
 
 jest.setTimeout(180_000);
 
@@ -88,7 +96,12 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
     });
 
     const record = await ctx.kycVerificationRepo.findOneByOrFail({ userId });
-    expect(record.ninHash).toEqual(expect.any(String));
+    expect(record.ninHash).toBe(
+      hmacHex('12345678901', encryptionKeyFromHex(TEST_IDENTIFIER_HASH_KEY)),
+    );
+    expect(record.ninHash).not.toBe(
+      hmacHex('12345678901', encryptionKeyFromHex(TEST_ENCRYPTION_KEY)),
+    );
     expect(record.ninCiphertext).toEqual(expect.any(String));
     expect(record.ninCiphertext).not.toContain('12345678901');
     expect(record.bvnHash).toBeNull();

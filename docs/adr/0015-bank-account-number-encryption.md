@@ -87,3 +87,58 @@ catch a duplicate.
   If a future feature needs the full number from history (unlikely — the
   live `bank_accounts` row already has it via `GET /withdrawals/bank-accounts`),
   that's a deliberate re-decision, not an oversight to "fix."
+
+## Amendment: a separate key for the lookup hashes
+
+**Date:** 2026-10-22
+
+The lookup hashes (`bank_accounts.account_number_hash`,
+`kyc_verifications.bvn_hash`, `kyc_verifications.nin_hash`) were first
+computed with `ENCRYPTION_KEY`, the same key as the AES-256-GCM ciphertext.
+That meant rotating `ENCRYPTION_KEY` silently invalidated every stored hash
+(a previously linked BVN, NIN or bank account could be linked again, with no
+error), and one leaked key exposed both the ciphertext and a lookup oracle
+over a small keyspace (an 11-digit BVN or NIN).
+
+Every lookup hash now uses `IDENTIFIER_HASH_KEY`: required, 64-hex, validated
+in `src/config`, and rejected at startup if it equals `ENCRYPTION_KEY` or
+`TRANSACTION_PIN_PEPPER` (case-insensitive). `ENCRYPTION_KEY` is AES only.
+
+**Re-deriving hashes.** The ciphertext is retained next to each hash, so a
+hash never needs the old hash key: it is recomputed from the decrypted value.
+`pnpm db:rekey-identifier-hashes` (`src/database/rekey-identifier-hashes.ts`)
+does this for all three columns. It is a script, not a migration, because
+there is no schema change, a fresh database has nothing to do, and a migration
+would have to read secrets from the process environment that the integration
+contexts inject through config instead. It is also the rotation tool.
+
+- Needs only `DATABASE_URL`, `ENCRYPTION_KEY` and `IDENTIFIER_HASH_KEY`; it
+  does not load the application config, so none of the app's other secrets are
+  required. It never prints a key, an identifier, ciphertext or a hash, only
+  counts and row ids.
+- Dry run by default; `--apply` writes. A dry run exits 1 when any hash
+  differs from what the current key would produce (or an orphan exists), 0
+  when everything is current, so it can gate a deploy.
+- One transaction: any abort writes nothing. It aborts on rows that cannot be
+  decrypted with `ENCRYPTION_KEY`, on rows that would collide on the new hash,
+  and on orphans (hash present, no ciphertext) unless `--allow-orphans`. With
+  that flag an orphan is skipped and reported, its stale hash left untouched,
+  never nulled: clearing a hash would free that identifier to be linked to
+  another account. Rows whose hash is null are skipped.
+- Idempotent: re-running changes only rows still out of date.
+- The single transaction reads every row into memory, which is fine before
+  launch; for large tables it should be chunked by primary key.
+
+**Rotation.**
+
+- `IDENTIFIER_HASH_KEY`: set the new value, deploy, run the script with
+  `--apply`, then run it again to repair any rows written in between (it is
+  idempotent). Until it has run, lookups use hashes the application can no
+  longer match, so the one-per-identity guarantee has a gap; do it in a quiet
+  window or pause verification and bank-account saves.
+- `ENCRYPTION_KEY`: hashes no longer depend on it, so rotating it needs only
+  the ciphertext columns re-encrypted (`bvn_ciphertext`, `nin_ciphertext`,
+  `account_number_ciphertext`, MFA TOTP secrets). That re-encryption tool does
+  not exist yet; rotating the key without it makes those values unreadable.
+- `TRANSACTION_PIN_PEPPER` still cannot be rotated (ADR-0009).
+

@@ -42,6 +42,16 @@ const envSchema = z
         'TRANSACTION_PIN_PEPPER must be a 64-character hex string (32 bytes)',
       ),
 
+    // Deterministic lookup hashes (BVN, NIN, bank account numbers) only —
+    // kept apart from ENCRYPTION_KEY so rotating either one never silently
+    // breaks the other's guarantees (ADR-0015).
+    IDENTIFIER_HASH_KEY: z
+      .string()
+      .regex(
+        /^[0-9a-fA-F]{64}$/,
+        'IDENTIFIER_HASH_KEY must be a 64-character hex string (32 bytes)',
+      ),
+
     EMAIL_PROVIDER: z.enum(['brevo', 'fake']).default('fake'),
     SMS_PROVIDER: z.enum(['termii', 'fake']).default('fake'),
     PUSH_PROVIDER: z.enum(['fcm', 'fake']).default('fake'),
@@ -159,6 +169,19 @@ const envSchema = z
       },
     ]);
 
+    for (const other of ['ENCRYPTION_KEY', 'TRANSACTION_PIN_PEPPER'] as const) {
+      if (
+        env.IDENTIFIER_HASH_KEY &&
+        env.IDENTIFIER_HASH_KEY.toLowerCase() === env[other].toLowerCase()
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['IDENTIFIER_HASH_KEY'],
+          message: `IDENTIFIER_HASH_KEY must differ from ${other}`,
+        });
+      }
+    }
+
     // FakeAdapter validates webhook signatures against a hardcoded key
     // committed to the repo (see fake.adapter.ts) — a production deploy
     // that fell through to this default would let anyone forge a funding
@@ -212,6 +235,9 @@ function buildConfig(env: Env) {
     },
     transactionPin: {
       pepper: env.TRANSACTION_PIN_PEPPER,
+    },
+    identifierHash: {
+      key: env.IDENTIFIER_HASH_KEY,
     },
     notifications: {
       emailProvider: env.EMAIL_PROVIDER,

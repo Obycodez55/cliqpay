@@ -63,10 +63,12 @@ type FakeJobRepo = {
 };
 
 const TEST_ENCRYPTION_KEY = 'a'.repeat(64);
+const TEST_IDENTIFIER_HASH_KEY = 'c'.repeat(64);
 
 function testConfig(): AppConfig {
   return {
     encryption: { key: TEST_ENCRYPTION_KEY },
+    identifierHash: { key: TEST_IDENTIFIER_HASH_KEY },
   } as unknown as AppConfig;
 }
 
@@ -356,7 +358,7 @@ describe('KycService', () => {
   });
 
   describe('verified identity immutability', () => {
-    const key = encryptionKeyFromHex(TEST_ENCRYPTION_KEY);
+    const key = encryptionKeyFromHex(TEST_IDENTIFIER_HASH_KEY);
 
     function verifiedRecord(overrides: Partial<KycVerification>) {
       kycVerificationRepo.findOneBy.mockResolvedValue({
@@ -719,7 +721,7 @@ describe('KycService', () => {
   });
 
   describe('liveness', () => {
-    const key = encryptionKeyFromHex(TEST_ENCRYPTION_KEY);
+    const key = encryptionKeyFromHex(TEST_IDENTIFIER_HASH_KEY);
     const liveness: LivenessCaptureDto = {
       selfieImage: '/9j/AA==',
       livenessImages: Array<string>(6).fill('/9j/AA=='),

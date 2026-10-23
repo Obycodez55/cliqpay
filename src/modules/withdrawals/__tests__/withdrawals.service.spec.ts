@@ -19,6 +19,7 @@ const testConfig = {
     providerFee: 3_000,
   },
   encryption: { key: TEST_ENCRYPTION_KEY },
+  identifierHash: { key: 'c'.repeat(64) },
 } as AppConfig;
 
 type User = Awaited<ReturnType<UsersService['findById']>>;

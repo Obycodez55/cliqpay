@@ -16,6 +16,7 @@ import {
   buildTestConfigModule,
   buildTestJwtModule,
   TEST_ENCRYPTION_KEY,
+  TEST_IDENTIFIER_HASH_KEY,
   TEST_PIN_PEPPER,
 } from './test-app-config';
 import {
@@ -386,7 +387,10 @@ export async function seedBankAccount(
     bankCode: args.bankCode ?? '033',
     bankName: args.bankName ?? 'United Bank for Africa',
     accountNumberCiphertext: encryptSecret(accountNumber, encryptionKey),
-    accountNumberHash: hmacHex(accountNumber, encryptionKey),
+    accountNumberHash: hmacHex(
+      accountNumber,
+      encryptionKeyFromHex(TEST_IDENTIFIER_HASH_KEY),
+    ),
     accountName: args.accountName ?? 'Ada Lovelace',
   });
   const saved = await ctx.bankAccountRepo.save(bankAccount);

@@ -98,6 +98,7 @@ const IDENTITY_SPECS = {
 export class KycService {
   private readonly logger = new Logger(KycService.name);
   private readonly encryptionKey: Buffer;
+  private readonly identifierHashKey: Buffer;
 
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
@@ -106,6 +107,7 @@ export class KycService {
     @Inject(APP_CONFIG) config: AppConfig,
   ) {
     this.encryptionKey = encryptionKeyFromHex(config.encryption.key);
+    this.identifierHashKey = encryptionKeyFromHex(config.identifierHash.key);
   }
 
   verifyBvn(
@@ -130,7 +132,7 @@ export class KycService {
     idNumber: string,
     liveness?: LivenessCaptureDto,
   ): Promise<VerifyIdentityResponseDto> {
-    const hash = hmacHex(idNumber, this.encryptionKey);
+    const hash = hmacHex(idNumber, this.identifierHashKey);
     const reservation = await this.reserveAttempt(
       userId,
       identityType,
