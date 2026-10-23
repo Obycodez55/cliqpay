@@ -1,5 +1,11 @@
-import { Inject, Module, OnApplicationShutdown } from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq';
+import {
+  BeforeApplicationShutdown,
+  Inject,
+  Module,
+  OnApplicationShutdown,
+} from '@nestjs/common';
+import { DiscoveryModule, DiscoveryService } from '@nestjs/core';
+import { BullModule, WorkerHost } from '@nestjs/bullmq';
 import Redis from 'ioredis';
 import {
   BULLMQ_REDIS_CONNECTION,
@@ -11,9 +17,19 @@ import {
   PRIORITY_DISPATCH_QUEUE,
 } from './event-bus.service';
 
+// The getter throws until the worker exists, which a signal during boot beats.
+function initialisedWorker(host: WorkerHost): WorkerHost['worker'] | null {
+  try {
+    return host.worker;
+  } catch {
+    return null;
+  }
+}
+
 @Module({
   imports: [
     BullmqConnectionModule,
+    DiscoveryModule,
     BullModule.forRootAsync({
       imports: [BullmqConnectionModule],
       inject: [BULLMQ_REDIS_CONNECTION],
@@ -45,10 +61,38 @@ import {
   providers: [EventBusService],
   exports: [EventBusService],
 })
-export class EventBusModule implements OnApplicationShutdown {
+export class EventBusModule
+  implements BeforeApplicationShutdown, OnApplicationShutdown
+{
   constructor(
     @Inject(BULLMQ_REDIS_CONNECTION) private readonly connection: Redis,
+    private readonly discovery: DiscoveryService,
   ) {}
+
+  // A worker re-registers its job scheduler's next iteration before running a
+  // scheduler job. If its connection is closed mid-call, BullMQ retries
+  // "Connection is closed" in a microtask loop that never yields, so the
+  // process pins the CPU and even the force-exit timer in main.ts can't fire.
+  // A waiting pause() lets that call finish; only then is closing safe.
+  async beforeApplicationShutdown(): Promise<void> {
+    const hosts = this.discovery
+      .getProviders()
+      .map((wrapper) => wrapper.instance as unknown)
+      .filter(
+        (instance): instance is WorkerHost => instance instanceof WorkerHost,
+      );
+    await Promise.all(
+      hosts.map(async (host) => {
+        const worker = initialisedWorker(host);
+        if (!worker) {
+          return;
+        }
+        await worker.waitUntilReady();
+        await worker.pause();
+        await worker.close();
+      }),
+    );
+  }
 
   async onApplicationShutdown(): Promise<void> {
     await this.connection.quit();
