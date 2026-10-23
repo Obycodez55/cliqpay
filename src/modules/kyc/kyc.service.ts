@@ -44,6 +44,7 @@ import {
   BvnVerificationFailedException,
   DailyLimitExceededException,
   IdentityMismatchException,
+  KycLivenessUnavailableException,
   KycVerificationRequiredException,
   LivenessInProgressException,
   RecipientCannotReceiveException,
@@ -133,6 +134,9 @@ export class KycService {
     idNumber: string,
     liveness?: LivenessCaptureDto,
   ): Promise<VerifyIdentityResponseDto> {
+    if (liveness && !this.kycProvider.supportsLiveness) {
+      throw new KycLivenessUnavailableException();
+    }
     const hash = hmacHex(idNumber, this.identifierHashKey);
     const reservation = await this.reserveAttempt(
       userId,

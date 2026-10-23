@@ -117,12 +117,9 @@ const envSchema = z
     // unguarded fallback to degrade to.
     INTERNAL_API_SECRET: z.string().min(32),
 
-    KYC_PROVIDER: z.enum(['smileid', 'fake']).default('fake'),
+    KYC_PROVIDER: z.enum(['prembly', 'fake']).default('fake'),
     KYC_RETENTION_DAYS: z.coerce.number().int().min(2).default(30),
-    SMILE_ID_API_KEY: z.string().optional(),
-    SMILE_ID_PARTNER_ID: z.string().optional(),
-    SMILE_ID_BASE_URL: z.url().optional(),
-    SMILE_ID_PRIVACY_POLICY_URL: z.url().optional(),
+    PREMBLY_SECRET_KEY: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     // A provider's own credentials are only required when it's the one actually selected
@@ -160,14 +157,8 @@ const envSchema = z
       { path: 'KORA_WEBHOOK_URL', value: env.KORA_WEBHOOK_URL },
       { path: 'PAYMENT_REDIRECT_URL', value: env.PAYMENT_REDIRECT_URL },
     ]);
-    requireWhen(env.KYC_PROVIDER === 'smileid', [
-      { path: 'SMILE_ID_API_KEY', value: env.SMILE_ID_API_KEY },
-      { path: 'SMILE_ID_PARTNER_ID', value: env.SMILE_ID_PARTNER_ID },
-      { path: 'SMILE_ID_BASE_URL', value: env.SMILE_ID_BASE_URL },
-      {
-        path: 'SMILE_ID_PRIVACY_POLICY_URL',
-        value: env.SMILE_ID_PRIVACY_POLICY_URL,
-      },
+    requireWhen(env.KYC_PROVIDER === 'prembly', [
+      { path: 'PREMBLY_SECRET_KEY', value: env.PREMBLY_SECRET_KEY },
     ]);
 
     for (const other of ['ENCRYPTION_KEY', 'TRANSACTION_PIN_PEPPER'] as const) {
@@ -290,11 +281,8 @@ function buildConfig(env: Env) {
     kyc: {
       provider: env.KYC_PROVIDER,
       retentionDays: env.KYC_RETENTION_DAYS,
-      smileId: {
-        apiKey: env.SMILE_ID_API_KEY,
-        partnerId: env.SMILE_ID_PARTNER_ID,
-        baseUrl: env.SMILE_ID_BASE_URL,
-        privacyPolicyUrl: env.SMILE_ID_PRIVACY_POLICY_URL,
+      prembly: {
+        secretKey: env.PREMBLY_SECRET_KEY,
       },
     },
   };

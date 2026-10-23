@@ -15,6 +15,8 @@ import {
 // "5555" is asynchronous and fails on the first poll; "6666" throws; anything else passes synchronously.
 @Injectable()
 export class FakeKycProvider implements KycProvider {
+  readonly supportsLiveness = true;
+
   private readonly asyncOutcomes = new Map<
     string,
     LivenessOutcome | 'pending'

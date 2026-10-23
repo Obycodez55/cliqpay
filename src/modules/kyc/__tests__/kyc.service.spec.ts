@@ -24,6 +24,7 @@ import {
   NinAlreadyVerifiedException,
   NinVerificationFailedException,
   IdentityMismatchException,
+  KycLivenessUnavailableException,
   LivenessInProgressException,
   TooManyVerificationAttemptsException,
 } from '../internal/errors';
@@ -198,6 +199,7 @@ describe('KycService', () => {
       Pick<DataSource, 'getRepository' | 'transaction'>
     >;
     kycProvider = {
+      supportsLiveness: true,
       verifyBvn: jest
         .fn<Promise<KycVerificationResult>, [string]>()
         .mockResolvedValue(verifiedResult()),
@@ -727,6 +729,18 @@ describe('KycService', () => {
       livenessImages: Array<string>(6).fill('/9j/AA=='),
       consentGranted: true,
     };
+
+    it('refuses a capture before reserving an attempt or paying for the lookup when the provider cannot verify liveness', async () => {
+      (kycProvider as { supportsLiveness: boolean }).supportsLiveness = false;
+
+      await expect(
+        service.verifyBvn('user-1', '12345678901', liveness),
+      ).rejects.toThrow(KycLivenessUnavailableException);
+
+      expect(attemptRepo.save).not.toHaveBeenCalled();
+      expect(kycProvider.verifyBvn).not.toHaveBeenCalled();
+      expect(kycProvider.submitLiveness).not.toHaveBeenCalled();
+    });
 
     beforeEach(() => {
       jobRepo.findOneBy.mockResolvedValue({

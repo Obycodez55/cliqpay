@@ -72,6 +72,16 @@ export class LivenessInProgressException extends DomainException {
   }
 }
 
+export class KycLivenessUnavailableException extends DomainException {
+  readonly code = 'LIVENESS_UNAVAILABLE';
+  constructor() {
+    super(
+      'Liveness checks are not available yet. Please try again later.',
+      HttpStatus.SERVICE_UNAVAILABLE,
+    );
+  }
+}
+
 export class IdentityMismatchException extends DomainException {
   readonly code = 'IDENTITY_MISMATCH';
   constructor(verifying: 'bvn' | 'nin') {

@@ -14,11 +14,11 @@ import {
 } from './internal/kyc-retention.processor';
 import { KycService } from './kyc.service';
 import { KYC_PROVIDER, KycProvider } from './providers/kyc-provider.interface';
-import { SmileIdKycProvider } from './providers/smile-id.provider';
+import { PremblyKycProvider } from './providers/prembly.provider';
 import { FakeKycProvider } from './providers/fake.provider';
 
 const KYC_PROVIDERS = {
-  smileid: (config: AppConfig): KycProvider => new SmileIdKycProvider(config),
+  prembly: (config: AppConfig): KycProvider => new PremblyKycProvider(config),
   fake: (): KycProvider => new FakeKycProvider(),
 } satisfies Record<
   AppConfig['kyc']['provider'],

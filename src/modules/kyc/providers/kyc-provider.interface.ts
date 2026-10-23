@@ -36,6 +36,9 @@ export type LivenessSubmissionResult =
   | { status: 'pending'; jobId: string };
 
 export interface KycProvider {
+  // Lets the service refuse a liveness capture before paying for the lookup.
+  readonly supportsLiveness: boolean;
+
   verifyBvn(bvn: string): Promise<KycVerificationResult>;
 
   verifyNin(nin: string): Promise<KycVerificationResult>;

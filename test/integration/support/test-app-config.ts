@@ -57,12 +57,7 @@ function defaultTestAppConfig(): AppConfig {
     kyc: {
       provider: 'fake',
       retentionDays: 30,
-      smileId: {
-        apiKey: undefined,
-        partnerId: undefined,
-        baseUrl: undefined,
-        privacyPolicyUrl: undefined,
-      },
+      prembly: { secretKey: undefined },
     },
   };
 }

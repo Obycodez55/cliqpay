@@ -47,8 +47,8 @@ jobs:
           RECONCILIATION_ALERT_EMAIL: ops@cliqpay.test
           INTERNAL_API_SECRET: '2222222222222222222222222222222222222222222222222222222222222222'
 
-      # No-ops (via --passWithNoTests) until a PaymentProviderAdapter or
-      # KycProvider exists to contract-test against Kora's sandbox — see
-      # test/contract/README.md. KORA_* secrets get added to this job once
-      # that lands.
+      # Prembly specs skip themselves when the secret is not configured; set
+      # PREMBLY_SECRET_KEY to a sandbox key (never a live one) to run them.
       - run: pnpm test:contract
+        env:
+          PREMBLY_SECRET_KEY: ${{ secrets.PREMBLY_SECRET_KEY }}

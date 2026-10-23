@@ -67,3 +67,45 @@ describe('KYC_RETENTION_DAYS', () => {
     ).toBe(2);
   });
 });
+
+describe('KYC_PROVIDER', () => {
+  it('defaults to fake and needs no Prembly key', () => {
+    const config = loadConfig(baseEnv());
+
+    expect(config.kyc.provider).toBe('fake');
+    expect(config.kyc.prembly.secretKey).toBeUndefined();
+  });
+
+  it('requires PREMBLY_SECRET_KEY when prembly is selected', () => {
+    expect(() => loadConfig({ ...baseEnv(), KYC_PROVIDER: 'prembly' })).toThrow(
+      'PREMBLY_SECRET_KEY',
+    );
+  });
+
+  it('exposes the Prembly key when prembly is selected', () => {
+    const config = loadConfig({
+      ...baseEnv(),
+      KYC_PROVIDER: 'prembly',
+      PREMBLY_SECRET_KEY: 'key-1',
+    });
+
+    expect(config.kyc.provider).toBe('prembly');
+    expect(config.kyc.prembly.secretKey).toBe('key-1');
+  });
+
+  it('rejects an unknown provider', () => {
+    expect(() => loadConfig({ ...baseEnv(), KYC_PROVIDER: 'dojah' })).toThrow(
+      'KYC_PROVIDER',
+    );
+  });
+
+  it('blocks fake in production', () => {
+    expect(() =>
+      loadConfig({
+        ...baseEnv(),
+        NODE_ENV: 'production',
+        KYC_PROVIDER: 'fake',
+      }),
+    ).toThrow('must not be "fake" in production');
+  });
+});

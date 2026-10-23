@@ -1,6 +1,6 @@
 # ADR-0018: Smile ID, not Kora, backs `KycProvider` — Kora's Identity API doesn't do liveness
 
-**Status:** accepted
+**Status:** superseded by [ADR-0020](0020-prembly-as-kyc-lookup-provider.md)
 **Date:** 2026-09-20
 
 ## Context
