@@ -1714,7 +1714,7 @@ export class LedgerService {
     const newWalletBalance = Money.of(wallet.balance, wallet.currency).subtract(
       walletDebit,
     );
-    const newFloatBalance = Money.of(float.balance, float.currency).add(
+    const newFloatBalance = Money.of(float.balance, float.currency).subtract(
       floatCredit,
     );
     const newFeeIncomeBalance = Money.of(
@@ -1893,9 +1893,7 @@ export class LedgerService {
     const newWalletBalance = Money.of(wallet.balance, currency).add(
       walletCredit,
     );
-    const newFloatBalance = Money.of(float.balance, currency).subtract(
-      floatDebit,
-    );
+    const newFloatBalance = Money.of(float.balance, currency).add(floatDebit);
     const newFeeIncomeBalance = Money.of(feeIncome.balance, currency).subtract(
       platformFee,
     );
@@ -2298,7 +2296,7 @@ export class LedgerService {
     const newWalletBalance = Money.of(wallet.balance, wallet.currency).subtract(
       params.amount,
     );
-    const newFloatBalance = Money.of(float.balance, float.currency).add(
+    const newFloatBalance = Money.of(float.balance, float.currency).subtract(
       params.amount,
     );
 
@@ -2451,7 +2449,7 @@ export class LedgerService {
     const newWalletBalance = Money.of(wallet.balance, wallet.currency).add(
       params.amount,
     );
-    const newFloatBalance = Money.of(float.balance, float.currency).subtract(
+    const newFloatBalance = Money.of(float.balance, float.currency).add(
       params.amount,
     );
 

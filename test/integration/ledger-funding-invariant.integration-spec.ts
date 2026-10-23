@@ -315,6 +315,107 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
     );
   });
 
+  it('holds after withdrawals, withdrawal reversals, chargebacks and chargeback resolutions', async () => {
+    const opArb = fc.record({
+      fundMinor: fc.integer({ min: 1_000_000, max: 10_000_000 }),
+      withdrawMinor: fc.integer({ min: 1_000, max: 500_000 }),
+      providerFeeMinor: fc.integer({ min: 0, max: 5_000 }),
+      platformFeeMinor: fc.integer({ min: 0, max: 5_000 }),
+      afterWithdrawal: fc.constantFrom('keep', 'reverse', 'complete'),
+      chargebackMinor: fc.integer({ min: 1, max: 1_000_000 }),
+      resolve: fc.boolean(),
+    });
+
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(opArb, { minLength: 1, maxLength: 4 }),
+        async (ops) => {
+          for (const op of ops) {
+            const { walletId } = await seedUserWithWallet(ctx, nextIdentity());
+            const fundReference = `cliqpay-invariant-wd-${randomUUID()}`;
+            const net = Money.of(op.fundMinor, 'NGN');
+            await ctx.ledgerService.createPendingFundingTransaction({
+              reference: fundReference,
+              provider: 'kora',
+              providerReference: fundReference,
+              amount: net,
+              recipientWalletId: walletId,
+              metadata: { checkoutUrl: null, grossAmount: null },
+            });
+            await ctx.ledgerService.postFunding({
+              reference: fundReference,
+              netAmount: net,
+              providerFee: Money.zero('NGN'),
+              providerStatus: 'success',
+            });
+            await assertInvariantHolds(ctx.accountRepo);
+
+            const withdrawalReference = `cliqpay-invariant-wd-out-${randomUUID()}`;
+            await ctx.ledgerService.postWithdrawal({
+              reference: withdrawalReference,
+              walletId,
+              provider: 'kora',
+              amount: Money.of(op.withdrawMinor, 'NGN'),
+              platformFee: Money.of(op.platformFeeMinor, 'NGN'),
+              providerFee: Money.of(op.providerFeeMinor, 'NGN'),
+              bankAccount: {
+                id: randomUUID(),
+                bankCode: '033',
+                bankName: 'Test Bank',
+                accountNumber: '******7890',
+                accountName: 'Ada Lovelace',
+              },
+            });
+            await assertInvariantHolds(ctx.accountRepo);
+            await assertCacheMatchesLedger(ctx, walletId);
+
+            if (op.afterWithdrawal === 'reverse') {
+              await ctx.ledgerService.reverseWithdrawal({
+                reference: withdrawalReference,
+                reason: 'payout failed',
+              });
+              await assertInvariantHolds(ctx.accountRepo);
+            } else if (op.afterWithdrawal === 'complete') {
+              await ctx.ledgerService.completeWithdrawal({
+                reference: withdrawalReference,
+                providerReportedAmount: Money.of(op.withdrawMinor, 'NGN'),
+              });
+              await assertInvariantHolds(ctx.accountRepo);
+            }
+
+            const funding = await ctx.transactionRepo.findOneByOrFail({
+              reference: fundReference,
+            });
+            const chargeback = await ctx.ledgerService.postChargeback({
+              walletId,
+              amount: Money.of(
+                Math.min(op.chargebackMinor, op.fundMinor),
+                'NGN',
+              ),
+              reference: `cliqpay-invariant-cb-${randomUUID()}`,
+              reversesTransactionId: funding.id,
+            });
+            await assertInvariantHolds(ctx.accountRepo);
+
+            if (op.resolve) {
+              await ctx.dataSource.transaction((manager) =>
+                ctx.ledgerService.postChargebackResolutionWithinTransaction(
+                  manager,
+                  {
+                    chargebackTransactionId: chargeback.transactionId,
+                    amount: chargeback.amount,
+                  },
+                ),
+              );
+              await assertInvariantHolds(ctx.accountRepo);
+            }
+          }
+        },
+      ),
+      { numRuns },
+    );
+  });
+
   it('holds after a duplicate delivery of the same posting', async () => {
     await fc.assert(
       fc.asyncProperty(fundingOpArb, async (op) => {
