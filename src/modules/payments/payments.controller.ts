@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   Headers,
   HttpCode,
   Post,
@@ -24,6 +25,7 @@ import {
 import { PaymentsService } from './payments.service';
 import { FundWalletDto } from './dto/fund-wallet.dto';
 import { FundWalletResponseDto } from './dto/fund-wallet-response.dto';
+import { WalletLimitsResponseDto } from './dto/wallet-limits-response.dto';
 
 // Shares the `/wallet` namespace with ledger's WalletController by design
 @ApiTags('Wallet')
@@ -53,6 +55,21 @@ export class PaymentsController {
     @Body() dto: FundWalletDto,
   ): Promise<FundWalletResponseDto> {
     return this.paymentsService.fundWallet(req.user.userId, dto);
+  }
+
+  @Get('limits')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: "Today's remaining daily allowance and balance headroom",
+    description:
+      "Composed from the tier's limits and the wallet's activity; enforcement still decides each request.",
+  })
+  @ApiResponse({ status: 200, type: WalletLimitsResponseDto })
+  getLimits(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<WalletLimitsResponseDto> {
+    return this.paymentsService.getWalletLimits(req.user.userId);
   }
 
   @Post('webhook/kora')

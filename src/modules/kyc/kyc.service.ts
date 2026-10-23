@@ -71,6 +71,24 @@ type BalanceAndPendingReader = (
 // The only currency with tier limits so far.
 const STATUS_CURRENCY = 'NGN';
 
+export interface WalletCapacity {
+  tier: KycTier;
+  dailyLimit: Money;
+  debitedToday: Money;
+  remainingToday: Money;
+  resetsAt: Date;
+  balanceCap: Money | null;
+  balance: Money;
+  pendingFunding: Money;
+  headroom: Money | null;
+}
+
+function remainingBelow(limit: Money, used: Money): Money {
+  return limit.greaterThan(used)
+    ? limit.subtract(used)
+    : Money.zero(limit.currency);
+}
+
 const MAX_FAILED_ATTEMPTS_PER_WINDOW = 5;
 const ATTEMPT_WINDOW_MS = 24 * 60 * 60 * 1000;
 const LIVENESS_JOB_TTL_MS = 30 * 60 * 1000;
@@ -598,6 +616,44 @@ export class KycService {
     );
   }
 
+  // Informational, so it takes no lock and writes nothing: the figures can be
+  // stale by the time anyone acts on them, and enforcement still decides.
+  async getWalletCapacity(
+    manager: EntityManager,
+    userId: string,
+    currency: string,
+    readers: {
+      readDebitedSince: (manager: EntityManager, since: Date) => Promise<Money>;
+      readBalanceAndPending: BalanceAndPendingReader;
+    },
+  ): Promise<WalletCapacity> {
+    const tierLimit = await this.tierLimitFor(manager, userId, currency);
+    const timeZone = this.timeZoneFor(userId);
+    const dayStart = startOfDay(new Date(), timeZone);
+    const dailyLimit = Money.of(tierLimit.dailyDebitLimitMinor, currency);
+    const debitedToday = await readers.readDebitedSince(manager, dayStart);
+    const { balance, pending } = await readers.readBalanceAndPending(manager);
+    const balanceCap =
+      tierLimit.balanceCapMinor === null
+        ? null
+        : Money.of(tierLimit.balanceCapMinor, currency);
+
+    return {
+      tier: tierLimit.tier,
+      dailyLimit,
+      debitedToday,
+      remainingToday: remainingBelow(dailyLimit, debitedToday),
+      resetsAt: startOfDay(
+        new Date(dayStart.getTime() + 36 * 60 * 60 * 1000),
+        timeZone,
+      ),
+      balanceCap,
+      balance,
+      pendingFunding: pending,
+      headroom: balanceCap && remainingBelow(balanceCap, balance.add(pending)),
+    };
+  }
+
   // A P2P transfer bounds both ends: the sender's daily limit and the
   // recipient's balance cap. Both users' locks are taken before either check.
   // The recipient's refusal reveals nothing about their tier or balance.
@@ -651,10 +707,10 @@ export class KycService {
       startOfDay(new Date(), this.timeZoneFor(userId)),
     );
     if (debited.add(amount).greaterThan(dailyLimit)) {
-      const remaining = dailyLimit.greaterThan(debited)
-        ? dailyLimit.subtract(debited)
-        : Money.zero(amount.currency);
-      throw new DailyLimitExceededException(dailyLimit, remaining);
+      throw new DailyLimitExceededException(
+        dailyLimit,
+        remainingBelow(dailyLimit, debited),
+      );
     }
   }
 
@@ -684,10 +740,7 @@ export class KycService {
     const { balance, pending } = await readBalanceAndPending(manager);
     const projected = balance.add(pending);
     if (projected.add(requested).greaterThan(cap)) {
-      const remaining = cap.greaterThan(projected)
-        ? cap.subtract(projected)
-        : Money.zero(requested.currency);
-      throw errors.overCap(cap, remaining);
+      throw errors.overCap(cap, remainingBelow(cap, projected));
     }
   }
 

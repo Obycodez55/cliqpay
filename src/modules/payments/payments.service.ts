@@ -28,6 +28,7 @@ import {
 import { EventBusService } from '../../shared/events/event-bus.service';
 import { FundWalletDto } from './dto/fund-wallet.dto';
 import { FundWalletResponseDto } from './dto/fund-wallet-response.dto';
+import { WalletLimitsResponseDto } from './dto/wallet-limits-response.dto';
 import {
   InitiatePaymentResult,
   InitiatePayoutParams,
@@ -252,6 +253,28 @@ export class PaymentsService {
       result.checkoutUrl,
     );
     return { checkoutUrl: result.checkoutUrl };
+  }
+
+  async getWalletLimits(userId: string): Promise<WalletLimitsResponseDto> {
+    const capacity = await runInTransaction(this.dataSource, (manager) =>
+      this.kycService.getWalletCapacity(manager, userId, NGN, {
+        readDebitedSince: (m, since) =>
+          this.ledgerService.getDebitedSince(m, userId, since),
+        readBalanceAndPending: (m) =>
+          this.ledgerService.getBalanceAndPendingFunding(m, userId),
+      }),
+    );
+    return {
+      tier: capacity.tier,
+      dailyLimit: capacity.dailyLimit.toJSON(),
+      debitedToday: capacity.debitedToday.toJSON(),
+      remainingToday: capacity.remainingToday.toJSON(),
+      resetsAt: capacity.resetsAt.toISOString(),
+      balanceCap: capacity.balanceCap?.toJSON() ?? null,
+      balance: capacity.balance.toJSON(),
+      pendingFunding: capacity.pendingFunding.toJSON(),
+      headroom: capacity.headroom?.toJSON() ?? null,
+    };
   }
 
   // Signature verified against the raw bytes Kora actually signed (see
