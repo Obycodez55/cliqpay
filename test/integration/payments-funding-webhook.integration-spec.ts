@@ -1,6 +1,5 @@
 import { createHmac } from 'crypto';
 import * as request from 'supertest';
-import { IsNull } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import {
   PaymentsTestContext,
@@ -8,6 +7,7 @@ import {
   destroyPaymentsTestContext,
   seedUserWithWallet,
 } from './support/payments-test-context';
+import { assertInvariantHolds } from './support/ledger-invariant';
 
 jest.setTimeout(120_000);
 
@@ -40,29 +40,6 @@ function signedWebhookBody(data: KoraWebhookData, secret = FAKE_SECRET_KEY) {
     .update(JSON.stringify(data))
     .digest('hex');
   return { body, signature };
-}
-
-// The invariant §4.3 requires: across all providers, float_<ccy> ==
-// Σ(user wallet balances) + fee_income_<ccy>. Only one provider (kora) and
-// one currency (NGN) are active, so this collapses to a single float row.
-async function assertInvariantHolds(ctx: PaymentsTestContext): Promise<void> {
-  const float = await ctx.accountRepo.findOneByOrFail({
-    role: 'float',
-    provider: 'kora',
-    currency: 'NGN',
-  });
-  const feeIncome = await ctx.accountRepo.findOneByOrFail({
-    role: 'fee_income',
-    provider: IsNull(),
-    currency: 'NGN',
-  });
-  const wallets = await ctx.accountRepo.findBy({
-    role: 'user_wallet',
-    currency: 'NGN',
-  });
-  const walletSum = wallets.reduce((sum, w) => sum + w.balance, 0n);
-
-  expect(float.balance).toBe(walletSum + feeIncome.balance);
 }
 
 describe('POST /wallet/webhook/kora', () => {
@@ -198,7 +175,7 @@ describe('POST /wallet/webhook/kora', () => {
       runningBalance: feeRecoveryAfter.balance,
     });
 
-    await assertInvariantHolds(ctx);
+    await assertInvariantHolds(ctx.accountRepo);
 
     await waitFor(() =>
       ctx.emailAdapter.sent.some((m) => m.to === 'webhook-happy@example.com'),
@@ -284,7 +261,7 @@ describe('POST /wallet/webhook/kora', () => {
     });
     expect(entries).toHaveLength(4);
 
-    await assertInvariantHolds(ctx);
+    await assertInvariantHolds(ctx.accountRepo);
   });
 
   it('acts on the same "data" it verified the signature against, not a duplicate top-level "data" key', async () => {
@@ -342,7 +319,7 @@ describe('POST /wallet/webhook/kora', () => {
     const wallet = await ctx.accountRepo.findOneByOrFail({ id: walletId });
     expect(wallet.balance).toBe(100_000n);
 
-    await assertInvariantHolds(ctx);
+    await assertInvariantHolds(ctx.accountRepo);
   });
 
   it('leaves a transaction pending on a non-terminal status instead of permanently failing it', async () => {
@@ -404,7 +381,7 @@ describe('POST /wallet/webhook/kora', () => {
     const wallet = await ctx.accountRepo.findOneByOrFail({ id: walletId });
     expect(wallet.balance).toBe(300_000n);
 
-    await assertInvariantHolds(ctx);
+    await assertInvariantHolds(ctx.accountRepo);
   });
 
   it('rejects a malformed payload with 400, not an uncaught 500', async () => {

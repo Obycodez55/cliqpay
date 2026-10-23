@@ -16,6 +16,7 @@ import { Account } from './entities/account.entity';
 import { LedgerEntry } from './entities/ledger-entry.entity';
 import {
   ChargebackTransactionMetadata,
+  FundingRefundTransactionMetadata,
   FundingTransactionMetadata,
   Transaction,
   TransactionProvider,
@@ -56,6 +57,42 @@ export interface PostFundingResult {
   userId: string;
   netAmount: Money;
   reference: string;
+}
+
+export interface HoldFundingResult {
+  userId: string;
+  netAmount: Money;
+  fundingTransactionId: string;
+  fundingReference: string;
+  refundReference: string;
+}
+
+export interface SettleRefundParams {
+  refundReference: string;
+  providerReportedAmount: Money;
+}
+
+export interface SettleRefundResult {
+  userId: string;
+  netAmount: Money;
+  fundingReference: string;
+  refundReference: string;
+}
+
+export interface FailRefundParams {
+  refundReference: string;
+  reason: string;
+}
+
+export interface FailRefundResult {
+  fundingTransactionId: string;
+  fundingReference: string;
+  attempt: number;
+}
+
+export interface StartRefundAttemptResult {
+  refundReference: string;
+  attempt: number;
 }
 
 export function debitedSinceQuery(
@@ -740,68 +777,463 @@ export class LedgerService {
   async postFunding(
     facts: PostFundingFacts,
   ): Promise<PostFundingResult | null> {
+    return runInTransaction(this.dataSource, (manager) =>
+      this.postFundingWithinTransaction(manager, facts),
+    );
+  }
+
+  // For a caller that has already taken the user lock and decided to credit
+  // (the cap check in `payments`) and needs the posting in its own open
+  // transaction; same pattern as postTransferWithinTransaction.
+  async postFundingWithinTransaction(
+    manager: EntityManager,
+    facts: PostFundingFacts,
+  ): Promise<PostFundingResult | null> {
+    const transaction = await this.claimPendingFunding(
+      manager,
+      facts,
+      'completed',
+    );
+    if (!transaction) {
+      return null;
+    }
+    return this.postFundingEntries(manager, transaction, facts);
+  }
+
+  /**
+   * A funding that completed but cannot be credited because it would breach
+   * the balance cap (docs/adr/0021): the net amount goes to `suspense`
+   * instead of the wallet, and the first refund attempt row is created in
+   * the same transaction so the attempt exists durably before the provider
+   * is ever called. Same atomic `pending` -> terminal guard as postFunding,
+   * so a duplicate delivery holds nothing twice.
+   */
+  async holdFundingWithinTransaction(
+    manager: EntityManager,
+    facts: PostFundingFacts,
+  ): Promise<HoldFundingResult | null> {
+    const transaction = await this.claimPendingFunding(manager, facts, 'held');
+    if (!transaction) {
+      return null;
+    }
+    const accountRepo = manager.getRepository(Account);
+    const { provider, currency } = transaction;
+
+    const accounts = await accountRepo
+      .createQueryBuilder('account')
+      .where('account.userId IS NULL')
+      .andWhere('account.currency = :currency', { currency })
+      .andWhere('account.provider = :provider', { provider })
+      .andWhere('account.role IN (:...roles)', {
+        roles: ['float', 'suspense', 'fee_expense', 'fee_recovery'],
+      })
+      .orderBy('account.id', 'ASC')
+      .setLock('pessimistic_write')
+      .getMany();
+    const float = accounts.find((a) => a.role === 'float');
+    const suspense = accounts.find((a) => a.role === 'suspense');
+    const feeExpense = accounts.find((a) => a.role === 'fee_expense');
+    const feeRecovery = accounts.find((a) => a.role === 'fee_recovery');
+    if (!float || !suspense || !feeExpense || !feeRecovery) {
+      throw new Error(
+        `holdFunding: missing one of float/suspense/fee_expense/fee_recovery accounts for transaction "${transaction.reference}"`,
+      );
+    }
+
+    const newFloat = Money.of(float.balance, currency).add(facts.netAmount);
+    const newSuspense = Money.of(suspense.balance, currency).add(
+      facts.netAmount,
+    );
+    const newFeeExpense = Money.of(feeExpense.balance, currency).add(
+      facts.providerFee,
+    );
+    const newFeeRecovery = Money.of(feeRecovery.balance, currency).add(
+      facts.providerFee,
+    );
+    float.balance = newFloat.amount;
+    suspense.balance = newSuspense.amount;
+    feeExpense.balance = newFeeExpense.amount;
+    feeRecovery.balance = newFeeRecovery.amount;
+    await accountRepo.save([float, suspense, feeExpense, feeRecovery]);
+
+    const entryRepo = manager.getRepository(LedgerEntry);
+    await entryRepo.save([
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: float.id,
+        direction: 'debit',
+        amount: facts.netAmount.amount,
+        runningBalance: newFloat.amount,
+      }),
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: suspense.id,
+        direction: 'credit',
+        amount: facts.netAmount.amount,
+        runningBalance: newSuspense.amount,
+      }),
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: feeExpense.id,
+        direction: 'debit',
+        amount: facts.providerFee.amount,
+        runningBalance: newFeeExpense.amount,
+      }),
+      entryRepo.create({
+        transactionId: transaction.id,
+        accountId: feeRecovery.id,
+        direction: 'credit',
+        amount: facts.providerFee.amount,
+        runningBalance: newFeeRecovery.amount,
+      }),
+    ]);
+
+    await this.mergeTransactionMetadata(
+      transaction.reference,
+      {
+        grossAmount: facts.netAmount.add(facts.providerFee).toJSON(),
+        heldAt: new Date().toISOString(),
+      },
+      manager,
+    );
+    const attempt = await this.insertRefundAttempt(manager, transaction, 1);
+    const wallet = await accountRepo.findOneByOrFail({
+      id: transaction.recipientWalletId!,
+    });
+
+    return {
+      userId: wallet.userId!,
+      netAmount: facts.netAmount,
+      fundingTransactionId: transaction.id,
+      fundingReference: transaction.reference,
+      refundReference: attempt.reference,
+    };
+  }
+
+  // The shared front half of crediting and holding: finds the funding,
+  // cross-checks the provider-reported amount against the requested one and
+  // flips `pending` -> its next status in one guarded UPDATE, so exactly one
+  // caller per funding gets the transaction back. Anything else (unknown
+  // reference, duplicate delivery, provider failure, amount mismatch)
+  // returns null with nothing posted.
+  private async claimPendingFunding(
+    manager: EntityManager,
+    facts: PostFundingFacts,
+    successStatus: 'completed' | 'held',
+  ): Promise<Transaction | null> {
+    // `amount` is immutable after creation (only `status`/`metadata`
+    // change post-creation), so reading it ahead of the guarded UPDATE
+    // below is safe. Scoped to `type: 'funding'` so a mislabeled webhook
+    // `event` can never make a withdrawal's `reference` resolve here.
+    const transaction = await manager.getRepository(Transaction).findOneBy({
+      reference: facts.reference,
+      type: 'funding',
+    });
+    if (!transaction) {
+      this.logger.error(
+        `postFunding: no transaction found for reference "${facts.reference}"`,
+      );
+      return null;
+    }
+
+    // The provider's reported amount must match what was actually
+    // requested at initiation — crediting whatever a webhook/poll result
+    // claims means a manipulated or buggy provider response can credit an
+    // arbitrary amount. A mismatch fails the transaction rather than
+    // posting an unverified one.
+    const amountMismatch =
+      facts.providerStatus === 'success' &&
+      facts.netAmount.amount !== transaction.amount;
+    if (amountMismatch) {
+      this.logger.error(
+        `postFunding: provider-reported amount (${facts.netAmount.toDecimalString()}) does not match the requested amount (${Money.of(transaction.amount, transaction.currency).toDecimalString()}) for reference "${facts.reference}" — marking failed instead of crediting an unverified amount`,
+      );
+    }
+    const nextStatus =
+      facts.providerStatus === 'success' && !amountMismatch
+        ? successStatus
+        : 'failed';
+
+    const updateResult = await manager
+      .createQueryBuilder()
+      .update(Transaction)
+      .set({ status: nextStatus })
+      .where('reference = :reference', { reference: facts.reference })
+      .andWhere('status = :pending', { pending: 'pending' })
+      .execute();
+    if (!updateResult.affected) {
+      this.logger.debug(
+        `postFunding: no pending transaction for reference "${facts.reference}" — duplicate delivery or already resolved`,
+      );
+      return null;
+    }
+
+    return nextStatus === 'failed' ? null : transaction;
+  }
+
+  private async insertRefundAttempt(
+    manager: EntityManager,
+    funding: Transaction,
+    attempt: number,
+  ): Promise<Transaction> {
+    const repo = manager.getRepository(Transaction);
+    const reference = `rfd-${funding.id}-${attempt}`;
+    return repo.save(
+      repo.create({
+        reference,
+        provider: funding.provider,
+        providerReference: reference,
+        type: 'funding_refund',
+        status: 'pending',
+        reversesTransactionId: funding.id,
+        amount: funding.amount,
+        currency: funding.currency,
+        senderWalletId: null,
+        recipientWalletId: null,
+        metadata: { attempt },
+      }),
+    );
+  }
+
+  /**
+   * The next refund attempt for a held funding, after the previous one
+   * failed — a new row and a new provider reference every time, because the
+   * provider never accepts a reference twice. Locks the funding row first so
+   * two callers cannot both start attempt n+1; returns null unless the
+   * funding is still `held` with no attempt in flight.
+   */
+  async startRefundAttempt(
+    fundingTransactionId: string,
+  ): Promise<StartRefundAttemptResult | null> {
     return runInTransaction(this.dataSource, async (manager) => {
-      // `amount` is immutable after creation (only `status`/`metadata`
-      // change post-creation — see createPendingFundingTransaction and the
-      // methods around it), so reading it here ahead of the guarded UPDATE
-      // below is safe: it can't race a concurrent writer. Scoped to
-      // `type: 'funding'` — issue #29 put charge and transfer webhooks on
-      // the same signature-verified channel (Kora delivers both to one
-      // dashboard-configured URL), dispatched by the payload's own `event`
-      // field, which isn't itself part of what the signature covers; this
-      // filter is the backstop that keeps a mislabeled/duplicated `event`
-      // from ever making a withdrawal's `reference` resolve here as if it
-      // were a funding transaction (see completeWithdrawal/
-      // reverseWithdrawal's matching `type: 'withdrawal'` filters).
-      const transaction = await manager.getRepository(Transaction).findOneBy({
-        reference: facts.reference,
-        type: 'funding',
+      const repo = manager.getRepository(Transaction);
+      const funding = await repo.findOne({
+        where: { id: fundingTransactionId, type: 'funding' },
+        lock: { mode: 'pessimistic_write' },
       });
-      if (!transaction) {
+      if (!funding || funding.status !== 'held') {
+        return null;
+      }
+      const attempts = await repo.findBy({
+        type: 'funding_refund',
+        reversesTransactionId: funding.id,
+      });
+      if (attempts.some((a) => a.status === 'pending')) {
+        return null;
+      }
+      const attempt = await this.insertRefundAttempt(
+        manager,
+        funding,
+        attempts.length + 1,
+      );
+      return {
+        refundReference: attempt.reference,
+        attempt: attempts.length + 1,
+      };
+    });
+  }
+
+  /**
+   * Posts `DR suspense / CR float` once the provider reports the refund as
+   * paid (docs/adr/0021). The funding row is locked first, so a settle and a
+   * concurrent attempt creation or failure serialise; the guarded
+   * `held` -> `refunded` flip makes a second settle post nothing. An
+   * attempt already marked `failed` can still settle (a late success): the
+   * money really left the provider, so any other pending attempt is
+   * superseded rather than left to refund it again.
+   */
+  async settleRefund(
+    params: SettleRefundParams,
+  ): Promise<SettleRefundResult | null> {
+    return runInTransaction(this.dataSource, async (manager) => {
+      const repo = manager.getRepository(Transaction);
+      const attempt = await repo.findOneBy({
+        reference: params.refundReference,
+        type: 'funding_refund',
+      });
+      if (!attempt) {
         this.logger.error(
-          `postFunding: no transaction found for reference "${facts.reference}"`,
+          `settleRefund: no refund attempt found for reference "${params.refundReference}"`,
         );
         return null;
       }
-
-      // The provider's reported amount must match what was actually
-      // requested at initiation — crediting whatever a webhook/poll result
-      // claims, with no cross-check against our own record, means a
-      // manipulated or buggy provider response can credit an arbitrary
-      // amount. A mismatch fails the transaction rather than posting an
-      // unverified one.
-      const amountMismatch =
-        facts.providerStatus === 'success' &&
-        facts.netAmount.amount !== transaction.amount;
-      if (amountMismatch) {
+      if (params.providerReportedAmount.amount !== attempt.amount) {
         this.logger.error(
-          `postFunding: provider-reported amount (${facts.netAmount.toDecimalString()}) does not match the requested amount (${Money.of(transaction.amount, transaction.currency).toDecimalString()}) for reference "${facts.reference}" — marking failed instead of crediting an unverified amount`,
+          `settleRefund: provider-reported amount (${params.providerReportedAmount.toDecimalString()}) does not match the refund amount (${Money.of(attempt.amount, attempt.currency).toDecimalString()}) for reference "${params.refundReference}" — leaving it unresolved for investigation`,
+        );
+        return null;
+      }
+      const funding = await repo.findOne({
+        where: { id: attempt.reversesTransactionId!, type: 'funding' },
+        lock: { mode: 'pessimistic_write' },
+      });
+      if (!funding) {
+        throw new Error(
+          `settleRefund: refund attempt "${attempt.reference}" has no funding transaction`,
         );
       }
-      const nextStatus =
-        facts.providerStatus === 'success' && !amountMismatch
-          ? 'completed'
-          : 'failed';
-
-      const updateResult = await manager
+      if (funding.status !== 'held') {
+        this.logger.error(
+          `settleRefund: success reported for reference "${params.refundReference}" but the funding is "${funding.status}", not held — needs investigation`,
+        );
+        return null;
+      }
+      const claimed = await manager
         .createQueryBuilder()
         .update(Transaction)
-        .set({ status: nextStatus })
-        .where('reference = :reference', { reference: facts.reference })
-        .andWhere('status = :pending', { pending: 'pending' })
+        .set({ status: 'completed' })
+        .where('id = :id', { id: attempt.id })
+        .andWhere('status IN (:...statuses)', {
+          statuses: ['pending', 'failed'],
+        })
         .execute();
-      if (!updateResult.affected) {
+      if (!claimed.affected) {
         this.logger.debug(
-          `postFunding: no pending transaction for reference "${facts.reference}" — duplicate delivery or already resolved`,
+          `settleRefund: attempt "${attempt.reference}" already settled — duplicate delivery`,
         );
         return null;
       }
+      await manager
+        .createQueryBuilder()
+        .update(Transaction)
+        .set({ status: 'refunded' })
+        .where('id = :id', { id: funding.id })
+        .execute();
+      await this.supersedePendingAttempts(manager, funding.id, attempt.id);
 
-      if (nextStatus !== 'completed') {
+      await this.postRefundEntries(manager, attempt);
+      const wallet = await manager
+        .getRepository(Account)
+        .findOneByOrFail({ id: funding.recipientWalletId! });
+      return {
+        userId: wallet.userId!,
+        netAmount: Money.of(attempt.amount, attempt.currency),
+        fundingReference: funding.reference,
+        refundReference: attempt.reference,
+      };
+    });
+  }
+
+  private async supersedePendingAttempts(
+    manager: EntityManager,
+    fundingId: string,
+    settledAttemptId: string,
+  ): Promise<void> {
+    const repo = manager.getRepository(Transaction);
+    const others = await repo.findBy({
+      type: 'funding_refund',
+      reversesTransactionId: fundingId,
+      status: 'pending',
+    });
+    for (const other of others) {
+      if (other.id === settledAttemptId) {
+        continue;
+      }
+      await repo.update({ id: other.id }, { status: 'failed' });
+      await this.mergeTransactionMetadata(
+        other.reference,
+        { failureReason: 'superseded' },
+        manager,
+      );
+    }
+  }
+
+  private async postRefundEntries(
+    manager: EntityManager,
+    attempt: Transaction,
+  ): Promise<void> {
+    const accountRepo = manager.getRepository(Account);
+    const accounts = await accountRepo
+      .createQueryBuilder('account')
+      .where('account.userId IS NULL')
+      .andWhere('account.currency = :currency', { currency: attempt.currency })
+      .andWhere('account.provider = :provider', { provider: attempt.provider })
+      .andWhere('account.role IN (:...roles)', {
+        roles: ['float', 'suspense'],
+      })
+      .orderBy('account.id', 'ASC')
+      .setLock('pessimistic_write')
+      .getMany();
+    const float = accounts.find((a) => a.role === 'float');
+    const suspense = accounts.find((a) => a.role === 'suspense');
+    if (!float || !suspense) {
+      throw new Error(
+        `settleRefund: missing float or suspense account for refund "${attempt.reference}"`,
+      );
+    }
+    const amount = Money.of(attempt.amount, attempt.currency);
+    const newSuspense = Money.of(suspense.balance, attempt.currency).subtract(
+      amount,
+    );
+    const newFloat = Money.of(float.balance, attempt.currency).subtract(amount);
+    suspense.balance = newSuspense.amount;
+    float.balance = newFloat.amount;
+    await accountRepo.save([suspense, float]);
+
+    const entryRepo = manager.getRepository(LedgerEntry);
+    await entryRepo.save([
+      entryRepo.create({
+        transactionId: attempt.id,
+        accountId: suspense.id,
+        direction: 'debit',
+        amount: amount.amount,
+        runningBalance: newSuspense.amount,
+      }),
+      entryRepo.create({
+        transactionId: attempt.id,
+        accountId: float.id,
+        direction: 'credit',
+        amount: amount.amount,
+        runningBalance: newFloat.amount,
+      }),
+    ]);
+  }
+
+  /**
+   * A refund attempt the provider rejected or reported as failed: no ledger
+   * entries, the money stays in suspense and the funding stays `held`
+   * (docs/adr/0021). Guarded on `pending`, so a duplicate report, or a
+   * failure arriving for an attempt that already completed, changes nothing.
+   */
+  async failRefund(params: FailRefundParams): Promise<FailRefundResult | null> {
+    return runInTransaction(this.dataSource, async (manager) => {
+      const repo = manager.getRepository(Transaction);
+      const attempt = await repo.findOneBy({
+        reference: params.refundReference,
+        type: 'funding_refund',
+      });
+      if (!attempt) {
+        this.logger.error(
+          `failRefund: no refund attempt found for reference "${params.refundReference}"`,
+        );
         return null;
       }
-
-      return this.postFundingEntries(manager, transaction, facts);
+      const updated = await manager
+        .createQueryBuilder()
+        .update(Transaction)
+        .set({ status: 'failed' })
+        .where('id = :id', { id: attempt.id })
+        .andWhere('status = :pending', { pending: 'pending' })
+        .execute();
+      if (!updated.affected) {
+        this.logger.debug(
+          `failRefund: attempt "${attempt.reference}" is not pending — duplicate or already resolved`,
+        );
+        return null;
+      }
+      await this.mergeTransactionMetadata(
+        attempt.reference,
+        { failureReason: params.reason },
+        manager,
+      );
+      const funding = await repo.findOneByOrFail({
+        id: attempt.reversesTransactionId!,
+      });
+      return {
+        fundingTransactionId: funding.id,
+        fundingReference: funding.reference,
+        attempt: (attempt.metadata as FundingRefundTransactionMetadata).attempt,
+      };
     });
   }
 

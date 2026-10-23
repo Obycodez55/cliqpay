@@ -1,5 +1,8 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
-import { seedSystemAccounts } from '../seed-system-accounts';
+import {
+  INITIAL_SYSTEM_ACCOUNTS,
+  seedSystemAccounts,
+} from '../seed-system-accounts';
 
 export class CreateUsersAndAccounts1784628665852 implements MigrationInterface {
   name = 'CreateUsersAndAccounts1784628665852';
@@ -54,7 +57,7 @@ export class CreateUsersAndAccounts1784628665852 implements MigrationInterface {
       CREATE UNIQUE INDEX "UQ_accounts_system" ON "accounts" ("role", "provider", "currency") NULLS NOT DISTINCT WHERE "user_id" IS NULL
     `);
 
-    await seedSystemAccounts(queryRunner, 'NGN');
+    await seedSystemAccounts(queryRunner, 'NGN', INITIAL_SYSTEM_ACCOUNTS);
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {

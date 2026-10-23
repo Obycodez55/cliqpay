@@ -1,6 +1,5 @@
 import fc from 'fast-check';
 import { randomUUID } from 'crypto';
-import { IsNull } from 'typeorm';
 import { Money } from '../../src/shared/primitives/money';
 import {
   PaymentsTestContext,
@@ -8,6 +7,7 @@ import {
   destroyPaymentsTestContext,
   seedUserWithWallet,
 } from './support/payments-test-context';
+import { assertInvariantHolds } from './support/ledger-invariant';
 
 jest.setTimeout(180_000);
 
@@ -23,26 +23,6 @@ jest.setTimeout(180_000);
 const numRuns = process.env.FC_NUM_RUNS
   ? parseInt(process.env.FC_NUM_RUNS, 10)
   : 5;
-
-async function assertInvariantHolds(ctx: PaymentsTestContext): Promise<void> {
-  const float = await ctx.accountRepo.findOneByOrFail({
-    role: 'float',
-    provider: 'kora',
-    currency: 'NGN',
-  });
-  const feeIncome = await ctx.accountRepo.findOneByOrFail({
-    role: 'fee_income',
-    provider: IsNull(),
-    currency: 'NGN',
-  });
-  const wallets = await ctx.accountRepo.findBy({
-    role: 'user_wallet',
-    currency: 'NGN',
-  });
-  const walletSum = wallets.reduce((sum, w) => sum + w.balance, 0n);
-
-  expect(float.balance).toBe(walletSum + feeIncome.balance);
-}
 
 // §2 ("accounts.balance is a cache") as a checkable property: after any
 // operation, an account's cached balance must equal its own latest
@@ -154,7 +134,7 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
             });
             expect(result).not.toBeNull();
 
-            await assertInvariantHolds(ctx);
+            await assertInvariantHolds(ctx.accountRepo);
           }
         },
       ),
@@ -198,7 +178,7 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
               });
               expect(result).not.toBeNull();
 
-              await assertInvariantHolds(ctx);
+              await assertInvariantHolds(ctx.accountRepo);
               await assertCacheMatchesLedger(ctx, walletId);
               continue;
             }
@@ -240,9 +220,94 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
             });
             expect(transferResult).toBeDefined();
 
-            await assertInvariantHolds(ctx);
+            await assertInvariantHolds(ctx.accountRepo);
             await assertCacheMatchesLedger(ctx, senderWalletId);
             await assertCacheMatchesLedger(ctx, recipientWalletId);
+          }
+        },
+      ),
+      { numRuns },
+    );
+  });
+
+  it('holds after any sequence of holds, failed and retried refund attempts and settlements, with suspense equal to the money still held', async () => {
+    const refundOpArb = fc.record({
+      funding: fundingOpArb,
+      outcomes: fc.array(fc.constantFrom('fail', 'settle'), {
+        minLength: 0,
+        maxLength: 4,
+      }),
+    });
+
+    async function assertSuspenseEqualsHeld(): Promise<void> {
+      const suspense = await ctx.accountRepo.findOneByOrFail({
+        role: 'suspense',
+        provider: 'kora',
+        currency: 'NGN',
+      });
+      const held = await ctx.transactionRepo.findBy({
+        type: 'funding',
+        status: 'held',
+      });
+      expect(suspense.balance).toBe(held.reduce((n, t) => n + t.amount, 0n));
+    }
+
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(refundOpArb, { minLength: 1, maxLength: 5 }),
+        async (ops) => {
+          for (const op of ops) {
+            const { walletId } = await seedUserWithWallet(ctx, nextIdentity());
+            const reference = `cliqpay-invariant-hold-${randomUUID()}`;
+            const netAmount = Money.of(op.funding.netAmountMinor, 'NGN');
+            await ctx.ledgerService.createPendingFundingTransaction({
+              reference,
+              provider: 'kora',
+              providerReference: reference,
+              amount: netAmount,
+              recipientWalletId: walletId,
+              metadata: { checkoutUrl: null, grossAmount: null },
+            });
+            const held = await ctx.dataSource.transaction((manager) =>
+              ctx.ledgerService.holdFundingWithinTransaction(manager, {
+                reference,
+                netAmount,
+                providerFee: Money.of(op.funding.feeMinor, 'NGN'),
+                providerStatus: 'success',
+              }),
+            );
+            expect(held).not.toBeNull();
+            await assertInvariantHolds(ctx.accountRepo);
+            await assertSuspenseEqualsHeld();
+
+            let current = held!.refundReference;
+            for (const outcome of op.outcomes) {
+              if (outcome === 'settle') {
+                const settled = await ctx.ledgerService.settleRefund({
+                  refundReference: current,
+                  providerReportedAmount: netAmount,
+                });
+                expect(settled).not.toBeNull();
+                break;
+              }
+              await ctx.ledgerService.failRefund({
+                refundReference: current,
+                reason: 'rejected',
+              });
+              const next = await ctx.ledgerService.startRefundAttempt(
+                held!.fundingTransactionId,
+              );
+              expect(next).not.toBeNull();
+              current = next!.refundReference;
+            }
+
+            await assertInvariantHolds(ctx.accountRepo);
+            await assertSuspenseEqualsHeld();
+            await assertCacheMatchesLedger(ctx, walletId);
+            const wallet = await ctx.accountRepo.findOneByOrFail({
+              id: walletId,
+            });
+            expect(wallet.balance).toBe(0n);
           }
         },
       ),
@@ -279,7 +344,7 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
         expect(first).not.toBeNull();
         expect(second).toBeNull();
 
-        await assertInvariantHolds(ctx);
+        await assertInvariantHolds(ctx.accountRepo);
       }),
       { numRuns },
     );
@@ -324,7 +389,7 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
     const wallet = await ctx.accountRepo.findOneByOrFail({ id: walletId });
     expect(wallet.balance).toBe(0n);
 
-    await assertInvariantHolds(ctx);
+    await assertInvariantHolds(ctx.accountRepo);
   });
 
   it('rejects UPDATE and DELETE against ledger_entries at the database level, not just by application convention', async () => {

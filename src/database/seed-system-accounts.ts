@@ -6,15 +6,25 @@ import { QueryRunner } from 'typeorm';
 // database/migrations/ deliberately — TypeORM's migration glob loader
 // treats every export of a file under that directory as a migration class
 // constructor, so a plain function there breaks `DataSource.initialize()`.
-const SYSTEM_ACCOUNTS: {
+interface SystemAccountSeed {
   type: string;
   role: string;
   provider: string | null;
-}[] = [
+}
+
+// The roles the original accounts table constraint allowed. The first
+// migration seeds these only: `suspense` is not a valid role until its own
+// migration widens the constraint.
+export const INITIAL_SYSTEM_ACCOUNTS: SystemAccountSeed[] = [
   { type: 'asset', role: 'float', provider: 'kora' },
   { type: 'expense', role: 'fee_expense', provider: 'kora' },
   { type: 'equity', role: 'fee_recovery', provider: 'kora' },
   { type: 'equity', role: 'fee_income', provider: null },
+];
+
+const SYSTEM_ACCOUNTS: SystemAccountSeed[] = [
+  ...INITIAL_SYSTEM_ACCOUNTS,
+  { type: 'liability', role: 'suspense', provider: 'kora' },
 ];
 
 /**
@@ -27,8 +37,9 @@ const SYSTEM_ACCOUNTS: {
 export async function seedSystemAccounts(
   queryRunner: QueryRunner,
   currency: string,
+  accounts: SystemAccountSeed[] = SYSTEM_ACCOUNTS,
 ): Promise<void> {
-  for (const account of SYSTEM_ACCOUNTS) {
+  for (const account of accounts) {
     await queryRunner.query(
       `INSERT INTO "accounts" ("type", "role", "provider", "currency", "balance")
        VALUES ($1, $2, $3, $4, 0)

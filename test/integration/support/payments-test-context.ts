@@ -29,6 +29,8 @@ import { CreateNotifications1786812506579 } from '../../../src/database/migratio
 import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
 import { CreateTierLimits1787600000001 } from '../../../src/database/migrations/1787600000001-CreateTierLimits';
 import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
+import { AddSuspenseAccountRole1787700000000 } from '../../../src/database/migrations/1787700000000-AddSuspenseAccountRole';
+import { AddHeldFundingStatusesAndRefundType1787700000001 } from '../../../src/database/migrations/1787700000001-AddHeldFundingStatusesAndRefundType';
 import { AddKycLimitQueryIndexes1787600000005 } from '../../../src/database/migrations/1787600000005-AddKycLimitQueryIndexes';
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
@@ -103,6 +105,8 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
   await new CreateTierLimits1787600000001().up(queryRunner);
   await new AddKycTierToUsers1787600000002().up(queryRunner);
   await new AddKycLimitQueryIndexes1787600000005().up(queryRunner);
+  await new AddSuspenseAccountRole1787700000000().up(queryRunner);
+  await new AddHeldFundingStatusesAndRefundType1787700000001().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 

@@ -13,6 +13,9 @@ import { Account } from './account.entity';
 export type TransactionProvider = 'kora';
 export type TransactionType =
   | 'funding'
+  // One refund attempt of a held funding (docs/adr/0021): `reversesTransactionId`
+  // points at the funding row; only a completed attempt has ledger entries.
+  | 'funding_refund'
   | 'p2p_transfer'
   | 'withdrawal'
   // The compensating transaction for a withdrawal whose payout didn't go
@@ -37,7 +40,11 @@ export type TransactionStatus =
   | 'completed'
   | 'failed'
   | 'reversed'
-  | 'disputed';
+  | 'disputed'
+  // Funding rows only: held = the money is in suspense awaiting a refund,
+  // refunded = a refund attempt completed (docs/adr/0021).
+  | 'held'
+  | 'refunded';
 
 const bigintTransformer = {
   to: (v: bigint) => v,
@@ -59,6 +66,12 @@ export interface FundingTransactionMetadata {
   // figure. Set once, at completion (LedgerService.postFunding) — null
   // until then, same as checkoutUrl before initiation returns.
   grossAmount: { amount: string; currency: string } | null;
+  heldAt?: string;
+}
+
+export interface FundingRefundTransactionMetadata {
+  attempt: number;
+  failureReason?: string;
 }
 
 // `note`/`is_public` belong to Phase 7 (social layer), not this one.
@@ -110,6 +123,7 @@ export interface ChargebackTransactionMetadata {
  */
 export type TransactionMetadata =
   | FundingTransactionMetadata
+  | FundingRefundTransactionMetadata
   | TransferTransactionMetadata
   | WithdrawalTransactionMetadata
   | WithdrawalReversalTransactionMetadata
@@ -137,6 +151,9 @@ export type TransactionMetadata =
   'senderWalletId',
   'createdAt',
 ])
+@Index('IDX_transactions_held_funding', ['createdAt'], {
+  where: `"type" = 'funding' AND "status" = 'held'`,
+})
 @Index('IDX_transactions_pending_funding_recipient', ['recipientWalletId'], {
   where: `"type" = 'funding' AND "status" = 'pending'`,
 })
