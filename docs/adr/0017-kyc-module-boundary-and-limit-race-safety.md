@@ -221,3 +221,11 @@ so a cap can't strand money that is being returned. Funding initiation is
 unchanged; funding that completes by webhook after initiation is still outside
 the cap, as before.
 
+
+**Money requests are checked against the requester's cap at creation.**
+`kyc.checkCanReceive(manager, userId, amount, readBalanceAndPending)` rejects a
+request the requester could not currently receive: `KYC_VERIFICATION_REQUIRED`
+for tier 0, `BALANCE_CAP_EXCEEDED` with the cap and remaining headroom
+otherwise. It is advisory, so it takes no advisory lock and writes nothing, and
+the requester may see their own limits. The payer's error at payment time is
+still the generic `RECIPIENT_UNABLE_TO_RECEIVE`.

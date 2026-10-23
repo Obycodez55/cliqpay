@@ -96,11 +96,10 @@ export class TooManyVerificationAttemptsException extends DomainException {
 
 export class KycVerificationRequiredException extends DomainException {
   readonly code = 'KYC_VERIFICATION_REQUIRED';
-  constructor() {
-    super(
-      'Verify your BVN or NIN to start sending, withdrawing or adding money.',
-      HttpStatus.UNPROCESSABLE_ENTITY,
-    );
+  constructor(
+    message = 'Verify your BVN or NIN to start sending, withdrawing or adding money.',
+  ) {
+    super(message, HttpStatus.UNPROCESSABLE_ENTITY);
   }
 }
 
@@ -122,11 +121,12 @@ export class DailyLimitExceededException extends DomainException {
 export class BalanceCapExceededException extends DomainException {
   readonly code = 'BALANCE_CAP_EXCEEDED';
   readonly details: { balanceCap: object; remaining: object };
-  constructor(balanceCap: Money, remaining: Money) {
-    super(
-      `This top-up would take your wallet over its balance limit of ${balanceCap.toDecimalString()}. You can add up to ${remaining.toDecimalString()} right now, counting any top-ups still in progress.`,
-      HttpStatus.UNPROCESSABLE_ENTITY,
-    );
+  constructor(
+    balanceCap: Money,
+    remaining: Money,
+    message = `This top-up would take your wallet over its balance limit of ${balanceCap.toDecimalString()}. You can add up to ${remaining.toDecimalString()} right now, counting any top-ups still in progress.`,
+  ) {
+    super(message, HttpStatus.UNPROCESSABLE_ENTITY);
     this.details = {
       balanceCap: balanceCap.toJSON(),
       remaining: remaining.toJSON(),

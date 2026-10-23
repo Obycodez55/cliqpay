@@ -161,14 +161,19 @@ describe('Recipient balance cap on incoming P2P transfers', () => {
     expect(replay.body).toEqual(first.body);
   });
 
-  it('rejects a money-request payment to a requester at their cap, leaving the request pending', async () => {
-    const requester = await seedUser('tier1', TIER1_CAP - BigInt(MIN) + 1n);
+  it('rejects a money-request payment once the requester has since reached their cap, with the same generic error, leaving the request pending', async () => {
+    const requester = await seedUser('tier1', TIER1_CAP - BigInt(MIN));
     const payer = await seedUser('tier3', 100_000_000n, 'payer');
     const created = await request(ctx.app.getHttpServer())
       .post('/money-requests')
       .set('Authorization', `Bearer ${tokenFor(requester.userId)}`)
       .send({ payerUserId: payer.userId, amount: MIN })
       .expect(201);
+    await fundWallet(ctx, {
+      reference: `cliqpay-cap-fill-${requester.userId}`,
+      walletId: requester.walletId,
+      netAmountMinor: 1n,
+    });
     const ref = reference();
 
     const res = await request(ctx.app.getHttpServer())
@@ -177,7 +182,11 @@ describe('Recipient balance cap on incoming P2P transfers', () => {
       .send({ reference: ref, pin: '1234' });
 
     expect(res.status).toBe(422);
-    expect(JSON.stringify(res.body)).toContain(GENERIC_MESSAGE);
+    const text = JSON.stringify(res.body);
+    expect(text).toContain(GENERIC_MESSAGE);
+    for (const secret of ['30000000', '300000', 'tier1', 'cap', 'details']) {
+      expect(text).not.toContain(secret);
+    }
     const moneyRequest = await ctx.moneyRequestRepo.findOneByOrFail({
       id: (created.body as { id: string }).id,
     });

@@ -4,6 +4,8 @@ import { DataSource, Repository, WhereExpressionBuilder } from 'typeorm';
 import { EntityNotFoundError } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { UsersService } from '../users/users.service';
+import { KycService } from '../kyc/kyc.service';
+import { LedgerService } from '../ledger/ledger.service';
 import { EventBusService } from '../../shared/events/event-bus.service';
 import {
   MONEY_REQUEST_CREATED_EVENT,
@@ -101,6 +103,8 @@ export class MoneyRequestsService {
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly usersService: UsersService,
     private readonly transfersService: TransfersService,
+    private readonly kycService: KycService,
+    private readonly ledgerService: LedgerService,
     private readonly eventBus: EventBusService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
@@ -122,6 +126,13 @@ export class MoneyRequestsService {
     if (dto.payerUserId === requesterId) {
       throw new SelfMoneyRequestException();
     }
+
+    await this.kycService.checkCanReceive(
+      this.dataSource.manager,
+      requesterId,
+      Money.of(dto.amount, NGN),
+      (m) => this.ledgerService.getBalanceAndPendingFunding(m, requesterId),
+    );
 
     const requester = await this.usersService.findById(requesterId);
     let payer: CounterpartyUser;

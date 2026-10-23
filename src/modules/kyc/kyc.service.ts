@@ -565,6 +565,35 @@ export class KycService {
     );
   }
 
+  // Advisory: the requester's headroom can change before anyone pays, so this
+  // takes no lock and writes nothing, and a stale answer costs at worst a
+  // request that later fails at payment.
+  async checkCanReceive(
+    manager: EntityManager,
+    userId: string,
+    amount: Money,
+    readBalanceAndPending: BalanceAndPendingReader,
+  ): Promise<void> {
+    await this.checkBalanceCapLocked(
+      manager,
+      userId,
+      amount,
+      readBalanceAndPending,
+      {
+        zeroCap: () =>
+          new KycVerificationRequiredException(
+            'Verify your BVN or NIN before requesting money.',
+          ),
+        overCap: (cap, remaining) =>
+          new BalanceCapExceededException(
+            cap,
+            remaining,
+            `This request would take your wallet over its balance limit of ${cap.toDecimalString()}. You can request up to ${remaining.toDecimalString()} right now, counting any top-ups still in progress.`,
+          ),
+      },
+    );
+  }
+
   // A P2P transfer bounds both ends: the sender's daily limit and the
   // recipient's balance cap. Both users' locks are taken before either check.
   // The recipient's refusal reveals nothing about their tier or balance.

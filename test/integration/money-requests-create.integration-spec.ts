@@ -1,9 +1,11 @@
 import * as request from 'supertest';
 import { JwtService } from '@nestjs/jwt';
+import { KycTier } from '../../src/modules/users/users.service';
 import {
   TransfersTestContext,
   createTransfersTestContext,
   destroyTransfersTestContext,
+  fundWallet,
   seedTransferUser,
 } from './support/transfers-test-context';
 
@@ -146,6 +148,85 @@ describe('POST /money-requests — create', () => {
       },
       404,
     );
+  });
+
+  describe('requester receive headroom', () => {
+    // Seeded tier1 balance cap (N300,000), in kobo.
+    const TIER1_CAP = 30_000_000n;
+
+    async function seedTiered(
+      kycTier: KycTier,
+      balanceMinor = 0n,
+      prefix = 'headroom',
+    ) {
+      const user = await seedTransferUser(ctx, {
+        ...nextIdentity(prefix),
+        kycTier,
+      });
+      if (balanceMinor > 0n) {
+        await fundWallet(ctx, {
+          reference: `cliqpay-mr-headroom-${user.userId}`,
+          walletId: user.walletId,
+          netAmountMinor: balanceMinor,
+        });
+      }
+      return user;
+    }
+
+    function post(requesterId: string, payerId: string, amount: number) {
+      return request(ctx.app.getHttpServer())
+        .post('/money-requests')
+        .set('Authorization', `Bearer ${tokenFor(requesterId)}`)
+        .send({ payerUserId: payerId, amount });
+    }
+
+    it('asks a tier-0 requester to verify, creating nothing', async () => {
+      const requester = await seedTiered('tier0');
+      const payer = await seedUser('payer');
+
+      const res = await post(requester.userId, payer.userId, 10_000).expect(
+        422,
+      );
+
+      expect(JSON.stringify(res.body)).toContain('before requesting money');
+      expect(
+        await ctx.moneyRequestRepo.countBy({
+          requesterUserId: requester.userId,
+        }),
+      ).toBe(0);
+    });
+
+    it('rejects a request one kobo over the requester headroom and tells them the headroom, creating nothing', async () => {
+      const requester = await seedTiered('tier1', TIER1_CAP - 10_000n);
+      const payer = await seedUser('payer');
+
+      const res = await post(requester.userId, payer.userId, 10_001).expect(
+        422,
+      );
+
+      const text = JSON.stringify(res.body);
+      expect(text).toContain('balance limit of 300000.00');
+      expect(text).toContain('request up to 100.00 right now');
+      expect(
+        await ctx.moneyRequestRepo.countBy({
+          requesterUserId: requester.userId,
+        }),
+      ).toBe(0);
+    });
+
+    it('rejects any request from a requester already at their cap', async () => {
+      const requester = await seedTiered('tier1', TIER1_CAP);
+      const payer = await seedUser('payer');
+
+      await post(requester.userId, payer.userId, 10_000).expect(422);
+    });
+
+    it('allows a request that lands exactly on the requester headroom', async () => {
+      const requester = await seedTiered('tier1', TIER1_CAP - 10_000n);
+      const payer = await seedUser('payer');
+
+      await post(requester.userId, payer.userId, 10_000).expect(201);
+    });
   });
 
   describe('pair cap', () => {
