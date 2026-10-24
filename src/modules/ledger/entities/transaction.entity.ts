@@ -74,6 +74,8 @@ export interface FundingTransactionMetadata {
 export interface FundingRefundTransactionMetadata {
   attempt: number;
   failureReason?: string;
+  // Set once the provider has, or may have, accepted the request.
+  initiatedAt?: string;
 }
 
 // `note`/`is_public` belong to Phase 7 (social layer), not this one.

@@ -593,4 +593,65 @@ describe('Ledger funding hold, refund settlement and failure', () => {
       expect(await ctx.ledgerService.findRefundContext('rfd-nope')).toBeNull();
     });
   });
+
+  describe('reconciliation figures', () => {
+    async function figures() {
+      return ctx.ledgerService.getReconciliationFigures('kora', 'NGN');
+    }
+
+    it('reports the suspense balance and counts a pending refund as in flight only once it was initiated', async () => {
+      const before = await figures();
+      const { reference } = await seedPendingFunding();
+      const held = (await hold(reference))!;
+
+      const afterHold = await figures();
+      expect(afterHold.suspense.amount).toBe(
+        before.suspense.amount + NET.amount,
+      );
+      expect(afterHold.float.amount).toBe(before.float.amount + NET.amount);
+      expect(afterHold.inFlightRefunds.amount).toBe(
+        before.inFlightRefunds.amount,
+      );
+
+      await ctx.ledgerService.markRefundInitiated(held.refundReference);
+
+      expect((await figures()).inFlightRefunds.amount).toBe(
+        before.inFlightRefunds.amount + NET.amount,
+      );
+    });
+
+    it('stops counting a refund once it settled or failed', async () => {
+      const base = (await figures()).inFlightRefunds.amount;
+      const settled = (await hold((await seedPendingFunding()).reference))!;
+      const failed = (await hold((await seedPendingFunding()).reference))!;
+      await ctx.ledgerService.markRefundInitiated(settled.refundReference);
+      await ctx.ledgerService.markRefundInitiated(failed.refundReference);
+      expect((await figures()).inFlightRefunds.amount).toBe(
+        base + 2n * NET.amount,
+      );
+
+      await ctx.ledgerService.settleRefund({
+        refundReference: settled.refundReference,
+        providerReportedAmount: NET,
+      });
+      await ctx.ledgerService.failRefund({
+        refundReference: failed.refundReference,
+        reason: 'x',
+      });
+
+      expect((await figures()).inFlightRefunds.amount).toBe(base);
+    });
+
+    it('exposes the suspense balance and the in-flight total on their own', async () => {
+      const held = (await hold((await seedPendingFunding()).reference))!;
+      await ctx.ledgerService.markRefundInitiated(held.refundReference);
+
+      expect(
+        (await ctx.ledgerService.getSuspenseBalance('kora', 'NGN')).amount,
+      ).toBe((await figures()).suspense.amount);
+      expect(
+        (await ctx.ledgerService.getInFlightRefundTotal('kora', 'NGN')).amount,
+      ).toBe((await figures()).inFlightRefunds.amount);
+    });
+  });
 });

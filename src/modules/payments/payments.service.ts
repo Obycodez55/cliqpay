@@ -520,33 +520,48 @@ export class PaymentsService {
   // in suspense and the pending attempt row is durable, so nothing is
   // thrown: a failure must not turn the webhook into a non-2xx that Kora
   // retries into the idempotency guard.
-  private async initiateRefund(held: RefundRequest): Promise<void> {
+  private async initiateRefund(request: RefundRequest): Promise<void> {
     let result: InitiateRefundResult;
     try {
       result = await this.adapter.initiateRefund({
-        reference: held.refundReference,
-        paymentReference: held.fundingReference,
-        amount: held.netAmount,
+        reference: request.refundReference,
+        paymentReference: request.fundingReference,
+        amount: request.netAmount,
         reason: REFUND_REASON,
       });
     } catch (error) {
       this.logger.error(
-        `initiateRefund: refund "${held.refundReference}" could not be started (${(error as Error).message}) — attempt left pending`,
+        `initiateRefund: refund "${request.refundReference}" could not be started (${(error as Error).message}) — attempt left pending`,
       );
       return;
     }
 
     if (result.status === 'rejected') {
       await this.ledgerService.failRefund({
-        refundReference: held.refundReference,
+        refundReference: request.refundReference,
         reason: result.reason,
       });
       this.logger.error(
-        `initiateRefund: refund "${held.refundReference}" rejected by the provider (${result.reason}) — funding stays held`,
+        `initiateRefund: refund "${request.refundReference}" rejected by the provider (${result.reason}) — funding stays held`,
       );
-    } else if (result.status === 'unknown') {
+      return;
+    }
+    if (result.status === 'unknown') {
       this.logger.warn(
-        `initiateRefund: no confirmed answer for refund "${held.refundReference}" (${result.detail}) — attempt left pending`,
+        `initiateRefund: no confirmed answer for refund "${request.refundReference}" (${result.detail}) — attempt left pending`,
+      );
+    }
+    await this.markRefundInitiated(request.refundReference);
+  }
+
+  // Only the reconciliation's in-flight figure depends on this, so a failure
+  // is logged rather than allowed to fail the webhook or the poll.
+  private async markRefundInitiated(refundReference: string): Promise<void> {
+    try {
+      await this.ledgerService.markRefundInitiated(refundReference);
+    } catch (error) {
+      this.logger.error(
+        `markRefundInitiated: could not record refund "${refundReference}" as initiated (${(error as Error).message}) — reconciliation may flag a mismatch until it settles`,
       );
     }
   }
@@ -983,25 +998,30 @@ export class PaymentsService {
   // transaction, never this job (CLAUDE.md, "corrections are compensating
   // transactions, never mutations of history").
   private async reconcilePair(pair: ActiveReconciliationPair): Promise<void> {
-    const [ledgerBalance, providerBalance] = await Promise.all([
-      this.ledgerService.getFloatBalance(pair.provider, pair.currency),
+    const [figures, providerBalance] = await Promise.all([
+      this.ledgerService.getReconciliationFigures(pair.provider, pair.currency),
       this.adapter.getBalance(pair.currency),
     ]);
+    // Kora debits a refund when it accepts it, before the ledger settles it,
+    // so the provider should hold float minus refunds still in flight. Held
+    // money itself is still in the provider's balance and needs no
+    // adjustment.
+    const expected = figures.float.subtract(figures.inFlightRefunds);
 
     // Every run's result is logged, match or mismatch — §4.4's
     // "logged and reviewable" requirement.
     this.logger.debug(
-      `reconcileFloatBalances: ${pair.provider}/${pair.currency} ledger=${ledgerBalance.toDecimalString()} provider=${providerBalance.toDecimalString()}`,
+      `reconcileFloatBalances: ${pair.provider}/${pair.currency} ledger=${figures.float.toDecimalString()} suspense=${figures.suspense.toDecimalString()} inFlightRefunds=${figures.inFlightRefunds.toDecimalString()} provider=${providerBalance.toDecimalString()}`,
     );
 
-    if (ledgerBalance.equals(providerBalance)) {
+    if (expected.equals(providerBalance)) {
       return;
     }
 
-    const delta = ledgerBalance.subtract(providerBalance);
+    const delta = expected.subtract(providerBalance);
     const occurredAt = new Date();
     this.logger.error(
-      `reconcileFloatBalances: mismatch for ${pair.provider}/${pair.currency} — ledger=${ledgerBalance.toDecimalString()} provider=${providerBalance.toDecimalString()} delta=${delta.toDecimalString()}`,
+      `reconcileFloatBalances: mismatch for ${pair.provider}/${pair.currency} — ledger=${figures.float.toDecimalString()} suspense=${figures.suspense.toDecimalString()} inFlightRefunds=${figures.inFlightRefunds.toDecimalString()} provider=${providerBalance.toDecimalString()} delta=${delta.toDecimalString()}`,
     );
 
     await this.eventBus.publish<string, ReconciliationMismatchEventPayload>({
@@ -1010,7 +1030,9 @@ export class PaymentsService {
         email: this.reconciliationAlertEmail,
         provider: pair.provider,
         currency: pair.currency,
-        ledgerBalance: ledgerBalance.toDecimalString(),
+        ledgerBalance: figures.float.toDecimalString(),
+        suspenseBalance: figures.suspense.toDecimalString(),
+        inFlightRefunds: figures.inFlightRefunds.toDecimalString(),
         providerBalance: providerBalance.toDecimalString(),
         delta: delta.toDecimalString(),
         occurredAt: occurredAt.toISOString(),

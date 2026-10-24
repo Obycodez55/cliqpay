@@ -1,5 +1,7 @@
 <p style="font-size:16px;color:#222222;margin:0 0 8px;">Float balance mismatch detected for {{provider}}/{{currency}}.</p>
 <p style="font-size:16px;color:#222222;margin:0 0 8px;">Ledger balance: {{currency}} {{ledgerBalance}}</p>
+<p style="font-size:16px;color:#222222;margin:0 0 8px;">Held in suspense (owed back to payers): {{currency}} {{suspenseBalance}}</p>
+<p style="font-size:16px;color:#222222;margin:0 0 8px;">Refunds in flight (already debited by the provider): {{currency}} {{inFlightRefunds}}</p>
 <p style="font-size:16px;color:#222222;margin:0 0 8px;">Provider balance: {{currency}} {{providerBalance}}</p>
-<p style="font-size:16px;color:#222222;margin:0 0 8px;">Delta: {{currency}} {{delta}}</p>
+<p style="font-size:16px;color:#222222;margin:0 0 8px;">Delta (ledger balance minus refunds in flight minus provider balance): {{currency}} {{delta}}</p>
 <p style="font-size:16px;color:#222222;margin:0;">Detected at: {{occurredAt}}</p>

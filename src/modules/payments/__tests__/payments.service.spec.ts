@@ -54,6 +54,7 @@ type CompletionLedger = jest.Mocked<
     | 'findHeldFundings'
     | 'startRefundAttempt'
     | 'setRefundAlerts'
+    | 'markRefundInitiated'
   >
 >;
 
@@ -71,6 +72,7 @@ function completionLedger(): CompletionLedger {
     findHeldFundings: jest.fn().mockResolvedValue([]),
     startRefundAttempt: jest.fn(),
     setRefundAlerts: jest.fn(),
+    markRefundInitiated: jest.fn(),
   };
 }
 
@@ -258,6 +260,31 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
       await service.handleKoraWebhook(webhookBody(), 'sig');
 
       expect(order).toEqual(['commit', 'initiate']);
+    });
+
+    it.each([
+      [{ status: 'accepted' } as const],
+      [{ status: 'already_exists' } as const],
+      [{ status: 'unknown', detail: 'timeout' } as const],
+    ])('records that the refund reached the provider on %o', async (result) => {
+      adapter.initiateRefund.mockResolvedValue(result);
+
+      await service.handleKoraWebhook(webhookBody(), 'sig');
+
+      expect(ledgerService.markRefundInitiated.mock.calls).toEqual([
+        ['rfd-funding-1-1'],
+      ]);
+    });
+
+    it('does not record a refund the provider rejected as initiated', async () => {
+      adapter.initiateRefund.mockResolvedValue({
+        status: 'rejected',
+        reason: 'Transaction not found',
+      });
+
+      await service.handleKoraWebhook(webhookBody(), 'sig');
+
+      expect(ledgerService.markRefundInitiated.mock.calls).toHaveLength(0);
     });
 
     it('fails the attempt when the provider rejects the refund', async () => {
@@ -687,14 +714,22 @@ describe('PaymentsService.pollStaleFundingTransactions', () => {
 });
 
 describe('PaymentsService.reconcileFloatBalances', () => {
-  let ledgerService: jest.Mocked<Pick<LedgerService, 'getFloatBalance'>>;
+  let ledgerService: jest.Mocked<
+    Pick<LedgerService, 'getReconciliationFigures'>
+  >;
   let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let adapter: FakeAdapter;
   let service: PaymentsService;
 
+  const figures = (float: bigint, suspense = 0n, inFlight = 0n) => ({
+    float: Money.of(float, 'NGN'),
+    suspense: Money.of(suspense, 'NGN'),
+    inFlightRefunds: Money.of(inFlight, 'NGN'),
+  });
+
   beforeEach(() => {
-    ledgerService = { getFloatBalance: jest.fn() };
+    ledgerService = { getReconciliationFigures: jest.fn() };
     usersService = { findById: jest.fn() };
     eventBus = { publish: jest.fn() };
     adapter = new FakeAdapter();
@@ -710,7 +745,7 @@ describe('PaymentsService.reconcileFloatBalances', () => {
   });
 
   it('does not publish when the ledger and provider balances match', async () => {
-    ledgerService.getFloatBalance.mockResolvedValue(Money.of(500_000n, 'NGN'));
+    ledgerService.getReconciliationFigures.mockResolvedValue(figures(500_000n));
     adapter.setBalance('NGN', Money.of(500_000n, 'NGN'));
 
     await service.reconcileFloatBalances();
@@ -718,9 +753,22 @@ describe('PaymentsService.reconcileFloatBalances', () => {
     expect(eventBus.publish).not.toHaveBeenCalled();
   });
 
-  it('publishes reconciliation_mismatch with both values and the delta when they diverge', async () => {
-    ledgerService.getFloatBalance.mockResolvedValue(Money.of(500_000n, 'NGN'));
-    adapter.setBalance('NGN', Money.of(480_000n, 'NGN'));
+  it('compares float minus refunds in flight with the provider balance, so a refund Kora already debited is not a mismatch', async () => {
+    ledgerService.getReconciliationFigures.mockResolvedValue(
+      figures(500_000n, 100_000n, 100_000n),
+    );
+    adapter.setBalance('NGN', Money.of(400_000n, 'NGN'));
+
+    await service.reconcileFloatBalances();
+
+    expect(eventBus.publish).not.toHaveBeenCalled();
+  });
+
+  it('publishes reconciliation_mismatch with the figures and the delta against what the provider should hold', async () => {
+    ledgerService.getReconciliationFigures.mockResolvedValue(
+      figures(500_000n, 100_000n, 100_000n),
+    );
+    adapter.setBalance('NGN', Money.of(380_000n, 'NGN'));
 
     await service.reconcileFloatBalances();
 
@@ -735,14 +783,18 @@ describe('PaymentsService.reconcileFloatBalances', () => {
       provider: 'kora',
       currency: 'NGN',
       ledgerBalance: '5000.00',
-      providerBalance: '4800.00',
+      suspenseBalance: '1000.00',
+      inFlightRefunds: '1000.00',
+      providerBalance: '3800.00',
       delta: '200.00',
     });
     expect(typeof published.payload.occurredAt).toBe('string');
   });
 
   it('does not let one pair failing to reconcile stop the rest of the batch', async () => {
-    ledgerService.getFloatBalance.mockRejectedValueOnce(new Error('db blip'));
+    ledgerService.getReconciliationFigures.mockRejectedValueOnce(
+      new Error('db blip'),
+    );
 
     await expect(service.reconcileFloatBalances()).resolves.toBeUndefined();
     expect(eventBus.publish).not.toHaveBeenCalled();

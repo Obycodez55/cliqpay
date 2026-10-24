@@ -169,6 +169,8 @@ export interface ReconciliationMismatchPayload {
   provider: string;
   currency: string;
   ledgerBalance: string;
+  suspenseBalance: string;
+  inFlightRefunds: string;
   providerBalance: string;
   delta: string;
   occurredAt: string;

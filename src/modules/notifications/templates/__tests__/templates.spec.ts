@@ -160,3 +160,26 @@ describe('refund_attention_required', () => {
     expect(inAppTemplates.refund_attention_required).toBeUndefined();
   });
 });
+
+describe('reconciliation_mismatch', () => {
+  it('shows the suspense balance and the refunds in flight next to the balances', () => {
+    const email = emailTemplates.reconciliation_mismatch!({
+      email: 'ops@cliqpay.test',
+      provider: 'kora',
+      currency: 'NGN',
+      ledgerBalance: '5000.00',
+      suspenseBalance: '1000.00',
+      inFlightRefunds: '250.00',
+      providerBalance: '3800.00',
+      delta: '200.00',
+      occurredAt: '2026-10-24T10:00:00.000Z',
+    });
+
+    for (const part of [email.html, email.text]) {
+      expect(part).toContain('NGN 1000.00');
+      expect(part).toContain('NGN 250.00');
+    }
+    expect(email.html).toContain('Held in suspense');
+    expect(email.html).toContain('Refunds in flight');
+  });
+});

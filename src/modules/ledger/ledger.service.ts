@@ -108,6 +108,12 @@ export interface HeldFunding {
   alerts: Record<string, string>;
 }
 
+export interface ReconciliationFigures {
+  float: Money;
+  suspense: Money;
+  inFlightRefunds: Money;
+}
+
 export interface RefundContext {
   attemptStatus: TransactionStatus;
   fundingStatus: TransactionStatus;
@@ -665,15 +671,74 @@ export class LedgerService {
   async getFloatBalance(
     provider: TransactionProvider,
     currency: string,
+    manager: EntityManager | DataSource = this.dataSource,
   ): Promise<Money> {
-    const account = await this.dataSource
-      .getRepository(Account)
-      .findOneByOrFail({
-        role: 'float',
+    const account = await manager.getRepository(Account).findOneByOrFail({
+      role: 'float',
+      provider,
+      currency,
+    });
+    return Money.of(account.balance, account.currency);
+  }
+
+  // Money in the provider's balance that is owed back to payers (docs/adr/0021).
+  async getSuspenseBalance(
+    provider: TransactionProvider,
+    currency: string,
+    manager: EntityManager | DataSource = this.dataSource,
+  ): Promise<Money> {
+    const account = await manager.getRepository(Account).findOneByOrFail({
+      role: 'suspense',
+      provider,
+      currency,
+    });
+    return Money.of(account.balance, account.currency);
+  }
+
+  // Refunds the provider already has (it debits its balance when it accepts
+  // one) that the ledger has not settled yet. Until they settle, the
+  // provider's balance is lower than float by this much.
+  async getInFlightRefundTotal(
+    provider: TransactionProvider,
+    currency: string,
+    manager: EntityManager | DataSource = this.dataSource,
+  ): Promise<Money> {
+    const row = await manager
+      .getRepository(Transaction)
+      .createQueryBuilder('transaction')
+      .select('COALESCE(SUM(transaction.amount), 0)', 'total')
+      .where('transaction.type = :type', { type: 'funding_refund' })
+      .andWhere('transaction.status = :status', { status: 'pending' })
+      .andWhere('transaction.provider = :provider', { provider })
+      .andWhere('transaction.currency = :currency', { currency })
+      .andWhere("transaction.metadata ? 'initiatedAt'")
+      .getRawOne<{ total: string }>();
+    return Money.of(BigInt(row?.total ?? 0), currency);
+  }
+
+  // The three figures read from one snapshot, so a refund settling between
+  // two reads cannot show as a mismatch.
+  async getReconciliationFigures(
+    provider: TransactionProvider,
+    currency: string,
+  ): Promise<ReconciliationFigures> {
+    return this.dataSource.transaction('REPEATABLE READ', async (manager) => ({
+      float: await this.getFloatBalance(provider, currency, manager),
+      suspense: await this.getSuspenseBalance(provider, currency, manager),
+      inFlightRefunds: await this.getInFlightRefundTotal(
         provider,
         currency,
-      });
-    return Money.of(account.balance, account.currency);
+        manager,
+      ),
+    }));
+  }
+
+  // Recorded once the provider has, or may have, accepted the refund; see
+  // getInFlightRefundTotal.
+  async markRefundInitiated(refundReference: string): Promise<void> {
+    await this.mergeTransactionMetadata(refundReference, {
+      initiatedAt: new Date().toISOString(),
+    });
   }
 
   // Serves GET /wallet/transactions (issue #16). Reads ledger_entries joined

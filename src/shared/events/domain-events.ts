@@ -215,8 +215,10 @@ export interface ReconciliationMismatchEventPayload {
   provider: string;
   currency: string;
   ledgerBalance: string; // decimal display string, ledger-derived float_<ccy> balance
+  suspenseBalance: string; // decimal display string, held money owed back to payers
+  inFlightRefunds: string; // decimal display string, refunds the provider already debited
   providerBalance: string; // decimal display string, provider-reported balance
-  delta: string; // decimal display string, ledgerBalance - providerBalance
+  delta: string; // decimal display string, ledgerBalance - inFlightRefunds - providerBalance
   occurredAt: string; // ISO timestamp
 }
 
