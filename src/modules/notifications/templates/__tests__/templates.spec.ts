@@ -114,3 +114,49 @@ describe('funding refund emails', () => {
     expect(email.text).toContain("provider's fee is not refunded");
   });
 });
+
+describe('refund_attention_required', () => {
+  const payload = {
+    email: 'ops@cliqpay.test',
+    reason: 'retries_exhausted',
+    fundingReference: 'cliqpay-ref-1',
+    refundReference: null,
+    amount: '5000.00',
+    currency: 'NGN',
+    heldSince: '2026-10-23T10:00:00.000Z',
+    attempts: 5,
+    lastFailure: 'Insufficient balance',
+    occurredAt: '2026-10-24T10:00:00.000Z',
+  };
+
+  it('names the reason, the funding, the attempts and the last failure', () => {
+    const email = emailTemplates.refund_attention_required!(payload);
+
+    expect(email.subject).toContain('retries_exhausted');
+    for (const part of [email.html, email.text]) {
+      expect(part).toContain('cliqpay-ref-1');
+      expect(part).toContain('NGN 5000.00');
+      expect(part).toContain('Insufficient balance');
+    }
+  });
+
+  it('omits the fields an alert does not have', () => {
+    const email = emailTemplates.refund_attention_required!({
+      ...payload,
+      reason: 'late_success_after_refunded',
+      refundReference: 'rfd-1',
+      heldSince: null,
+      attempts: null,
+      lastFailure: null,
+    });
+
+    expect(email.html).toContain('rfd-1');
+    expect(email.html).not.toContain('Held since');
+    expect(email.html).not.toContain('Attempts');
+    expect(email.html).not.toContain('Last failure');
+  });
+
+  it('has no in-app template: it is addressed to ops, not a user', () => {
+    expect(inAppTemplates.refund_attention_required).toBeUndefined();
+  });
+});

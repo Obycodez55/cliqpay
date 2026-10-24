@@ -1,0 +1,8 @@
+<p style="font-size:16px;color:#222222;margin:0 0 8px;">A refund of held money needs attention ({{reason}}).</p>
+<p style="font-size:16px;color:#222222;margin:0 0 8px;">Amount: {{currency}} {{amount}}</p>
+<p style="font-size:16px;color:#222222;margin:0 0 8px;">Funding reference: {{fundingReference}}</p>
+{{#if refundReference}}<p style="font-size:16px;color:#222222;margin:0 0 8px;">Refund reference: {{refundReference}}</p>{{/if}}
+{{#if heldSince}}<p style="font-size:16px;color:#222222;margin:0 0 8px;">Held since: {{heldSince}}</p>{{/if}}
+{{#if attempts}}<p style="font-size:16px;color:#222222;margin:0 0 8px;">Attempts: {{attempts}}</p>{{/if}}
+{{#if lastFailure}}<p style="font-size:16px;color:#222222;margin:0 0 8px;">Last failure: {{lastFailure}}</p>{{/if}}
+<p style="font-size:16px;color:#222222;margin:0;">Detected at: {{occurredAt}}</p>

@@ -15,6 +15,7 @@ import { PaymentProviderAdapter } from '../adapters/payment-provider.interface';
 import { FakeAdapter } from '../adapters/fake.adapter';
 import {
   FUNDING_COMPLETED_EVENT,
+  REFUND_ATTENTION_REQUIRED_EVENT,
   FUNDING_HELD_EVENT,
   FUNDING_REFUNDED_EVENT,
   RECONCILIATION_MISMATCH_EVENT,
@@ -48,6 +49,11 @@ type CompletionLedger = jest.Mocked<
     | 'holdFundingWithinTransaction'
     | 'failRefund'
     | 'settleRefund'
+    | 'findRefundContext'
+    | 'findStalePendingRefunds'
+    | 'findHeldFundings'
+    | 'startRefundAttempt'
+    | 'setRefundAlerts'
   >
 >;
 
@@ -60,6 +66,11 @@ function completionLedger(): CompletionLedger {
     holdFundingWithinTransaction: jest.fn(),
     failRefund: jest.fn(),
     settleRefund: jest.fn(),
+    findRefundContext: jest.fn().mockResolvedValue(null),
+    findStalePendingRefunds: jest.fn().mockResolvedValue([]),
+    findHeldFundings: jest.fn().mockResolvedValue([]),
+    startRefundAttempt: jest.fn(),
+    setRefundAlerts: jest.fn(),
   };
 }
 
@@ -460,6 +471,45 @@ describe('PaymentsService.handleKoraWebhook (refund events)', () => {
     expect(eventBus.publish).not.toHaveBeenCalled();
   });
 
+  it('alerts ops when a success arrives for an attempt after the funding was already refunded', async () => {
+    ledgerService.settleRefund.mockResolvedValue(null);
+    ledgerService.findRefundContext.mockResolvedValue({
+      attemptStatus: 'failed',
+      fundingStatus: 'refunded',
+      fundingReference: 'cliqpay-ref-1',
+      netAmount: Money.of(500_000n, 'NGN'),
+    });
+
+    await service.handleKoraWebhook(refundBody('refund.success'), 'sig');
+
+    const published = eventBus.publish.mock.calls[0][0] as {
+      name: string;
+      payload: Record<string, unknown>;
+    };
+    expect(published.name).toBe(REFUND_ATTENTION_REQUIRED_EVENT);
+    expect(published.payload).toMatchObject({
+      email: 'ops@cliqpay.test',
+      reason: 'late_success_after_refunded',
+      fundingReference: 'cliqpay-ref-1',
+      refundReference: 'rfd-funding-1-1',
+      amount: '5000.00',
+    });
+  });
+
+  it('does not alert on a duplicate success for the attempt that settled the funding', async () => {
+    ledgerService.settleRefund.mockResolvedValue(null);
+    ledgerService.findRefundContext.mockResolvedValue({
+      attemptStatus: 'completed',
+      fundingStatus: 'refunded',
+      fundingReference: 'cliqpay-ref-1',
+      netAmount: Money.of(500_000n, 'NGN'),
+    });
+
+    await service.handleKoraWebhook(refundBody('refund.success'), 'sig');
+
+    expect(eventBus.publish).not.toHaveBeenCalled();
+  });
+
   it('fails the attempt with Kora’s status_reason on refund.failed', async () => {
     await service.handleKoraWebhook(
       refundBody('refund.failed', { status_reason: 'Insufficient balance' }),
@@ -696,5 +746,29 @@ describe('PaymentsService.reconcileFloatBalances', () => {
 
     await expect(service.reconcileFloatBalances()).resolves.toBeUndefined();
     expect(eventBus.publish).not.toHaveBeenCalled();
+  });
+});
+
+describe('PaymentsService.pollStaleRefundTransactions', () => {
+  it('runs the retry and alert steps even when resolving stale refunds fails', async () => {
+    const ledgerService = completionLedger();
+    ledgerService.findStalePendingRefunds.mockRejectedValue(
+      new Error('db blip'),
+    );
+    const service = new PaymentsService(
+      inlineTransaction,
+      ledgerService as unknown as LedgerService,
+      { findById: jest.fn() } as unknown as UsersService,
+      completionKyc() as unknown as KycService,
+      { publish: jest.fn() } as unknown as EventBusService,
+      mockAdapter(),
+      testConfig,
+    );
+
+    await expect(
+      service.pollStaleRefundTransactions(),
+    ).resolves.toBeUndefined();
+
+    expect(ledgerService.findHeldFundings.mock.calls).toHaveLength(2);
   });
 });

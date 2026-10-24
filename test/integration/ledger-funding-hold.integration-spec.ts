@@ -454,4 +454,143 @@ describe('Ledger funding hold, refund settlement and failure', () => {
       await assertInvariantHolds(ctx.accountRepo);
     });
   });
+
+  describe('recovery reads', () => {
+    async function ageAttempt(reference: string, minutes: number) {
+      await ctx.transactionRepo.query(
+        `UPDATE transactions SET created_at = now() - make_interval(mins => $2), updated_at = now() - make_interval(mins => $2) WHERE reference = $1`,
+        [reference, minutes],
+      );
+    }
+
+    it('finds pending refund attempts older than a cutoff, with the funding reference and principal', async () => {
+      const { reference } = await seedPendingFunding();
+      const held = (await hold(reference))!;
+      await ageAttempt(held.refundReference, 30);
+
+      const stale = await ctx.ledgerService.findStalePendingRefunds(
+        new Date(Date.now() - 10 * 60 * 1000),
+      );
+
+      expect(stale).toContainEqual({
+        refundReference: held.refundReference,
+        fundingReference: reference,
+        netAmount: NET,
+      });
+    });
+
+    it('does not return fresh attempts or attempts that already resolved', async () => {
+      const fresh = (await hold((await seedPendingFunding()).reference))!;
+      const failed = (await hold((await seedPendingFunding()).reference))!;
+      await ctx.ledgerService.failRefund({
+        refundReference: failed.refundReference,
+        reason: 'x',
+      });
+      await ageAttempt(failed.refundReference, 30);
+
+      const stale = (
+        await ctx.ledgerService.findStalePendingRefunds(
+          new Date(Date.now() - 10 * 60 * 1000),
+        )
+      ).map((r) => r.refundReference);
+
+      expect(stale).not.toContain(fresh.refundReference);
+      expect(stale).not.toContain(failed.refundReference);
+    });
+
+    it('lists held fundings with their attempt history, and leaves refunded ones out', async () => {
+      const failedOnce = await seedPendingFunding();
+      const heldA = (await hold(failedOnce.reference))!;
+      await ctx.ledgerService.failRefund({
+        refundReference: heldA.refundReference,
+        reason: 'insufficient balance',
+      });
+      const second = (await ctx.ledgerService.startRefundAttempt(
+        heldA.fundingTransactionId,
+      ))!;
+      await ctx.ledgerService.failRefund({
+        refundReference: second.refundReference,
+        reason: 'still insufficient',
+      });
+      const refunded = await seedPendingFunding();
+      const heldB = (await hold(refunded.reference))!;
+      await ctx.ledgerService.settleRefund({
+        refundReference: heldB.refundReference,
+        providerReportedAmount: NET,
+      });
+
+      const listed = await ctx.ledgerService.findHeldFundings();
+
+      const entry = listed.find(
+        (h) => h.fundingReference === failedOnce.reference,
+      );
+      expect(entry).toMatchObject({
+        fundingTransactionId: heldA.fundingTransactionId,
+        netAmount: NET,
+        attempts: 2,
+        hasPendingAttempt: false,
+        lastFailureReason: 'still insufficient',
+        alerts: {},
+      });
+      expect(entry!.lastAttemptFailedAt).toBeInstanceOf(Date);
+      expect(entry!.heldSince).toBeInstanceOf(Date);
+      expect(listed.map((h) => h.fundingReference)).not.toContain(
+        refunded.reference,
+      );
+    });
+
+    it('reports a pending attempt, and stores alert times without losing the rest of the metadata', async () => {
+      const { reference } = await seedPendingFunding();
+      const held = (await hold(reference))!;
+
+      await ctx.ledgerService.setRefundAlerts(held.fundingTransactionId, {
+        held_too_long: '2026-10-24T10:00:00.000Z',
+      });
+
+      const entry = (await ctx.ledgerService.findHeldFundings()).find(
+        (h) => h.fundingReference === reference,
+      )!;
+      expect(entry.hasPendingAttempt).toBe(true);
+      expect(entry.alerts).toEqual({
+        held_too_long: '2026-10-24T10:00:00.000Z',
+      });
+      const funding = await ctx.transactionRepo.findOneByOrFail({ reference });
+      expect(funding.metadata).toMatchObject({
+        grossAmount: NET.add(FEE).toJSON(),
+        refundAlerts: { held_too_long: '2026-10-24T10:00:00.000Z' },
+      });
+    });
+
+    it('describes where a refund and its funding stand, for telling a duplicate from a double refund', async () => {
+      const { reference } = await seedPendingFunding();
+      const held = (await hold(reference))!;
+      await ctx.ledgerService.failRefund({
+        refundReference: held.refundReference,
+        reason: 'x',
+      });
+      const retry = (await ctx.ledgerService.startRefundAttempt(
+        held.fundingTransactionId,
+      ))!;
+      await ctx.ledgerService.settleRefund({
+        refundReference: retry.refundReference,
+        providerReportedAmount: NET,
+      });
+
+      expect(
+        await ctx.ledgerService.findRefundContext(held.refundReference),
+      ).toEqual({
+        attemptStatus: 'failed',
+        fundingStatus: 'refunded',
+        fundingReference: reference,
+        netAmount: NET,
+      });
+      expect(
+        await ctx.ledgerService.findRefundContext(retry.refundReference),
+      ).toMatchObject({
+        attemptStatus: 'completed',
+        fundingStatus: 'refunded',
+      });
+      expect(await ctx.ledgerService.findRefundContext('rfd-nope')).toBeNull();
+    });
+  });
 });

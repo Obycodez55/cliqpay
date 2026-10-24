@@ -33,6 +33,7 @@ const bodies = {
   chargeback_received: compile('chargeback-received.hbs'),
   account_frozen: compile('account-frozen.hbs'),
   reconciliation_mismatch: compile('reconciliation-mismatch.hbs'),
+  refund_attention_required: compile('refund-attention-required.hbs'),
 };
 
 // The plain-text part is a low-fidelity fallback almost no mail client

@@ -90,6 +90,31 @@ export interface FailRefundResult {
   attempt: number;
 }
 
+export interface StalePendingRefund {
+  refundReference: string;
+  fundingReference: string;
+  netAmount: Money;
+}
+
+export interface HeldFunding {
+  fundingTransactionId: string;
+  fundingReference: string;
+  netAmount: Money;
+  heldSince: Date;
+  attempts: number;
+  hasPendingAttempt: boolean;
+  lastAttemptFailedAt: Date | null;
+  lastFailureReason: string | null;
+  alerts: Record<string, string>;
+}
+
+export interface RefundContext {
+  attemptStatus: TransactionStatus;
+  fundingStatus: TransactionStatus;
+  fundingReference: string;
+  netAmount: Money;
+}
+
 export interface StartRefundAttemptResult {
   refundReference: string;
   attempt: number;
@@ -1218,6 +1243,118 @@ export class LedgerService {
         runningBalance: newFloat.amount,
       }),
     ]);
+  }
+
+  // Feeds the refund poll: attempts whose webhook never arrived. `payments`
+  // picks the cutoff, as for the funding and withdrawal polls.
+  async findStalePendingRefunds(
+    olderThan: Date,
+  ): Promise<StalePendingRefund[]> {
+    const repo = this.dataSource.getRepository(Transaction);
+    const attempts = await repo.find({
+      where: {
+        type: 'funding_refund',
+        status: 'pending',
+        provider: 'kora',
+        createdAt: LessThan(olderThan),
+      },
+    });
+    if (attempts.length === 0) {
+      return [];
+    }
+    const fundings = await repo.findBy({
+      id: In(attempts.map((a) => a.reversesTransactionId!)),
+    });
+    const referenceById = new Map(fundings.map((f) => [f.id, f.reference]));
+    return attempts.map((attempt) => ({
+      refundReference: attempt.reference,
+      fundingReference: referenceById.get(attempt.reversesTransactionId!)!,
+      netAmount: Money.of(attempt.amount, attempt.currency),
+    }));
+  }
+
+  // Every funding currently in suspense with what the recovery job needs to
+  // decide on a retry or an alert; `payments` owns those policies, this only
+  // reports the facts. The held set is small and bounded by the held-funding
+  // index.
+  async findHeldFundings(): Promise<HeldFunding[]> {
+    const repo = this.dataSource.getRepository(Transaction);
+    const fundings = await repo.find({
+      where: { type: 'funding', status: 'held' },
+    });
+    if (fundings.length === 0) {
+      return [];
+    }
+    const attempts = await repo.find({
+      where: {
+        type: 'funding_refund',
+        reversesTransactionId: In(fundings.map((f) => f.id)),
+      },
+    });
+    return fundings.map((funding) => {
+      const own = attempts
+        .filter((a) => a.reversesTransactionId === funding.id)
+        .sort(
+          (a, b) =>
+            (a.metadata as FundingRefundTransactionMetadata).attempt -
+            (b.metadata as FundingRefundTransactionMetadata).attempt,
+        );
+      const last = own[own.length - 1];
+      const lastMetadata = last?.metadata as
+        | FundingRefundTransactionMetadata
+        | undefined;
+      const metadata = funding.metadata as FundingTransactionMetadata;
+      return {
+        fundingTransactionId: funding.id,
+        fundingReference: funding.reference,
+        netAmount: Money.of(funding.amount, funding.currency),
+        heldSince: metadata.heldAt
+          ? new Date(metadata.heldAt)
+          : funding.updatedAt,
+        attempts: own.length,
+        hasPendingAttempt: own.some((a) => a.status === 'pending'),
+        lastAttemptFailedAt: last?.status === 'failed' ? last.updatedAt : null,
+        lastFailureReason: lastMetadata?.failureReason ?? null,
+        alerts: metadata.refundAlerts ?? {},
+      };
+    });
+  }
+
+  async setRefundAlerts(
+    fundingTransactionId: string,
+    alerts: Record<string, string>,
+  ): Promise<void> {
+    const funding = await this.dataSource
+      .getRepository(Transaction)
+      .findOneByOrFail({ id: fundingTransactionId, type: 'funding' });
+    await this.mergeTransactionMetadata(funding.reference, {
+      refundAlerts: alerts,
+    });
+  }
+
+  // How a refund and its funding stand, so a caller told "success" for an
+  // attempt the ledger would not settle can tell a duplicate delivery from a
+  // second refund of an already refunded payment.
+  async findRefundContext(
+    refundReference: string,
+  ): Promise<RefundContext | null> {
+    const repo = this.dataSource.getRepository(Transaction);
+    const attempt = await repo.findOneBy({
+      reference: refundReference,
+      type: 'funding_refund',
+    });
+    if (!attempt) {
+      return null;
+    }
+    const funding = await repo.findOneByOrFail({
+      id: attempt.reversesTransactionId!,
+    });
+    return {
+      attemptStatus: attempt.status,
+      fundingStatus: funding.status,
+      fundingReference: funding.reference,
+      netAmount: Money.of(attempt.amount, attempt.currency),
+    };
   }
 
   /**

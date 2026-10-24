@@ -67,6 +67,8 @@ export interface FundingTransactionMetadata {
   // until then, same as checkoutUrl before initiation returns.
   grossAmount: { amount: string; currency: string } | null;
   heldAt?: string;
+  // When an ops alert last went out for this held funding, per reason.
+  refundAlerts?: Record<string, string>;
 }
 
 export interface FundingRefundTransactionMetadata {

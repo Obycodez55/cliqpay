@@ -22,6 +22,9 @@ import {
   FundingCompletedEventPayload,
   FundingHeldEventPayload,
   FundingRefundedEventPayload,
+  REFUND_ATTENTION_REQUIRED_EVENT,
+  RefundAttentionReason,
+  RefundAttentionRequiredEventPayload,
   RECONCILIATION_MISMATCH_EVENT,
   ReconciliationMismatchEventPayload,
   WITHDRAWAL_COMPLETED_EVENT,
@@ -53,6 +56,7 @@ import {
   PostFundingResult,
   ReverseWithdrawalResult,
   SettleRefundResult,
+  StalePendingRefund,
 } from '../ledger/ledger.service';
 import {
   ACTIVE_RECONCILIATION_PAIRS,
@@ -63,6 +67,20 @@ const NGN = 'NGN'; // Funding is NGN-only for now — see issue #12.
 
 const STALE_FUNDING_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 const STALE_WITHDRAWAL_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+const STALE_REFUND_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+
+// Kora answers a second attempt on the same payment with a 429 for about a
+// minute, and never accepts a refund reference twice, so each retry is a new
+// attempt after a wait. Element n is the wait after attempt n fails.
+const REFUND_RETRY_DELAYS_MS = [
+  10 * 60 * 1000,
+  60 * 60 * 1000,
+  6 * 60 * 60 * 1000,
+  24 * 60 * 60 * 1000,
+];
+const MAX_REFUND_ATTEMPTS = REFUND_RETRY_DELAYS_MS.length + 1;
+const HELD_TOO_LONG_MS = 24 * 60 * 60 * 1000;
+const REFUND_ALERT_REPEAT_MS = 24 * 60 * 60 * 1000;
 
 // Ground truth: docs/adr/0007 — confirmed against a real webhook Kora
 // delivered during the Phase 2 e2e pass, not just docs. Only the fields
@@ -184,6 +202,11 @@ function validateRefundWebhookData(parsed: unknown): KoraRefundWebhookData {
 }
 
 const REFUND_REASON = 'Wallet balance limit exceeded';
+
+type RefundRequest = Pick<
+  HoldFundingResult,
+  'refundReference' | 'fundingReference' | 'netAmount'
+>;
 
 /**
  * The one exported surface of the payments module — see
@@ -497,7 +520,7 @@ export class PaymentsService {
   // in suspense and the pending attempt row is durable, so nothing is
   // thrown: a failure must not turn the webhook into a non-2xx that Kora
   // retries into the idempotency guard.
-  private async initiateRefund(held: HoldFundingResult): Promise<void> {
+  private async initiateRefund(held: RefundRequest): Promise<void> {
     let result: InitiateRefundResult;
     try {
       result = await this.adapter.initiateRefund({
@@ -559,10 +582,213 @@ export class PaymentsService {
       providerReportedAmount: amount,
     });
     if (!result) {
-      // Duplicate delivery, an unknown reference or a mismatched amount.
+      // Usually a duplicate delivery, an unknown reference or a mismatched
+      // amount. A success for an attempt that did not settle the funding,
+      // when the funding is already refunded, means Kora paid out twice.
+      await this.alertOnLateSuccess(data.reference);
       return;
     }
     await this.publishFundingRefundedEvent(result);
+  }
+
+  private async alertOnLateSuccess(refundReference: string): Promise<void> {
+    const context = await this.ledgerService.findRefundContext(refundReference);
+    if (
+      !context ||
+      context.fundingStatus !== 'refunded' ||
+      context.attemptStatus === 'completed'
+    ) {
+      return;
+    }
+    await this.publishRefundAttention({
+      reason: 'late_success_after_refunded',
+      fundingReference: context.fundingReference,
+      refundReference,
+      amount: context.netAmount,
+      heldSince: null,
+      attempts: null,
+      lastFailure: null,
+    });
+  }
+
+  // The refund recovery job (docs/adr/0021): every step is independent, so
+  // one failing does not stop the others, and the whole run is safe to repeat.
+  async pollStaleRefundTransactions(): Promise<void> {
+    const steps: [string, () => Promise<void>][] = [
+      ['resolve stale refunds', () => this.resolveStaleRefunds()],
+      ['start refund retries', () => this.retryFailedRefunds()],
+      ['alert on held fundings', () => this.alertOnHeldFundings()],
+    ];
+    for (const [name, step] of steps) {
+      try {
+        await step();
+      } catch (error) {
+        this.logger.error(
+          `pollStaleRefundTransactions: failed to ${name} (${(error as Error).message}) — will retry on the next run`,
+        );
+      }
+    }
+  }
+
+  private async resolveStaleRefunds(): Promise<void> {
+    const stale = await this.ledgerService.findStalePendingRefunds(
+      new Date(Date.now() - STALE_REFUND_THRESHOLD_MS),
+    );
+    for (const refund of stale) {
+      try {
+        await this.resolveStaleRefund(refund);
+      } catch (error) {
+        this.logger.error(
+          `pollStaleRefundTransactions: could not resolve refund "${refund.refundReference}" (${(error as Error).message}) — will retry on the next run`,
+        );
+      }
+    }
+  }
+
+  private async resolveStaleRefund(refund: StalePendingRefund): Promise<void> {
+    const result = await this.adapter.verifyRefund(refund.refundReference);
+    switch (result.status) {
+      case 'pending':
+        return;
+      case 'not_found':
+        // The initiate call never reached Kora, so the same reference is
+        // still unused and safe to send again.
+        await this.initiateRefund(refund);
+        return;
+      case 'failed':
+        await this.ledgerService.failRefund({
+          refundReference: refund.refundReference,
+          reason: result.reason,
+        });
+        return;
+      case 'success': {
+        const settled = await this.ledgerService.settleRefund({
+          refundReference: refund.refundReference,
+          providerReportedAmount: result.amount,
+        });
+        if (settled) {
+          await this.publishFundingRefundedEvent(settled);
+        } else {
+          await this.alertOnLateSuccess(refund.refundReference);
+        }
+        return;
+      }
+    }
+  }
+
+  private async retryFailedRefunds(): Promise<void> {
+    const now = Date.now();
+    for (const held of await this.ledgerService.findHeldFundings()) {
+      if (
+        held.hasPendingAttempt ||
+        !held.lastAttemptFailedAt ||
+        held.attempts >= MAX_REFUND_ATTEMPTS ||
+        now - held.lastAttemptFailedAt.getTime() <
+          REFUND_RETRY_DELAYS_MS[held.attempts - 1]
+      ) {
+        continue;
+      }
+      const next = await this.ledgerService.startRefundAttempt(
+        held.fundingTransactionId,
+      );
+      if (next) {
+        await this.initiateRefund({
+          refundReference: next.refundReference,
+          fundingReference: held.fundingReference,
+          netAmount: held.netAmount,
+        });
+      }
+    }
+  }
+
+  // One alert per reason per day: the last send time lives on the funding,
+  // so it survives restarts and a run that is repeated.
+  private async alertOnHeldFundings(): Promise<void> {
+    const now = Date.now();
+    for (const held of await this.ledgerService.findHeldFundings()) {
+      const exhausted =
+        !held.hasPendingAttempt &&
+        held.attempts >= MAX_REFUND_ATTEMPTS &&
+        held.lastAttemptFailedAt !== null;
+      const reasons: RefundAttentionReason[] = [];
+      if (exhausted) {
+        reasons.push('retries_exhausted');
+      }
+      if (now - held.heldSince.getTime() >= HELD_TOO_LONG_MS) {
+        reasons.push('held_too_long');
+      }
+      const due = reasons.filter((reason) => {
+        const last = held.alerts[reason];
+        return (
+          !last || now - new Date(last).getTime() >= REFUND_ALERT_REPEAT_MS
+        );
+      });
+      if (due.length === 0) {
+        continue;
+      }
+      const sent: string[] = [];
+      for (const reason of due) {
+        const published = await this.publishRefundAttention({
+          reason,
+          fundingReference: held.fundingReference,
+          refundReference: null,
+          amount: held.netAmount,
+          heldSince: held.heldSince,
+          attempts: held.attempts,
+          lastFailure: held.lastFailureReason,
+        });
+        if (published) {
+          sent.push(reason);
+        }
+      }
+      if (sent.length > 0) {
+        await this.ledgerService.setRefundAlerts(held.fundingTransactionId, {
+          ...held.alerts,
+          ...Object.fromEntries(
+            sent.map((reason) => [reason, new Date(now).toISOString()]),
+          ),
+        });
+      }
+    }
+  }
+
+  private async publishRefundAttention(alert: {
+    reason: RefundAttentionReason;
+    fundingReference: string;
+    refundReference: string | null;
+    amount: Money;
+    heldSince: Date | null;
+    attempts: number | null;
+    lastFailure: string | null;
+  }): Promise<boolean> {
+    const occurredAt = new Date();
+    this.logger.error(
+      `refund needs attention (${alert.reason}): funding "${alert.fundingReference}", ${alert.amount.toDecimalString()}`,
+    );
+    try {
+      await this.eventBus.publish<string, RefundAttentionRequiredEventPayload>({
+        name: REFUND_ATTENTION_REQUIRED_EVENT,
+        payload: {
+          email: this.reconciliationAlertEmail,
+          reason: alert.reason,
+          fundingReference: alert.fundingReference,
+          refundReference: alert.refundReference,
+          amount: alert.amount.toDecimalString(),
+          currency: alert.amount.currency,
+          heldSince: alert.heldSince?.toISOString() ?? null,
+          attempts: alert.attempts,
+          lastFailure: alert.lastFailure,
+          occurredAt: occurredAt.toISOString(),
+        },
+        occurredAt,
+      });
+      return true;
+    } catch (error) {
+      this.logger.error(
+        `publishRefundAttention: could not publish the ${alert.reason} alert for "${alert.fundingReference}" (${(error as Error).message}) — it will be retried on the next run if still due`,
+      );
+      return false;
+    }
   }
 
   // Issue #29. Resolves whichever of the two `pending` origins the

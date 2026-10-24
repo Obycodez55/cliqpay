@@ -174,6 +174,19 @@ export interface ReconciliationMismatchPayload {
   occurredAt: string;
 }
 
+export interface RefundAttentionRequiredPayload {
+  email: string;
+  reason: string;
+  fundingReference: string;
+  refundReference: string | null;
+  amount: string;
+  currency: string;
+  heldSince: string | null;
+  attempts: number | null;
+  lastFailure: string | null;
+  occurredAt: string;
+}
+
 export interface NotificationPayloadMap {
   email_verification_otp: EmailVerificationOtpPayload;
   phone_verification_otp: PhoneVerificationOtpPayload;
@@ -194,6 +207,7 @@ export interface NotificationPayloadMap {
   chargeback_received: ChargebackReceivedPayload;
   account_frozen: AccountFrozenPayload;
   reconciliation_mismatch: ReconciliationMismatchPayload;
+  refund_attention_required: RefundAttentionRequiredPayload;
 }
 
 // The in-app channel writes a row addressed to a user (see
@@ -247,6 +261,7 @@ export const NOTIFICATION_CATALOG = {
   chargeback_received: { channels: ['email'] },
   account_frozen: { channels: ['email'] },
   reconciliation_mismatch: { channels: ['email'] },
+  refund_attention_required: { channels: ['email'] },
 } as const satisfies NotificationCatalogShape;
 
 export type NotificationType = keyof typeof NOTIFICATION_CATALOG;

@@ -22,6 +22,10 @@ import {
   WithdrawalPollProcessor,
 } from './internal/withdrawal-poll.processor';
 import {
+  REFUND_POLL_QUEUE,
+  RefundPollProcessor,
+} from './internal/refund-poll.processor';
+import {
   RECONCILIATION_QUEUE,
   ReconciliationProcessor,
 } from './internal/reconciliation.processor';
@@ -62,6 +66,15 @@ const PAYMENT_ADAPTERS = {
       },
     }),
     BullModule.registerQueue({
+      name: REFUND_POLL_QUEUE,
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5_000 },
+        removeOnComplete: { age: 3_600, count: 100 },
+        removeOnFail: { age: 86_400, count: 500 },
+      },
+    }),
+    BullModule.registerQueue({
       name: RECONCILIATION_QUEUE,
       defaultJobOptions: {
         attempts: 3,
@@ -76,6 +89,7 @@ const PAYMENT_ADAPTERS = {
     PaymentsService,
     FundingPollProcessor,
     WithdrawalPollProcessor,
+    RefundPollProcessor,
     ReconciliationProcessor,
     {
       provide: PAYMENT_PROVIDER_ADAPTER,

@@ -13,6 +13,7 @@ import {
   PasswordResetOtpPayload,
   PhoneVerificationOtpPayload,
   ReconciliationMismatchPayload,
+  RefundAttentionRequiredPayload,
   SecurityAlertPayload,
   TransferReceivedPayload,
   TransferSentPayload,
@@ -126,6 +127,10 @@ export const emailTemplates: {
   reconciliation_mismatch: (payload: ReconciliationMismatchPayload) => ({
     subject: `Reconciliation mismatch: ${payload.provider}/${payload.currency}`,
     ...renderEmail('reconciliation_mismatch', payload),
+  }),
+  refund_attention_required: (payload: RefundAttentionRequiredPayload) => ({
+    subject: `Refund needs attention: ${payload.currency} ${payload.amount} (${payload.reason})`,
+    ...renderEmail('refund_attention_required', payload),
   }),
 };
 

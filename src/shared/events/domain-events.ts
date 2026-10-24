@@ -219,3 +219,23 @@ export interface ReconciliationMismatchEventPayload {
   delta: string; // decimal display string, ledgerBalance - providerBalance
   occurredAt: string; // ISO timestamp
 }
+
+export const REFUND_ATTENTION_REQUIRED_EVENT = 'refund_attention_required';
+
+export type RefundAttentionReason =
+  | 'retries_exhausted'
+  | 'held_too_long'
+  | 'late_success_after_refunded';
+
+export interface RefundAttentionRequiredEventPayload {
+  email: string;
+  reason: RefundAttentionReason;
+  fundingReference: string;
+  refundReference: string | null;
+  amount: string; // decimal display string
+  currency: string;
+  heldSince: string | null; // ISO timestamp
+  attempts: number | null;
+  lastFailure: string | null;
+  occurredAt: string; // ISO timestamp
+}
