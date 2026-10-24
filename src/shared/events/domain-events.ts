@@ -72,6 +72,29 @@ export interface FundingCompletedEventPayload {
   reference: string; // funding transaction reference — see notifications' FundingCompletedPayload
 }
 
+// A funding that would have taken the wallet over its balance cap, held in
+// suspense and being refunded (docs/adr/0021).
+export const FUNDING_HELD_EVENT = 'funding_held';
+
+export interface FundingHeldEventPayload {
+  userId: string;
+  email: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  reference: string; // the funding transaction's reference
+  cap: string; // decimal display string, the tier's balance cap
+}
+
+export const FUNDING_REFUNDED_EVENT = 'funding_refunded';
+
+export interface FundingRefundedEventPayload {
+  userId: string;
+  email: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  reference: string; // the funding transaction's reference
+}
+
 export const TRANSFER_SENT_EVENT = 'transfer_sent';
 
 export interface TransferSentEventPayload {

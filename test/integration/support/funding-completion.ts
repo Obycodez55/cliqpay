@@ -103,3 +103,75 @@ export async function balanceOf(
 ): Promise<bigint> {
   return (await ctx.accountRepo.findOneByOrFail({ id: walletId })).balance;
 }
+
+export function signedRefundWebhook(
+  event: 'refund.success' | 'refund.failed',
+  data: Record<string, unknown>,
+): { body: string; signature: string } {
+  return {
+    body: JSON.stringify({ event, data }),
+    signature: createHmac('sha256', FAKE_SECRET_KEY)
+      .update(JSON.stringify(data))
+      .digest('hex'),
+  };
+}
+
+export function refundWebhookData(
+  reference: string,
+  amountMinor: bigint,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    amount: Number(Money.of(amountMinor, 'NGN').toDecimalString()),
+    status: 'success',
+    currency: 'NGN',
+    reference,
+    payment_reference: 'KPY-CA-test',
+    created_at: '2026-10-23T07:37:06.037Z',
+    completed_at: '2026-10-23T07:37:06.078Z',
+    ...overrides,
+  };
+}
+
+// A user at the tier-1 cap with a pending funding that breaches it, then
+// completed through the real webhook path so it is held and its refund
+// initiated. Returns what the refund tests need.
+export async function holdAFunding(
+  ctx: PaymentsTestContext,
+  amountMinor = 1_000_000n,
+): Promise<{
+  userId: string;
+  walletId: string;
+  email: string;
+  reference: string;
+  fundingId: string;
+  refundReference: string;
+}> {
+  const { userId, walletId } = await seedUser(ctx, 'tier1');
+  await creditWallet(ctx, walletId, TIER1_CAP);
+  const reference = await seedPendingFunding(ctx, walletId, amountMinor);
+  await deliverChargeSuccess(ctx, reference, amountMinor);
+  const funding = await ctx.transactionRepo.findOneByOrFail({ reference });
+  const user = await ctx.userRepo.findOneByOrFail({ id: userId });
+  return {
+    userId,
+    walletId,
+    email: user.email,
+    reference,
+    fundingId: funding.id,
+    refundReference: `rfd-${funding.id}-1`,
+  };
+}
+
+export async function waitFor(
+  predicate: () => boolean,
+  timeoutMs = 5000,
+): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error('Timed out waiting for condition');
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}

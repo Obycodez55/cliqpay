@@ -1,4 +1,4 @@
-import { UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
 import { AppConfig } from '../../../config';
 import { PaymentsService } from '../payments.service';
@@ -15,6 +15,8 @@ import { PaymentProviderAdapter } from '../adapters/payment-provider.interface';
 import { FakeAdapter } from '../adapters/fake.adapter';
 import {
   FUNDING_COMPLETED_EVENT,
+  FUNDING_HELD_EVENT,
+  FUNDING_REFUNDED_EVENT,
   RECONCILIATION_MISMATCH_EVENT,
 } from '../../../shared/events/domain-events';
 
@@ -27,6 +29,8 @@ function mockAdapter(): jest.Mocked<PaymentProviderAdapter> {
     resolveBankAccount: jest.fn(),
     initiatePayout: jest.fn(),
     verifyPayout: jest.fn(),
+    initiateRefund: jest.fn(),
+    verifyRefund: jest.fn(),
   };
 }
 
@@ -42,6 +46,8 @@ type CompletionLedger = jest.Mocked<
     | 'getWalletBalance'
     | 'postFundingWithinTransaction'
     | 'holdFundingWithinTransaction'
+    | 'failRefund'
+    | 'settleRefund'
   >
 >;
 
@@ -52,6 +58,8 @@ function completionLedger(): CompletionLedger {
     getWalletBalance: jest.fn(),
     postFundingWithinTransaction: jest.fn(),
     holdFundingWithinTransaction: jest.fn(),
+    failRefund: jest.fn(),
+    settleRefund: jest.fn(),
   };
 }
 
@@ -157,28 +165,132 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
     expect(ledgerService.holdFundingWithinTransaction).not.toHaveBeenCalled();
   });
 
-  it('holds instead of crediting when the cap check refuses, and announces no completed funding', async () => {
-    kycService.checkIncomingCredit.mockResolvedValue({
-      allowed: false,
-      reason: 'over_cap',
-      cap: Money.of(30_000_000n, 'NGN'),
-      remaining: Money.zero('NGN'),
+  describe('when the cap check refuses', () => {
+    beforeEach(() => {
+      kycService.checkIncomingCredit.mockResolvedValue({
+        allowed: false,
+        reason: 'over_cap',
+        cap: Money.of(30_000_000n, 'NGN'),
+        remaining: Money.zero('NGN'),
+      });
+      ledgerService.holdFundingWithinTransaction.mockResolvedValue(heldResult);
+      usersService.findById.mockResolvedValue({
+        email: 'user@example.com',
+      } as Awaited<ReturnType<UsersService['findById']>>);
+      adapter.initiateRefund.mockResolvedValue({ status: 'accepted' });
     });
-    ledgerService.holdFundingWithinTransaction.mockResolvedValue(heldResult);
 
-    await service.handleKoraWebhook(webhookBody(), 'sig');
+    it('holds instead of crediting, and announces no completed funding', async () => {
+      await service.handleKoraWebhook(webhookBody(), 'sig');
 
-    expect(ledgerService.holdFundingWithinTransaction).toHaveBeenCalledWith(
-      expect.anything(),
-      {
+      expect(ledgerService.holdFundingWithinTransaction).toHaveBeenCalledWith(
+        expect.anything(),
+        {
+          reference: 'cliqpay-ref-1',
+          netAmount: Money.of(500_000n, 'NGN'),
+          providerFee: Money.of(5_000n, 'NGN'),
+          providerStatus: 'success',
+        },
+      );
+      expect(ledgerService.postFundingWithinTransaction).not.toHaveBeenCalled();
+      const names = eventBus.publish.mock.calls.map(
+        (call) => (call[0] as { name: string }).name,
+      );
+      expect(names).toEqual([FUNDING_HELD_EVENT]);
+    });
+
+    it('publishes funding_held with the amount and the cap', async () => {
+      await service.handleKoraWebhook(webhookBody(), 'sig');
+
+      const published = eventBus.publish.mock.calls[0][0] as {
+        payload: Record<string, unknown>;
+      };
+      expect(published.payload).toMatchObject({
+        userId: 'user-1',
+        email: 'user@example.com',
+        amount: '5000.00',
+        currency: 'NGN',
         reference: 'cliqpay-ref-1',
-        netAmount: Money.of(500_000n, 'NGN'),
-        providerFee: Money.of(5_000n, 'NGN'),
-        providerStatus: 'success',
-      },
-    );
-    expect(ledgerService.postFundingWithinTransaction).not.toHaveBeenCalled();
-    expect(eventBus.publish).not.toHaveBeenCalled();
+        cap: '300000.00',
+      });
+    });
+
+    it('asks the provider to refund the held principal, against the funding reference', async () => {
+      await service.handleKoraWebhook(webhookBody(), 'sig');
+
+      expect(adapter.initiateRefund.mock.calls).toEqual([
+        [
+          {
+            reference: 'rfd-funding-1-1',
+            paymentReference: 'cliqpay-ref-1',
+            amount: Money.of(500_000n, 'NGN'),
+            reason: expect.any(String) as unknown,
+          },
+        ],
+      ]);
+    });
+
+    it('starts the refund only after the transaction has committed', async () => {
+      const order: string[] = [];
+      (inlineTransaction.transaction as jest.Mock).mockImplementationOnce(
+        async (work: (manager: unknown) => unknown) => {
+          const result = await work({});
+          order.push('commit');
+          return result;
+        },
+      );
+      adapter.initiateRefund.mockImplementation(() => {
+        order.push('initiate');
+        return Promise.resolve({ status: 'accepted' });
+      });
+
+      await service.handleKoraWebhook(webhookBody(), 'sig');
+
+      expect(order).toEqual(['commit', 'initiate']);
+    });
+
+    it('fails the attempt when the provider rejects the refund', async () => {
+      adapter.initiateRefund.mockResolvedValue({
+        status: 'rejected',
+        reason: 'Transaction not found',
+      });
+
+      await service.handleKoraWebhook(webhookBody(), 'sig');
+
+      expect(ledgerService.failRefund).toHaveBeenCalledWith({
+        refundReference: 'rfd-funding-1-1',
+        reason: 'Transaction not found',
+      });
+    });
+
+    it.each([
+      [{ status: 'unknown', detail: 'timeout' } as const],
+      [{ status: 'already_exists' } as const],
+    ])('leaves the attempt pending on %o', async (result) => {
+      adapter.initiateRefund.mockResolvedValue(result);
+
+      await service.handleKoraWebhook(webhookBody(), 'sig');
+
+      expect(ledgerService.failRefund).not.toHaveBeenCalled();
+    });
+
+    it('does not fail the webhook when the provider call throws', async () => {
+      adapter.initiateRefund.mockRejectedValue(new Error('boom'));
+
+      await expect(
+        service.handleKoraWebhook(webhookBody(), 'sig'),
+      ).resolves.toBeUndefined();
+      expect(ledgerService.failRefund).not.toHaveBeenCalled();
+    });
+
+    it('still starts the refund when publishing the held notification fails', async () => {
+      eventBus.publish.mockRejectedValue(new Error('redis unavailable'));
+
+      await expect(
+        service.handleKoraWebhook(webhookBody(), 'sig'),
+      ).resolves.toBeUndefined();
+      expect(adapter.initiateRefund.mock.calls).toHaveLength(1);
+    });
   });
 
   it('falls back to postFunding without a cap check when no pending funding exists for the reference', async () => {
@@ -267,6 +379,117 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
     ).resolves.toBeUndefined();
 
     expect(eventBus.publish).not.toHaveBeenCalled();
+  });
+});
+
+describe('PaymentsService.handleKoraWebhook (refund events)', () => {
+  let ledgerService: CompletionLedger;
+  let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
+  let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
+  let service: PaymentsService;
+
+  function refundBody(
+    event: string,
+    overrides: Partial<Record<string, unknown>> = {},
+  ) {
+    return Buffer.from(
+      JSON.stringify({
+        event,
+        data: {
+          amount: 5000,
+          status: event === 'refund.failed' ? 'failed' : 'success',
+          currency: 'NGN',
+          reference: 'rfd-funding-1-1',
+          payment_reference: 'KPY-CA-abc',
+          ...overrides,
+        },
+      }),
+      'utf8',
+    );
+  }
+
+  beforeEach(() => {
+    ledgerService = completionLedger();
+    usersService = { findById: jest.fn() };
+    eventBus = { publish: jest.fn() };
+    service = new PaymentsService(
+      inlineTransaction,
+      ledgerService as unknown as LedgerService,
+      usersService as unknown as UsersService,
+      completionKyc() as unknown as KycService,
+      eventBus as unknown as EventBusService,
+      mockAdapter(),
+      testConfig,
+    );
+  });
+
+  it('settles a successful refund by its own reference, never the Kora-internal payment_reference, and publishes funding_refunded', async () => {
+    ledgerService.settleRefund.mockResolvedValue({
+      userId: 'user-1',
+      netAmount: Money.of(500_000n, 'NGN'),
+      fundingReference: 'cliqpay-ref-1',
+      refundReference: 'rfd-funding-1-1',
+    });
+    usersService.findById.mockResolvedValue({
+      email: 'user@example.com',
+    } as Awaited<ReturnType<UsersService['findById']>>);
+
+    await service.handleKoraWebhook(refundBody('refund.success'), 'sig');
+
+    expect(ledgerService.settleRefund).toHaveBeenCalledWith({
+      refundReference: 'rfd-funding-1-1',
+      providerReportedAmount: Money.of(500_000n, 'NGN'),
+    });
+    const published = eventBus.publish.mock.calls[0][0] as {
+      name: string;
+      payload: Record<string, unknown>;
+    };
+    expect(published.name).toBe(FUNDING_REFUNDED_EVENT);
+    expect(published.payload).toMatchObject({
+      userId: 'user-1',
+      amount: '5000.00',
+      reference: 'cliqpay-ref-1',
+    });
+  });
+
+  it('publishes nothing for a duplicate, unknown or mismatched settlement', async () => {
+    ledgerService.settleRefund.mockResolvedValue(null);
+
+    await service.handleKoraWebhook(refundBody('refund.success'), 'sig');
+
+    expect(eventBus.publish).not.toHaveBeenCalled();
+  });
+
+  it('fails the attempt with Kora’s status_reason on refund.failed', async () => {
+    await service.handleKoraWebhook(
+      refundBody('refund.failed', { status_reason: 'Insufficient balance' }),
+      'sig',
+    );
+
+    expect(ledgerService.failRefund).toHaveBeenCalledWith({
+      refundReference: 'rfd-funding-1-1',
+      reason: 'Insufficient balance',
+    });
+    expect(ledgerService.settleRefund).not.toHaveBeenCalled();
+  });
+
+  it('ignores a refund that is still processing', async () => {
+    await service.handleKoraWebhook(
+      refundBody('refund.success', { status: 'processing' }),
+      'sig',
+    );
+
+    expect(ledgerService.settleRefund).not.toHaveBeenCalled();
+    expect(ledgerService.failRefund).not.toHaveBeenCalled();
+  });
+
+  it('rejects a payload without a reference as malformed', async () => {
+    await expect(
+      service.handleKoraWebhook(
+        refundBody('refund.success', { reference: undefined }),
+        'sig',
+      ),
+    ).rejects.toThrow(BadRequestException);
   });
 });
 

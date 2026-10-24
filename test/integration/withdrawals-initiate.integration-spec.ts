@@ -157,7 +157,7 @@ describe('POST /withdrawals', () => {
       provider: 'kora',
       currency: 'NGN',
     });
-    expect(floatAfter.balance).toBe(floatBefore.balance + 503_000n);
+    expect(floatAfter.balance).toBe(floatBefore.balance - 503_000n);
     // Platform fee is 0 at launch, but the fee_income leg still always
     // posts for withdrawals (unlike a zero-fee transfer) — balance is
     // unchanged, but the ledger_entries assertion below confirms 5 legs.

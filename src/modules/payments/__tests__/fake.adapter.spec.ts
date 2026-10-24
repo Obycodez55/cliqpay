@@ -237,4 +237,51 @@ describe('FakeAdapter', () => {
       });
     });
   });
+
+  describe('refunds', () => {
+    const params = {
+      reference: 'rfd-1',
+      paymentReference: 'cliqpay-ref-1',
+      amount: Money.of(100_000n, 'NGN'),
+      reason: 'Wallet balance limit exceeded',
+    };
+
+    it('accepts a refund, records it, and reports a repeated reference as already_exists', async () => {
+      const adapter = new FakeAdapter();
+
+      await expect(adapter.initiateRefund(params)).resolves.toEqual({
+        status: 'accepted',
+      });
+      await expect(adapter.initiateRefund(params)).resolves.toEqual({
+        status: 'already_exists',
+      });
+      expect(adapter.refundsInitiated).toEqual([params]);
+    });
+
+    it('returns a configured initiate result without recording the refund', async () => {
+      const adapter = new FakeAdapter();
+      adapter.setInitiateRefundResult('rfd-1', {
+        status: 'rejected',
+        reason: 'insufficient balance',
+      });
+
+      await expect(adapter.initiateRefund(params)).resolves.toEqual({
+        status: 'rejected',
+        reason: 'insufficient balance',
+      });
+      expect(adapter.refundsInitiated).toEqual([]);
+    });
+
+    it('verifies a refund as pending unless configured', async () => {
+      const adapter = new FakeAdapter();
+      await expect(adapter.verifyRefund('rfd-1')).resolves.toEqual({
+        status: 'pending',
+      });
+
+      adapter.setVerifyRefundResult('rfd-1', { status: 'not_found' });
+      await expect(adapter.verifyRefund('rfd-1')).resolves.toEqual({
+        status: 'not_found',
+      });
+    });
+  });
 });

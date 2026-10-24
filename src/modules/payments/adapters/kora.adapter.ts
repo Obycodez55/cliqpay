@@ -12,10 +12,13 @@ import {
   InitiatePaymentResult,
   InitiatePayoutParams,
   InitiatePayoutResult,
+  InitiateRefundParams,
+  InitiateRefundResult,
   PaymentProviderAdapter,
   ResolveBankAccountResult,
   VerifyChargeResult,
   VerifyPayoutResult,
+  VerifyRefundResult,
 } from './payment-provider.interface';
 import { extractTopLevelJsonField } from '../internal/raw-json';
 
@@ -96,6 +99,28 @@ interface KoraPayoutStatusResponse {
     amount: string;
     currency: string;
   };
+}
+
+// Ground truth: docs/research/kora-refunds.md and test/fixtures/kora-refunds.
+// Failures carry a Kora `code` (AA021 conflict, AA025 invalid amount, AA026
+// not found); only the status and `message` are relied on here.
+interface KoraRefundInitiateResponse {
+  status: boolean;
+  message: string;
+  code?: string;
+  data?: { status: string; refund_reference: string } | null;
+}
+
+interface KoraRefundStatusResponse {
+  status: boolean;
+  message: string;
+  code?: string;
+  data?: {
+    status: string;
+    amount: string;
+    currency: string;
+    reference: string;
+  } | null;
 }
 
 @Injectable()
@@ -297,6 +322,73 @@ export class KoraAdapter implements PaymentProviderAdapter {
     }
     if (body.data.status === 'failed') {
       return { status: 'failed', reason: body.data.message };
+    }
+    return { status: 'pending' };
+  }
+
+  // No `webhook_url`: the dashboard URL already reaches the one verified
+  // endpoint, and `amount` is always sent so Kora refunds exactly the
+  // credited principal rather than the payer's gross.
+  async initiateRefund(
+    params: InitiateRefundParams,
+  ): Promise<InitiateRefundResult> {
+    let response: JsonResult<KoraRefundInitiateResponse>;
+    try {
+      response = await this.request<KoraRefundInitiateResponse>(
+        'POST',
+        '/refunds/initiate',
+        {
+          payment_reference: params.paymentReference,
+          reference: params.reference,
+          amount: params.amount.toDecimalString(),
+          reason: params.reason,
+        },
+      );
+    } catch (error) {
+      if (error instanceof ProviderHttpError) {
+        return { status: 'unknown', detail: error.message };
+      }
+      throw error;
+    }
+    const { ok, status, body } = response;
+
+    if (ok && body.status) {
+      return { status: 'accepted' };
+    }
+    if (status === 409 && body.message?.startsWith('Refund already exists')) {
+      return { status: 'already_exists' };
+    }
+    if (status >= 400 && status < 500 && body.message) {
+      return { status: 'rejected', reason: body.message };
+    }
+    return {
+      status: 'unknown',
+      detail: `${status} ${body.message ?? 'unknown error'}`,
+    };
+  }
+
+  async verifyRefund(reference: string): Promise<VerifyRefundResult> {
+    const { ok, status, body } = await this.request<KoraRefundStatusResponse>(
+      'GET',
+      `/refunds/${reference}`,
+    );
+    if (status === 404 && body.code === 'AA026') {
+      return { status: 'not_found' };
+    }
+    if (!ok || !body.status || !body.data) {
+      throw new Error(
+        `KoraAdapter: ${status} ${body.message ?? 'unknown error'}`,
+      );
+    }
+
+    if (body.data.status === 'success') {
+      return {
+        status: 'success',
+        amount: Money.fromDecimalString(body.data.amount, body.data.currency),
+      };
+    }
+    if (body.data.status === 'failed') {
+      return { status: 'failed', reason: 'Refund failed at the provider' };
     }
     return { status: 'pending' };
   }

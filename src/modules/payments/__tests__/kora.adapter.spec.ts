@@ -1,4 +1,6 @@
 import { createHmac } from 'crypto';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { KoraAdapter } from '../adapters/kora.adapter';
 import { AppConfig } from '../../../config';
 import { Money } from '../../../shared/primitives/money';
@@ -14,6 +16,31 @@ function buildConfig(): AppConfig {
       },
     },
   } as AppConfig;
+}
+
+const REFUND_FIXTURES = join(
+  __dirname,
+  '../../../../test/fixtures/kora-refunds',
+);
+
+interface RefundFixture {
+  request: {
+    method: string;
+    path: string;
+    body: Record<string, unknown> | null;
+  };
+  response: { status: number; body: unknown };
+}
+
+function refundFixture(name: string): RefundFixture {
+  return JSON.parse(
+    readFileSync(join(REFUND_FIXTURES, `${name}.json`), 'utf8'),
+  ) as RefundFixture;
+}
+
+function respondWith(name: string) {
+  const { response } = refundFixture(name);
+  return jsonResponse(response.status, response.body);
 }
 
 function jsonResponse(status: number, body: unknown) {
@@ -750,6 +777,185 @@ describe('KoraAdapter', () => {
 
       await expect(adapter.verifyPayout('cliqpay-payout-5')).rejects.toThrow(
         /ECONNRESET/,
+      );
+    });
+  });
+
+  describe('initiateRefund', () => {
+    const params = {
+      reference: 'rfd-0a1b2c3d-0000-4000-8000-000000000001-1',
+      paymentReference: 'cliqpay-ref-1',
+      amount: Money.of(100_000n, 'NGN'),
+      reason: 'Wallet balance limit exceeded',
+    };
+
+    it('sends the principal as a major-unit decimal, with no webhook_url or completion_status, to the refunds endpoint', async () => {
+      fetchMock.mockResolvedValue(
+        respondWith('refund.initiate.full_no_completion_status'),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await adapter.initiateRefund(params);
+
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(
+        'https://api.korapay.com/merchant/api/v1/refunds/initiate',
+      );
+      expect(init.method).toBe('POST');
+      expect(JSON.parse(init.body as string)).toEqual({
+        payment_reference: 'cliqpay-ref-1',
+        reference: params.reference,
+        amount: '1000.00',
+        reason: 'Wallet balance limit exceeded',
+      });
+    });
+
+    it.each([
+      ['refund.initiate.full_no_completion_status', { status: 'accepted' }],
+      ['refund.initiate.partial_net_amount', { status: 'accepted' }],
+      [
+        'refund.initiate.duplicate_reference_same_payment',
+        { status: 'already_exists' },
+      ],
+      [
+        'refund.initiate.reuse_failed_reference.2',
+        { status: 'already_exists' },
+      ],
+    ])('maps %s to %o', async (name, expected) => {
+      fetchMock.mockResolvedValue(respondWith(name));
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.initiateRefund(params)).resolves.toEqual(expected);
+    });
+
+    it.each([
+      ['refund.initiate.unknown_payment', 'Transaction not found'],
+      [
+        'refund.initiate.exceeds_paid',
+        "Refund amount can't be more than NGN 1053.75",
+      ],
+      [
+        'refund.initiate.second_refund_immediately',
+        'The maximum refundable amount for this transaction is NGN 53.75',
+      ],
+      [
+        'refund.initiate.already_fully_refunded',
+        'A full reversal has already been processed for this transaction',
+      ],
+      [
+        'refund.initiate.full_on_remainder_below_100',
+        'A full refund cannot be initiated for this transaction. Please enter an amount less than or equal to NGN 53.75',
+      ],
+      [
+        'refund.initiate.retry_after_failed_success',
+        'Possible duplicate refund detected, please confirm and try again in 56 seconds',
+      ],
+      [
+        'refund.initiate.missing_reference',
+        'One or more fields are invalid. Please fix them and try again.',
+      ],
+    ])(
+      'maps the rejection in %s to rejected with the provider message',
+      async (name, message) => {
+        fetchMock.mockResolvedValue(respondWith(name));
+        const adapter = new KoraAdapter(buildConfig());
+
+        const result = await adapter.initiateRefund(params);
+
+        expect(result).toMatchObject({ status: 'rejected' });
+        expect((result as { reason: string }).reason).toContain(
+          message.slice(0, 30),
+        );
+      },
+    );
+
+    it('maps a 500 to unknown, not rejected: the provider may have the request', async () => {
+      fetchMock.mockResolvedValue(
+        respondWith('refund.initiate.reference_too_long'),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.initiateRefund(params)).resolves.toMatchObject({
+        status: 'unknown',
+      });
+    });
+
+    it('maps a network failure to unknown', async () => {
+      fetchMock.mockRejectedValue(new Error('ECONNRESET'));
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.initiateRefund(params)).resolves.toMatchObject({
+        status: 'unknown',
+      });
+    });
+  });
+
+  describe('verifyRefund', () => {
+    it('reads the refund by its reference', async () => {
+      fetchMock.mockResolvedValue(respondWith('refund.get.r1.poll0'));
+      const adapter = new KoraAdapter(buildConfig());
+
+      await adapter.verifyRefund('rfd-ref-1');
+
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(
+        'https://api.korapay.com/merchant/api/v1/refunds/rfd-ref-1',
+      );
+      expect(init.method).toBe('GET');
+    });
+
+    it('maps a successful refund to its amount', async () => {
+      fetchMock.mockResolvedValue(respondWith('refund.get.r1.poll0'));
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.verifyRefund('rfd-ref-1')).resolves.toEqual({
+        status: 'success',
+        amount: Money.of(100_000n, 'NGN'),
+      });
+    });
+
+    it('maps a failed refund', async () => {
+      fetchMock.mockResolvedValue(respondWith('refund.get.completion_failed'));
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.verifyRefund('rfd-ref-2')).resolves.toMatchObject({
+        status: 'failed',
+      });
+    });
+
+    it('maps a refund that is not finished to pending', async () => {
+      const { response } = refundFixture('refund.get.r1.poll0');
+      const body = response.body as { data: Record<string, unknown> };
+      fetchMock.mockResolvedValue(
+        jsonResponse(200, {
+          ...body,
+          data: { ...body.data, status: 'processing' },
+        }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.verifyRefund('rfd-ref-3')).resolves.toEqual({
+        status: 'pending',
+      });
+    });
+
+    it('maps "Refund not found" to not_found', async () => {
+      fetchMock.mockResolvedValue(respondWith('refund.get.unknown'));
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.verifyRefund('rfd-ref-4')).resolves.toEqual({
+        status: 'not_found',
+      });
+    });
+
+    it('throws on any other failure so the poll retries', async () => {
+      fetchMock.mockResolvedValue(
+        jsonResponse(500, { status: false, message: 'Internal server error' }),
+      );
+      const adapter = new KoraAdapter(buildConfig());
+
+      await expect(adapter.verifyRefund('rfd-ref-5')).rejects.toThrow(
+        /Internal server error/,
       );
     });
   });

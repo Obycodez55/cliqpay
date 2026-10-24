@@ -17,7 +17,11 @@ import { runInTransaction } from '../../database/transaction.util';
 import { Money } from '../../shared/primitives/money';
 import {
   FUNDING_COMPLETED_EVENT,
+  FUNDING_HELD_EVENT,
+  FUNDING_REFUNDED_EVENT,
   FundingCompletedEventPayload,
+  FundingHeldEventPayload,
+  FundingRefundedEventPayload,
   RECONCILIATION_MISMATCH_EVENT,
   ReconciliationMismatchEventPayload,
   WITHDRAWAL_COMPLETED_EVENT,
@@ -33,6 +37,7 @@ import {
   InitiatePaymentResult,
   InitiatePayoutParams,
   InitiatePayoutResult,
+  InitiateRefundResult,
   PAYMENT_PROVIDER_ADAPTER,
   PaymentProviderAdapter,
   ResolveBankAccountResult,
@@ -42,10 +47,12 @@ import {
 import { extractTopLevelJsonField } from './internal/raw-json';
 import {
   CompleteWithdrawalResult,
+  HoldFundingResult,
   IdempotentReplay,
   PostFundingFacts,
   PostFundingResult,
   ReverseWithdrawalResult,
+  SettleRefundResult,
 } from '../ledger/ledger.service';
 import {
   ACTIVE_RECONCILIATION_PAIRS,
@@ -140,6 +147,43 @@ function validatePayoutWebhookData(parsed: unknown): KoraPayoutWebhookData {
     message: typeof message === 'string' ? message : undefined,
   };
 }
+
+// Ground truth: docs/research/kora-refunds.md, captured refund webhooks.
+// `reference` is our refund reference; `payment_reference` is a Kora-internal
+// id and is deliberately not read. `amount` is the refund's own amount.
+interface KoraRefundWebhookData {
+  reference: string;
+  status: string;
+  amount: string | number;
+  statusReason?: string;
+}
+
+function validateRefundWebhookData(parsed: unknown): KoraRefundWebhookData {
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new BadRequestException('Malformed webhook payload');
+  }
+  const { reference, status, amount, status_reason } = parsed as Record<
+    string,
+    unknown
+  >;
+  if (
+    typeof reference !== 'string' ||
+    reference.length === 0 ||
+    typeof status !== 'string' ||
+    status.length === 0 ||
+    (typeof amount !== 'string' && typeof amount !== 'number')
+  ) {
+    throw new BadRequestException('Malformed webhook payload');
+  }
+  return {
+    reference,
+    status,
+    amount,
+    statusReason: typeof status_reason === 'string' ? status_reason : undefined,
+  };
+}
+
+const REFUND_REASON = 'Wallet balance limit exceeded';
 
 /**
  * The one exported surface of the payments module — see
@@ -337,11 +381,12 @@ export class PaymentsService {
     if (event === 'charge.success' || event === 'charge.failed') {
       return this.processFundingWebhookData(parsedData);
     }
-    // Other known events (refund.*) aren't a modeled feature yet
-    // (CLAUDE.md's incremental-build rule) — logged and ignored rather than
-    // guessed at. An absent/unrecognized `event` on what both existing
-    // callers (Kora's real webhook, this repo's own tests) always send is
-    // treated the same way, not defaulted to either handler.
+    if (event === 'refund.success' || event === 'refund.failed') {
+      return this.processRefundWebhookData(parsedData);
+    }
+    // An absent or unrecognized `event` on what Kora's real webhook and this
+    // repo's own tests always send is logged and ignored, not defaulted to
+    // any handler.
     this.logger.debug(
       `handleKoraWebhook: unrecognized or missing event "${String(event)}" — ignoring`,
     );
@@ -429,7 +474,7 @@ export class PaymentsService {
         manager,
         facts,
       );
-      return held ? { kind: 'held' as const, held } : null;
+      return held ? { kind: 'held' as const, held, cap: verdict.cap } : null;
     });
     if (!outcome) {
       // A duplicate delivery, or the poll and the webhook racing: the other
@@ -443,6 +488,81 @@ export class PaymentsService {
     this.logger.warn(
       `completeFunding: funding "${outcome.held.fundingReference}" would take the wallet over its balance cap — held in suspense, refund attempt "${outcome.held.refundReference}" pending`,
     );
+    await this.publishFundingHeldEvent(outcome.held, outcome.cap);
+    await this.initiateRefund(outcome.held);
+  }
+
+  // Runs only after the hold has committed (CLAUDE.md: provider calls never
+  // sit inside a DB transaction). Whatever happens here, the money is safe
+  // in suspense and the pending attempt row is durable, so nothing is
+  // thrown: a failure must not turn the webhook into a non-2xx that Kora
+  // retries into the idempotency guard.
+  private async initiateRefund(held: HoldFundingResult): Promise<void> {
+    let result: InitiateRefundResult;
+    try {
+      result = await this.adapter.initiateRefund({
+        reference: held.refundReference,
+        paymentReference: held.fundingReference,
+        amount: held.netAmount,
+        reason: REFUND_REASON,
+      });
+    } catch (error) {
+      this.logger.error(
+        `initiateRefund: refund "${held.refundReference}" could not be started (${(error as Error).message}) — attempt left pending`,
+      );
+      return;
+    }
+
+    if (result.status === 'rejected') {
+      await this.ledgerService.failRefund({
+        refundReference: held.refundReference,
+        reason: result.reason,
+      });
+      this.logger.error(
+        `initiateRefund: refund "${held.refundReference}" rejected by the provider (${result.reason}) — funding stays held`,
+      );
+    } else if (result.status === 'unknown') {
+      this.logger.warn(
+        `initiateRefund: no confirmed answer for refund "${held.refundReference}" (${result.detail}) — attempt left pending`,
+      );
+    }
+  }
+
+  private async processRefundWebhookData(parsed: unknown): Promise<void> {
+    const data = validateRefundWebhookData(parsed);
+
+    if (data.status !== 'success' && data.status !== 'failed') {
+      this.logger.debug(
+        `processRefundWebhookData: non-terminal status "${data.status}" for refund "${data.reference}" — leaving pending`,
+      );
+      return;
+    }
+
+    if (data.status === 'failed') {
+      await this.ledgerService.failRefund({
+        refundReference: data.reference,
+        reason: data.statusReason ?? 'Refund failed',
+      });
+      return;
+    }
+
+    let amount: Money;
+    try {
+      amount = Money.fromDecimalString(String(data.amount), NGN);
+    } catch (error) {
+      throw new BadRequestException(
+        `Malformed webhook payload: ${(error as Error).message}`,
+      );
+    }
+    const result = await this.ledgerService.settleRefund({
+      refundReference: data.reference,
+      providerReportedAmount: amount,
+    });
+    if (!result) {
+      // Duplicate delivery, an unknown reference or a mismatched amount.
+      return;
+    }
+    await this.publishFundingRefundedEvent(result);
   }
 
   // Issue #29. Resolves whichever of the two `pending` origins the
@@ -692,6 +812,54 @@ export class PaymentsService {
     } catch (error) {
       this.logger.error(
         `publishFundingCompletedEvent: funding posted successfully for user "${result.userId}", but publishing the completion notification failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
+  }
+
+  private async publishFundingHeldEvent(
+    held: HoldFundingResult,
+    cap: Money,
+  ): Promise<void> {
+    try {
+      const user = await this.usersService.findById(held.userId);
+      await this.eventBus.publish<string, FundingHeldEventPayload>({
+        name: FUNDING_HELD_EVENT,
+        payload: {
+          userId: held.userId,
+          email: user.email,
+          amount: held.netAmount.toDecimalString(),
+          currency: held.netAmount.currency,
+          reference: held.fundingReference,
+          cap: cap.toDecimalString(),
+        },
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `publishFundingHeldEvent: funding "${held.fundingReference}" was held, but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
+  }
+
+  private async publishFundingRefundedEvent(
+    result: SettleRefundResult,
+  ): Promise<void> {
+    try {
+      const user = await this.usersService.findById(result.userId);
+      await this.eventBus.publish<string, FundingRefundedEventPayload>({
+        name: FUNDING_REFUNDED_EVENT,
+        payload: {
+          userId: result.userId,
+          email: user.email,
+          amount: result.netAmount.toDecimalString(),
+          currency: result.netAmount.currency,
+          reference: result.fundingReference,
+        },
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `publishFundingRefundedEvent: refund "${result.refundReference}" settled, but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
       );
     }
   }

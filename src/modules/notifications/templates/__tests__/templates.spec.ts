@@ -1,4 +1,4 @@
-import { inAppTemplates } from '../templates';
+import { emailTemplates, inAppTemplates } from '../templates';
 
 describe('inAppTemplates', () => {
   it('derives funding_completed dedupe_key from the transaction reference', () => {
@@ -66,5 +66,51 @@ describe('inAppTemplates', () => {
     expect(inAppTemplates.phone_verification_otp).toBeUndefined();
     expect(inAppTemplates.password_reset_otp).toBeUndefined();
     expect(inAppTemplates.mfa_challenge_otp).toBeUndefined();
+  });
+
+  it('derives funding_held and funding_refunded dedupe keys from the funding reference', () => {
+    const base = {
+      userId: 'u1',
+      email: 'a@example.com',
+      amount: '5000.00',
+      currency: 'NGN',
+      reference: 'cliqpay-ref-1',
+    };
+
+    expect(
+      inAppTemplates.funding_held!({ ...base, cap: '300000.00' }).dedupeKey,
+    ).toBe('cliqpay-ref-1');
+    expect(inAppTemplates.funding_refunded!(base).dedupeKey).toBe(
+      'cliqpay-ref-1',
+    );
+  });
+});
+
+describe('funding refund emails', () => {
+  const base = {
+    userId: 'u1',
+    email: 'a@example.com',
+    amount: '5000.00',
+    currency: 'NGN',
+    reference: 'cliqpay-ref-1',
+  };
+
+  it('funding_held states the amount and cap, that the provider fee is not refunded, and how to raise the limit', () => {
+    const email = emailTemplates.funding_held!({ ...base, cap: '300000.00' });
+
+    expect(email.subject).toContain('NGN 5000.00');
+    for (const part of [email.html, email.text]) {
+      expect(part).toContain('NGN 5000.00');
+      expect(part).toContain('NGN 300000.00');
+      expect(part).toContain("provider's fee is not refunded");
+      expect(part).toContain('verify your identity');
+    }
+  });
+
+  it('funding_refunded states the amount and that the provider fee was not refunded', () => {
+    const email = emailTemplates.funding_refunded!(base);
+
+    expect(email.html).toContain('NGN 5000.00');
+    expect(email.text).toContain("provider's fee is not refunded");
   });
 });

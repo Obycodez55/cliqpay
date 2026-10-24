@@ -81,6 +81,41 @@ export type VerifyPayoutResult =
   | { status: 'failed'; reason: string }
   | { status: 'pending' };
 
+export interface InitiateRefundParams {
+  // Unique per attempt and never reusable, even after a failure.
+  reference: string;
+  // The reference the original charge was created with.
+  paymentReference: string;
+  // The credited principal: the provider keeps its pay-in fee, so refunding
+  // exactly this costs Cliqpay nothing (docs/adr/0021).
+  amount: Money;
+  reason: string;
+}
+
+/**
+ * Same three-way shape as InitiatePayoutResult, and `unknown` carries the
+ * same warning: a network error or an unrecognised response may still have
+ * reached the provider, so a caller verifies before ever treating it as
+ * `rejected`. `already_exists` means this reference was accepted before, so
+ * the attempt is already at the provider and only its status is missing.
+ */
+export type InitiateRefundResult =
+  | { status: 'accepted' }
+  | { status: 'already_exists' }
+  | { status: 'rejected'; reason: string }
+  | { status: 'unknown'; detail: string };
+
+/**
+ * `not_found` means the provider has never seen this refund reference: the
+ * initiate call did not reach it, so initiating again with the same
+ * reference is safe.
+ */
+export type VerifyRefundResult =
+  | { status: 'success'; amount: Money }
+  | { status: 'failed'; reason: string }
+  | { status: 'pending' }
+  | { status: 'not_found' };
+
 /**
  * See docs/architecture.md §3.6. `verifyKyc()` is not stubbed here; it
  * arrives with Phase 6, not ahead of it (CLAUDE.md's incremental-build
@@ -120,6 +155,13 @@ export interface PaymentProviderAdapter {
   // `transactions` rows whose payout webhook never arrived within the
   // normal window, mirroring verifyCharge's role for funding.
   verifyPayout(reference: string): Promise<VerifyPayoutResult>;
+
+  // Refunds a held funding to the payer (docs/adr/0021). Called only after
+  // the transaction that created the attempt row has committed.
+  initiateRefund(params: InitiateRefundParams): Promise<InitiateRefundResult>;
+
+  // The poll path for a refund whose webhook never arrived.
+  verifyRefund(reference: string): Promise<VerifyRefundResult>;
 }
 
 export const PAYMENT_PROVIDER_ADAPTER = Symbol('PAYMENT_PROVIDER_ADAPTER');

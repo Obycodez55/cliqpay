@@ -6,10 +6,13 @@ import {
   InitiatePaymentResult,
   InitiatePayoutParams,
   InitiatePayoutResult,
+  InitiateRefundParams,
+  InitiateRefundResult,
   PaymentProviderAdapter,
   ResolveBankAccountResult,
   VerifyChargeResult,
   VerifyPayoutResult,
+  VerifyRefundResult,
 } from './payment-provider.interface';
 import { maybeThrowFakePaymentFailure } from '../internal/errors';
 import { extractTopLevelJsonField } from '../internal/raw-json';
@@ -24,8 +27,14 @@ const FAKE_SECRET_KEY = 'fake-kora-secret-key';
 export class FakeAdapter implements PaymentProviderAdapter {
   readonly initiated: InitiatePaymentParams[] = [];
   readonly payoutsInitiated: InitiatePayoutParams[] = [];
+  readonly refundsInitiated: InitiateRefundParams[] = [];
   private readonly verifyChargeResults = new Map<string, VerifyChargeResult>();
   private readonly verifyPayoutResults = new Map<string, VerifyPayoutResult>();
+  private readonly verifyRefundResults = new Map<string, VerifyRefundResult>();
+  private readonly initiateRefundResults = new Map<
+    string,
+    InitiateRefundResult
+  >();
   private readonly balances = new Map<string, Money>();
   private readonly resolveBankAccountResults = new Map<
     string,
@@ -145,5 +154,40 @@ export class FakeAdapter implements PaymentProviderAdapter {
   // eslint-disable-next-line @typescript-eslint/require-await
   async verifyPayout(reference: string): Promise<VerifyPayoutResult> {
     return this.verifyPayoutResults.get(reference) ?? { status: 'pending' };
+  }
+
+  // Test-only configuration, same shape as setVerifyPayoutResult: nothing
+  // configured accepts every refund and reports it `pending`, the safe
+  // default of leaving an unconfigured attempt alone.
+  setInitiateRefundResult(
+    reference: string,
+    result: InitiateRefundResult,
+  ): void {
+    this.initiateRefundResults.set(reference, result);
+  }
+
+  // A reference seen before is `already_exists`, like the real API.
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async initiateRefund(
+    params: InitiateRefundParams,
+  ): Promise<InitiateRefundResult> {
+    const configured = this.initiateRefundResults.get(params.reference);
+    if (configured) {
+      return configured;
+    }
+    if (this.refundsInitiated.some((r) => r.reference === params.reference)) {
+      return { status: 'already_exists' };
+    }
+    this.refundsInitiated.push(params);
+    return { status: 'accepted' };
+  }
+
+  setVerifyRefundResult(reference: string, result: VerifyRefundResult): void {
+    this.verifyRefundResults.set(reference, result);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/require-await
+  async verifyRefund(reference: string): Promise<VerifyRefundResult> {
+    return this.verifyRefundResults.get(reference) ?? { status: 'pending' };
   }
 }
