@@ -10,6 +10,7 @@ import {
 } from '../../common/pagination/cursor';
 import {
   TransactionHistoryEntry,
+  toHeldFundingHistoryEntry,
   toTransactionHistoryEntry,
 } from './dto/transaction-history-item.dto';
 import { Account } from './entities/account.entity';
@@ -755,41 +756,60 @@ export class LedgerService {
       ? decodeCreatedAtIdCursor(pagination.cursor)
       : null;
 
-    const query = this.dataSource
-      .getRepository(LedgerEntry)
-      .createQueryBuilder('entry')
-      .innerJoinAndSelect('entry.transaction', 'transaction')
-      // Postgres's own text form of the timestamp, not the JS `Date` the
-      // entity gets mapped to — `Date` only holds millisecond precision, so
-      // round-tripping the cursor through `.toISOString()` silently drops
-      // rows whose createdAt shares a millisecond with the page boundary
-      // (routine here: postFundingEntries batch-inserts 4 entries in one
-      // statement, so they often land at the same or an adjacent
-      // microsecond). Comparing on Postgres's own text preserves full
-      // precision on both sides of the cursor round trip.
-      .addSelect('"entry"."created_at"::text', 'raw_created_at')
-      .where('entry.accountId = :walletId', { walletId })
-      .orderBy('entry.createdAt', 'DESC')
-      .addOrderBy('entry.id', 'DESC')
-      .take(pagination.limit + 1);
+    // One ordered page over two sources, so Postgres does the merge and the
+    // keyset cursor stays exact
+    const rows = await this.dataSource.query<
+      { id: string; source: 'entry' | 'held'; raw_created_at: string }[]
+    >(
+      `SELECT id, source, created_at::text AS raw_created_at FROM (
+         SELECT e.id, 'entry' AS source, e.created_at
+         FROM ledger_entries e
+         WHERE e.account_id = $1
+         UNION ALL
+         SELECT t.id, 'held' AS source,
+           COALESCE((t.metadata->>'heldAt')::timestamptz, t.created_at) AS created_at
+         FROM transactions t
+         WHERE t.recipient_wallet_id = $1
+           AND t.type = 'funding'
+           AND t.status IN ('held', 'refunded')
+       ) history
+       WHERE ($2::timestamptz IS NULL OR (created_at, id) < ($2::timestamptz, $3::uuid))
+       ORDER BY created_at DESC, id DESC
+       LIMIT $4`,
+      [
+        walletId,
+        cursor?.createdAt ?? null,
+        cursor?.id ?? null,
+        pagination.limit + 1,
+      ],
+    );
+    const hasMore = rows.length > pagination.limit;
+    const pageRows = hasMore ? rows.slice(0, pagination.limit) : rows;
+    const lastRow = pageRows[pageRows.length - 1];
 
-    if (cursor) {
-      query.andWhere(
-        '(entry.createdAt, entry.id) < (:cursorCreatedAt::timestamptz, :cursorId::uuid)',
-        { cursorCreatedAt: cursor.createdAt, cursorId: cursor.id },
-      );
-    }
-
-    const { entities, raw } = await query.getRawAndEntities<{
-      raw_created_at: string;
-    }>();
-    const hasMore = entities.length > pagination.limit;
-    const page = hasMore ? entities.slice(0, pagination.limit) : entities;
-    const lastRaw = hasMore ? raw[pagination.limit - 1] : raw[raw.length - 1];
+    const entryIds = pageRows
+      .filter((r) => r.source === 'entry')
+      .map((r) => r.id);
+    const heldIds = pageRows
+      .filter((r) => r.source === 'held')
+      .map((r) => r.id);
+    const entries: LedgerEntry[] = entryIds.length
+      ? await this.dataSource.getRepository(LedgerEntry).find({
+          where: { id: In(entryIds) },
+          relations: { transaction: true },
+        })
+      : [];
+    const heldFundings: Transaction[] = heldIds.length
+      ? await this.dataSource.getRepository(Transaction).findBy({
+          id: In(heldIds),
+        })
+      : [];
+    const entryById = new Map(entries.map((e) => [e.id, e]));
+    const heldById = new Map(heldFundings.map((t) => [t.id, t]));
 
     const counterpartyWalletIds = [
       ...new Set(
-        page
+        entries
           .filter((entry) => entry.transaction.type === 'p2p_transfer')
           .map((entry) =>
             entry.transaction.senderWalletId === walletId
@@ -810,18 +830,23 @@ export class LedgerService {
     );
 
     return {
-      items: page.map((entry) =>
-        toTransactionHistoryEntry(
-          entry,
-          walletId,
-          counterpartyUserIdByWalletId,
-        ),
+      items: pageRows.map((row) =>
+        row.source === 'entry'
+          ? toTransactionHistoryEntry(
+              entryById.get(row.id)!,
+              walletId,
+              counterpartyUserIdByWalletId,
+            )
+          : toHeldFundingHistoryEntry(
+              heldById.get(row.id)!,
+              new Date(row.raw_created_at),
+            ),
       ),
       nextCursor:
-        hasMore && lastRaw
+        hasMore && lastRow
           ? encodeCreatedAtIdCursor({
-              createdAt: lastRaw.raw_created_at,
-              id: page[page.length - 1].id,
+              createdAt: lastRow.raw_created_at,
+              id: lastRow.id,
             })
           : null,
     };

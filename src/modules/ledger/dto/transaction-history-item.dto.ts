@@ -7,6 +7,7 @@ import {
   LedgerEntryDirection,
 } from '../entities/ledger-entry.entity';
 import {
+  Transaction,
   TransactionStatus,
   TransactionType,
 } from '../entities/transaction.entity';
@@ -21,7 +22,9 @@ export interface TransactionHistoryEntry {
   reference: string;
   type: TransactionType;
   status: TransactionStatus;
-  direction: LedgerEntryDirection;
+  // Null for a funding held or refunded (docs/adr/0021): the wallet was never
+  // credited, so there is no entry to take a direction from.
+  direction: LedgerEntryDirection | null;
   amount: Money;
   counterpartyUserId: string | null;
   createdAt: Date;
@@ -49,12 +52,25 @@ export class TransactionHistoryItemDto {
   type: TransactionType;
 
   @ApiProperty({
-    enum: ['pending', 'completed', 'failed', 'reversed', 'disputed'],
+    enum: [
+      'pending',
+      'completed',
+      'failed',
+      'reversed',
+      'disputed',
+      'held',
+      'refunded',
+    ],
   })
   status: TransactionStatus;
 
-  @ApiProperty({ enum: ['debit', 'credit'] })
-  direction: LedgerEntryDirection;
+  @ApiProperty({
+    enum: ['debit', 'credit'],
+    nullable: true,
+    description:
+      'The effect on the wallet, or null when the wallet was not touched: a funding held in suspense, or already refunded, because it would have taken the wallet over its balance limit.',
+  })
+  direction: LedgerEntryDirection | null;
 
   @ApiProperty({ type: MoneyDto })
   amount: MoneyDto;
@@ -122,5 +138,24 @@ export function toTransactionHistoryItem(
       ? (identityByUserId.get(entry.counterpartyUserId) ?? null)
       : null,
     createdAt: entry.createdAt.toISOString(),
+  };
+}
+
+// A funding held or refunded has no entry on the wallet: the money went to
+// suspense, never the wallet. `createdAt` is when it was held, matching where
+// it sits in the history.
+export function toHeldFundingHistoryEntry(
+  funding: Transaction,
+  heldAt: Date,
+): TransactionHistoryEntry {
+  return {
+    id: funding.id,
+    reference: funding.reference,
+    type: funding.type,
+    status: funding.status,
+    direction: null,
+    amount: Money.of(funding.amount, funding.currency),
+    counterpartyUserId: null,
+    createdAt: heldAt,
   };
 }
