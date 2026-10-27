@@ -73,7 +73,7 @@ export interface FundingCompletedEventPayload {
 }
 
 // A funding that would have taken the wallet over its balance cap, held in
-// suspense and being refunded (docs/adr/0021).
+// suspense and being refunded.
 export const FUNDING_HELD_EVENT = 'funding_held';
 
 export interface FundingHeldEventPayload {

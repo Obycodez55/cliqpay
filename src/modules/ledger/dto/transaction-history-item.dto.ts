@@ -22,7 +22,7 @@ export interface TransactionHistoryEntry {
   reference: string;
   type: TransactionType;
   status: TransactionStatus;
-  // Null for a funding held or refunded (docs/adr/0021): the wallet was never
+  // Null for a funding held or refunded: the wallet was never
   // credited, so there is no entry to take a direction from.
   direction: LedgerEntryDirection | null;
   amount: Money;

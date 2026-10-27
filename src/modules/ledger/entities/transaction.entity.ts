@@ -13,7 +13,7 @@ import { Account } from './account.entity';
 export type TransactionProvider = 'kora';
 export type TransactionType =
   | 'funding'
-  // One refund attempt of a held funding (docs/adr/0021): `reversesTransactionId`
+  // One refund attempt of a held funding: `reversesTransactionId`
   // points at the funding row; only a completed attempt has ledger entries.
   | 'funding_refund'
   | 'p2p_transfer'
@@ -42,7 +42,7 @@ export type TransactionStatus =
   | 'reversed'
   | 'disputed'
   // Funding rows only: held = the money is in suspense awaiting a refund,
-  // refunded = a refund attempt completed (docs/adr/0021).
+  // refunded = a refund attempt completed.
   | 'held'
   | 'refunded';
 

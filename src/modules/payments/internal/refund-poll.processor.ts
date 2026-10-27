@@ -11,7 +11,7 @@ const REFUND_POLL_JOB_NAME = 'poll-stale-refunds';
 const REFUND_POLL_INTERVAL_MS = 5 * 60 * 1000;
 
 /**
- * Recovers refunds of held fundings (docs/adr/0021): resolves attempts whose
+ * Recovers refunds of held fundings: resolves attempts whose
  * webhook never arrived, starts the next attempt after a failure, and alerts
  * operations when held money is not getting resolved.
  */

@@ -1,7 +1,7 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
 // `held` / `refunded` are funding statuses, `funding_refund` the type of one
-// refund attempt of a held funding (docs/adr/0021). The partial index backs
+// refund attempt of a held funding. The partial index backs
 // the held-funding queries of the refund recovery job.
 export class AddHeldFundingStatusesAndRefundType1787700000001 implements MigrationInterface {
   name = 'AddHeldFundingStatusesAndRefundType1787700000001';

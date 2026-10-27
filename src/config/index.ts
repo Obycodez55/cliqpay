@@ -44,7 +44,7 @@ const envSchema = z
 
     // Deterministic lookup hashes (BVN, NIN, bank account numbers) only —
     // kept apart from ENCRYPTION_KEY so rotating either one never silently
-    // breaks the other's guarantees (ADR-0015).
+    // breaks the other's guarantees.
     IDENTIFIER_HASH_KEY: z
       .string()
       .regex(

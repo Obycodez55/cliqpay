@@ -688,7 +688,7 @@ export class LedgerService {
     return Money.of(account.balance, account.currency);
   }
 
-  // Money in the provider's balance that is owed back to payers (docs/adr/0021).
+  // Money in the provider's balance that is owed back to payers.
   async getSuspenseBalance(
     provider: TransactionProvider,
     currency: string,
@@ -954,7 +954,7 @@ export class LedgerService {
 
   /**
    * A funding that completed but cannot be credited because it would breach
-   * the balance cap (docs/adr/0021): the net amount goes to `suspense`
+   * the balance cap: the net amount goes to `suspense`
    * instead of the wallet, and the first refund attempt row is created in
    * the same transaction so the attempt exists durably before the provider
    * is ever called. Same atomic `pending` -> terminal guard as postFunding,
@@ -1187,7 +1187,7 @@ export class LedgerService {
 
   /**
    * Posts `DR suspense / CR float` once the provider reports the refund as
-   * paid (docs/adr/0021). The funding row is locked first, so a settle and a
+   * paid. The funding row is locked first, so a settle and a
    * concurrent attempt creation or failure serialise; the guarded
    * `held` -> `refunded` flip makes a second settle post nothing. An
    * attempt already marked `failed` can still settle (a late success): the
@@ -1455,8 +1455,8 @@ export class LedgerService {
 
   /**
    * A refund attempt the provider rejected or reported as failed: no ledger
-   * entries, the money stays in suspense and the funding stays `held`
-   * (docs/adr/0021). Guarded on `pending`, so a duplicate report, or a
+   * entries, the money stays in suspense and the funding stays `held`.
+   * Guarded on `pending`, so a duplicate report, or a
    * failure arriving for an attempt that already completed, changes nothing.
    */
   async failRefund(params: FailRefundParams): Promise<FailRefundResult | null> {

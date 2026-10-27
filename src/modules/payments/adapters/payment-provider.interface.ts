@@ -87,7 +87,7 @@ export interface InitiateRefundParams {
   // The reference the original charge was created with.
   paymentReference: string;
   // The credited principal: the provider keeps its pay-in fee, so refunding
-  // exactly this costs Cliqpay nothing (docs/adr/0021).
+  // exactly this costs Cliqpay nothing.
   amount: Money;
   reason: string;
 }
@@ -156,7 +156,7 @@ export interface PaymentProviderAdapter {
   // normal window, mirroring verifyCharge's role for funding.
   verifyPayout(reference: string): Promise<VerifyPayoutResult>;
 
-  // Refunds a held funding to the payer (docs/adr/0021). Called only after
+  // Refunds a held funding to the payer. Called only after
   // the transaction that created the attempt row has committed.
   initiateRefund(params: InitiateRefundParams): Promise<InitiateRefundResult>;
 

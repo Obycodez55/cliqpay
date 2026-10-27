@@ -465,7 +465,7 @@ export class PaymentsService {
   // The one path a funding outcome takes, from the webhook and the poll
   // alike. A success is checked against the user's balance cap under their
   // advisory lock, in the same transaction that posts it: credited when it
-  // fits, held in suspense when it would breach the cap (docs/adr/0021). A
+  // fits, held in suspense when it would breach the cap. A
   // failed outcome moves no money, so it skips the check.
   private async completeFunding(
     reported: PostFundingFacts,
@@ -646,7 +646,7 @@ export class PaymentsService {
     });
   }
 
-  // The refund recovery job (docs/adr/0021): every step is independent, so
+  // The refund recovery job: every step is independent, so
   // one failing does not stop the others, and the whole run is safe to repeat.
   async pollStaleRefundTransactions(): Promise<void> {
     const steps: [string, () => Promise<void>][] = [

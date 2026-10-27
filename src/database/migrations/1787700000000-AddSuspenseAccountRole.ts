@@ -2,8 +2,8 @@ import { MigrationInterface, QueryRunner } from 'typeorm';
 import { seedSystemAccounts } from '../seed-system-accounts';
 
 // Money a provider holds that is owed back to a payer rather than to a user
-// wallet: a funding held because crediting it would breach the balance cap
-// (docs/adr/0021). Provider-scoped like float.
+// wallet: a funding held because crediting it would breach the balance cap.
+// Provider-scoped like float.
 export class AddSuspenseAccountRole1787700000000 implements MigrationInterface {
   name = 'AddSuspenseAccountRole1787700000000';
 
