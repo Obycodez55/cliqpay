@@ -43,7 +43,7 @@ type CompletionLedger = jest.Mocked<
   Pick<
     LedgerService,
     | 'postFunding'
-    | 'findPendingFundingOwner'
+    | 'findPendingFunding'
     | 'getWalletBalance'
     | 'postFundingWithinTransaction'
     | 'holdFundingWithinTransaction'
@@ -61,7 +61,10 @@ type CompletionLedger = jest.Mocked<
 function completionLedger(): CompletionLedger {
   return {
     postFunding: jest.fn(),
-    findPendingFundingOwner: jest.fn().mockResolvedValue({ userId: 'user-1' }),
+    findPendingFunding: jest.fn().mockResolvedValue({
+      userId: 'user-1',
+      amount: Money.of(500_000n, 'NGN'),
+    }),
     getWalletBalance: jest.fn(),
     postFundingWithinTransaction: jest.fn(),
     holdFundingWithinTransaction: jest.fn(),
@@ -331,8 +334,68 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
     });
   });
 
+  describe('the amount a charge.success webhook reports', () => {
+    const creditedFacts = () =>
+      ledgerService.postFundingWithinTransaction.mock.calls[0][1];
+
+    beforeEach(() => {
+      ledgerService.postFundingWithinTransaction.mockResolvedValue(
+        postFundingResult,
+      );
+      usersService.findById.mockResolvedValue({
+        email: 'user@example.com',
+      } as Awaited<ReturnType<UsersService['findById']>>);
+    });
+
+    it('is the payer’s gross when the payer bears the fee: the credited net is the amount minus the fee', async () => {
+      await service.handleKoraWebhook(
+        webhookBody({ amount: 5013.97, fee: 13.97 }),
+        'sig',
+      );
+
+      expect(creditedFacts()).toEqual({
+        reference: 'cliqpay-ref-1',
+        netAmount: Money.of(500_000n, 'NGN'),
+        providerFee: Money.of(1_397n, 'NGN'),
+        providerStatus: 'success',
+      });
+    });
+
+    it('is already the requested amount when the merchant bears the fee, and is credited as reported', async () => {
+      await service.handleKoraWebhook(
+        webhookBody({ amount: 5000, fee: 13.97 }),
+        'sig',
+      );
+
+      expect(creditedFacts().netAmount).toEqual(Money.of(500_000n, 'NGN'));
+    });
+
+    it('still gets the fee subtracted when it matches neither, so the ledger cross-check fails it instead of crediting it', async () => {
+      await service.handleKoraWebhook(
+        webhookBody({ amount: 7000, fee: 50 }),
+        'sig',
+      );
+
+      expect(creditedFacts().netAmount).toEqual(Money.of(695_000n, 'NGN'));
+    });
+
+    it('leaves a reported amount untouched when there is no pending funding to compare with', async () => {
+      ledgerService.findPendingFunding.mockResolvedValue(null);
+      ledgerService.postFunding.mockResolvedValue(null);
+
+      await service.handleKoraWebhook(
+        webhookBody({ amount: 5013.97, fee: 13.97 }),
+        'sig',
+      );
+
+      expect(ledgerService.postFunding.mock.calls[0][0].netAmount).toEqual(
+        Money.of(501_397n, 'NGN'),
+      );
+    });
+  });
+
   it('falls back to postFunding without a cap check when no pending funding exists for the reference', async () => {
-    ledgerService.findPendingFundingOwner.mockResolvedValue(null);
+    ledgerService.findPendingFunding.mockResolvedValue(null);
     ledgerService.postFunding.mockResolvedValue(null);
 
     await service.handleKoraWebhook(webhookBody(), 'sig');

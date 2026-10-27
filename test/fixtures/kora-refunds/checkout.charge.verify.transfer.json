@@ -1,0 +1,46 @@
+{
+  "label": "charge.verify.transfer",
+  "capturedAt": "2026-10-27T06:20:44.212Z",
+  "durationMs": 433,
+  "request": {
+    "method": "GET",
+    "path": "/charges/cliqpay-66-transfer-1793081853125",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "status": true,
+      "message": "Charge retrieved successfully",
+      "data": {
+        "reference": "cliqpay-66-transfer-1793081853125",
+        "status": "success",
+        "amount": "1000.00",
+        "amount_paid": "1000.00",
+        "amount_accepted": "1000.00",
+        "fee": 53.75,
+        "currency": "NGN",
+        "description": "Payment on <merchant>",
+        "transaction_date": "2026-10-27T06:20:17.000Z",
+        "customer": {
+          "name": "spike@example.com",
+          "email": "spike@example.com"
+        },
+        "bank_transfer": {
+          "payer_bank_account": {
+            "account_number": "1006371829",
+            "account_name": "Kora Sandbox",
+            "bank_name": "Kora Sandbox Bank",
+            "bank_code": "000"
+          }
+        },
+        "payer_bank_account": {
+          "account_number": "1006371829",
+          "account_name": "Kora Sandbox",
+          "bank_name": "Kora Sandbox Bank",
+          "bank_code": "000"
+        }
+      }
+    }
+  }
+}

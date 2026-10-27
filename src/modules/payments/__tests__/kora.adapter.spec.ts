@@ -118,6 +118,10 @@ describe('KoraAdapter', () => {
         // Phase 2 audit, M2.
         notification_url: 'https://api.cliqpay.test/wallet/webhook/kora',
         redirect_url: 'https://app.cliqpay.test/wallet/funding-complete',
+        // The payer bears Kora's fee, which is what the funding posting
+        // assumes; Kora's own default (and the account setting) has
+        // changed before.
+        merchant_bears_cost: false,
       });
     });
 

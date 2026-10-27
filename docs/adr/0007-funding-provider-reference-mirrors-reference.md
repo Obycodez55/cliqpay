@@ -99,6 +99,15 @@ call is ever made (debit-first, docs/architecture.md §6 Phase 4), issue
 leg instead of Kora's per-request figure; reconciling the posted estimate
 against Kora's actual settled fee is not yet built.
 
+**[Correction, 2026-10-27, issue #66]** Who bears Kora's fee on a hosted
+checkout is a request parameter (`merchant_bears_cost`) whose effective default
+has changed since the captures above, and the webhook's `amount` depends on
+it: the requested amount when the merchant bears the fee, the payer's gross
+(requested plus fee) when the payer does. `GET /charges/{reference}` reports the
+requested amount as `amount` either way. `KoraAdapter.initiatePayment` now sends
+`merchant_bears_cost: false` explicitly, and the webhook handler derives the
+credited net amount accordingly (docs/research/kora-refunds.md section 9).
+
 ## Decision
 
 For `transactions` of `type = 'funding'`, `provider_reference` is set to the

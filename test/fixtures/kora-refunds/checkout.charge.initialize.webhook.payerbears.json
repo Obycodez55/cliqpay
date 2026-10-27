@@ -1,0 +1,31 @@
+{
+  "label": "charge.initialize.webhook.payerbears",
+  "capturedAt": "2026-10-27T06:34:18.361Z",
+  "durationMs": 310,
+  "request": {
+    "method": "POST",
+    "path": "/charges/initialize",
+    "body": {
+      "amount": 1000,
+      "currency": "NGN",
+      "reference": "cliqpay-66c-payerbears-1793082854736",
+      "customer": {
+        "email": "spike@example.com"
+      },
+      "notification_url": "https://ultracentrifugal-darryl-flashily.ngrok-free.dev/wh/charge",
+      "redirect_url": "https://example.com/done",
+      "merchant_bears_cost": false
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "status": true,
+      "message": "Charge created successfully",
+      "data": {
+        "reference": "cliqpay-66c-payerbears-1793082854736",
+        "checkout_url": "https://test-checkout.korapay.com/KPY-PI-202610270634sGni1p18219/pay"
+      }
+    }
+  }
+}

@@ -451,12 +451,15 @@ export class PaymentsService {
       }
     }
 
-    await this.completeFunding({
-      reference: data.reference,
-      netAmount,
-      providerFee,
-      providerStatus,
-    });
+    await this.completeFunding(
+      {
+        reference: data.reference,
+        netAmount,
+        providerFee,
+        providerStatus,
+      },
+      'webhook',
+    );
   }
 
   // The one path a funding outcome takes, from the webhook and the poll
@@ -464,12 +467,29 @@ export class PaymentsService {
   // advisory lock, in the same transaction that posts it: credited when it
   // fits, held in suspense when it would breach the cap (docs/adr/0021). A
   // failed outcome moves no money, so it skips the check.
-  private async completeFunding(facts: PostFundingFacts): Promise<void> {
-    const owner =
-      facts.providerStatus === 'success'
-        ? await this.ledgerService.findPendingFundingOwner(facts.reference)
+  private async completeFunding(
+    reported: PostFundingFacts,
+    source: 'webhook' | 'poll',
+  ): Promise<void> {
+    const pending =
+      reported.providerStatus === 'success'
+        ? await this.ledgerService.findPendingFunding(reported.reference)
         : null;
-    if (!owner) {
+    // Kora's webhook `amount` is the payer's gross when the payer bears the
+    // fee and the requested amount when the merchant does; the charge status
+    // the poll reads is the requested amount either way. The ledger's own
+    // cross-check against the request still rejects anything that matches
+    // neither reading.
+    const facts =
+      source === 'webhook' && pending
+        ? {
+            ...reported,
+            netAmount: reported.netAmount.equals(pending.amount)
+              ? reported.netAmount
+              : reported.netAmount.subtract(reported.providerFee),
+          }
+        : reported;
+    if (!pending) {
       // Failed, unknown or already resolved: postFunding is idempotent and
       // handles each.
       const result = await this.ledgerService.postFunding(facts);
@@ -482,9 +502,9 @@ export class PaymentsService {
     const outcome = await runInTransaction(this.dataSource, async (manager) => {
       const verdict = await this.kycService.checkIncomingCredit(
         manager,
-        owner.userId,
+        pending.userId,
         facts.netAmount,
-        (m) => this.ledgerService.getWalletBalance(m, owner.userId),
+        (m) => this.ledgerService.getWalletBalance(m, pending.userId),
       );
       if (verdict.allowed) {
         const credited = await this.ledgerService.postFundingWithinTransaction(
@@ -911,7 +931,7 @@ export class PaymentsService {
             providerStatus: 'failed',
           };
 
-    await this.completeFunding(facts);
+    await this.completeFunding(facts, 'poll');
   }
 
   // The withdrawal self-verify poll job (issue #31, mirrors #14's funding

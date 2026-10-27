@@ -14,10 +14,10 @@ Legend: **[V]** verified by a captured request/response in this spike. **[D]** d
 | Refund initiate (full, partial, with and without `completion_status`), status fetch by reference, list | [V] |
 | Refund webhooks `refund.success` / `refund.failed`: payload, header, signature over `data` | [V] 8 deliveries captured; the existing `KoraAdapter.verifyWebhookSignature` scheme validates every one (checked with the real key inside the capture process) |
 | `webhook_url` overrides the dashboard URL | [V] |
-| Fee behaviour on a refunded payment | [V] for **bank-transfer API charges** (section 3). [D] for hosted-checkout charges and card payments. |
+| Fee behaviour on a refunded payment | [V] for bank-transfer API charges (section 3) and, since issue #66, for **hosted-checkout card and bank-transfer charges** (section 9). Live mode [D]. |
 | Timing | [V] sandbox only: instant. Live timing [D]/unknown. |
 | Error and rejection matrix | [V] mostly (section 5); Kora-balance-too-low and the refund window are not triggerable |
-| Refund of a hosted-checkout charge (`POST /charges/initialize`, the charge type Cliqpay creates) and of a card payment | **Not done**: needs the checkout page (manual step, section 9) |
+| Refund of a hosted-checkout charge (`POST /charges/initialize`, the charge type Cliqpay creates) and of a card payment | [V] issue #66, 2026-10-27 (section 9) |
 | Minimum NGN 100 | The sandbox does **not** enforce it (a NGN 99 refund succeeded). Live behaviour [D]. |
 
 ### Most important findings
@@ -116,15 +116,44 @@ Refunds were therefore verified against bank-transfer API charges only. Cliqpay'
 - A failed refund left the balance unchanged (case D); whether live mode debits first and credits back on failure is unobserved.
 - For reconciliation: between initiate and completion the provider balance is lower than the ledger float by the refund amount. In the sandbox this window is under a second; in live it is whatever `processing` lasts.
 
-## 9. Manual steps still needed from the user (not done by this spike)
+## 9. Hosted-checkout charges: card and bank transfer (issue #66, 2026-10-27)
 
-To verify a **hosted-checkout** charge (the type Cliqpay creates), including a card payment:
+Six charges created with `POST /charges/initialize` (the call `KoraAdapter.initiatePayment` makes), paid by a person on Kora's test checkout: Kora's published successful Visa test card, and "Pay with Bank Transfer". 35 sandbox calls in total (25 for the first four charges, 10 for the two webhook-capture charges), no tunnel for the first four and the reserved tunnel for the last two. Fixtures: `test/fixtures/kora-refunds/checkout.*.json`.
 
-1. Open one of the two unpaid checkout URLs created by this spike. They are in the session scratchpad (`spike/calls.jsonl`, labels `charge.initialize.a` and `.b`, field `data.checkout_url`), or ask the session for the URL; the charges are NGN 1,000 and were never paid. The charges expire at Kora's discretion, so a new one may be needed.
-2. On the hosted test checkout choose **Pay with Debit Card** and pick one of the labelled test scenarios (Kora's published successful test cards are in its "Testing your Integration" page), or choose **Pay with Bank Transfer**, tick the instructions box, Continue, and wait under a minute (the route `docs/e2e-real-providers.md` records). Do one of each to compare card and transfer.
-3. Then tell the session which references were paid. It then needs only: `GET /charges/:ref` (record `amount`, `amount_paid`, `fee`), `POST /refunds/initiate` with no `amount`, and again on a second payment with `amount` = the principal, then balances before and after, to confirm sections 3's table holds for checkout charges and for card.
+**The fee is borne by whoever the request says, and Cliqpay's request does not say.** `KoraAdapter.initiatePayment` does not send `merchant_bears_cost`. Kora's docs say it defaults to `true`, and the first two checkout charges (no flag) behaved that way: the payer paid exactly the amount, and Kora credited the merchant the amount minus its fee. ADR-0007 recorded the opposite on 2026-07-30 (a checkout where `amount_paid` was 1,013.97 for a 1,000 charge), so the effective default has changed since; the account setting or Kora's default is the likely cause and is a question for Kora (section 10).
 
-Things only Kora support can answer (section 10) or only a live-mode test could settle are not something to run from the sandbox.
+| Charge (NGN 1,000) | `amount_paid` | `fee` | Merchant balance credited | Refund call | Merchant balance change | Remaining refundable |
+|---|---|---|---|---|---|---|
+| Card, no flag (merchant bears) | 1,000.00 | 13.97 | 986.03 | no `amount` (`amount_returned` 1,000) | -1,000.00 | none |
+| Transfer, no flag (merchant bears) | 1,000.00 | 53.75 | 946.25 | `amount: 1000` | -1,000.00 | none |
+| Card, `merchant_bears_cost: false` | 1,013.97 | 13.97 | 1,000.00 | `amount: 1000` (the principal) | **-1,000.00** | 13.97 (the 422 "A full refund cannot be initiated ... less than or equal to NGN 13.97") |
+| Transfer, `merchant_bears_cost: false` | 1,053.75 | 53.75 | 1,000.00 | no `amount` (`amount_returned` **1,053.75**) | **-1,053.75** | none |
+
+What it shows:
+
+- **Principal refund confirmed on a hosted-checkout card charge** (row 3): refunding exactly the credited amount moves Kora's balance by exactly that amount, so Cliqpay bears nothing, and Kora does not return its fee.
+- **The default refund returns the payer's gross on a checkout transfer too** (row 4), as on bank-transfer API charges: omitting `amount` would cost Cliqpay the fee. The adapter must keep sending `amount`.
+- When the merchant bears the fee (rows 1 and 2) the principal equals the payer's payment, so the principal refund makes the payer whole and the fee is simply a cost Cliqpay already carried when it took the payment.
+- All four refunds completed within the first status read (`channel: "modal"`, not `"api"`, in the initiate response); the charges keep `status: "success"` afterwards.
+- Cards: the fixtures contain Kora's published test card (first six 408412, last four 2787), which is public.
+
+### Captured webhooks for hosted-checkout card charges
+
+Two further card charges were created with `notification_url` on the tunnel and refunded by principal; every delivery's signature validated (HMAC over `data`).
+
+```json
+merchant bears the fee (no flag):   {"event":"charge.success","data":{"reference":"cliqpay-66c-default-...","payment_reference":"cliqpay-66c-default-...","currency":"NGN","amount":1000,"fee":13.97,"payment_method":"card","status":"success"}}
+payer bears the fee (flag false):   {"event":"charge.success","data":{"reference":"cliqpay-66c-payerbears-...","payment_reference":"cliqpay-66c-payerbears-...","currency":"NGN","amount":1013.97,"fee":13.97,"payment_method":"card","status":"success"}}
+refund of either:                    {"event":"refund.success","data":{"amount":1000,"status":"success","currency":"NGN","reference":"rfd-66c-...","payment_reference":"KPY-CM-...","created_at":"...","completed_at":"..."}}
+```
+
+- **`charge.success.data.amount` is the payer's gross when the payer bears the fee** (1,013.97), and the requested amount when the merchant does. `GET /charges/:ref` reports `amount` 1,000.00 in both cases (`amount_paid` carries the gross). The two sources disagree in the payer-bears configuration.
+- The refund webhook has the same shape for card as for bank transfer: our refund `reference`, a Kora-internal `payment_reference` (`KPY-CM-...` for a checkout charge, `KPY-CA-...` for a bank-transfer API charge), no fee field.
+- Refund webhooks arrived 0.3 s after the initiate call at the dashboard URL (`/webhooks/kora`); the charge webhooks arrived at the `notification_url` within a second of the payment. Undelivered webhooks from the earlier charges (sent while no tunnel was up) were not redelivered in the few minutes the tunnel was up.
+
+**Consequence beyond refunds (resolved 2026-10-27).** The funding posting credits float with the requested amount and assumes the payer bore the fee. If Cliqpay's charges are merchant-bears-cost, Kora's balance is lower than ledger float by the fee on every funding and the external reconciliation will drift; the held and refunded emails also say "the provider's fee is not refunded", which would be untrue for a payer who paid no fee. Sending `merchant_bears_cost: false` alone would not have been enough: with the payer bearing the fee the `charge.success` webhook reports the payer's gross as `amount`, which `postFunding` would reject against the requested amount, while the poll path, which reads `amount` from the charge, would succeed.
+
+**Fix.** `KoraAdapter.initiatePayment` always sends `merchant_bears_cost: false`, pinning the payer-bears behaviour the funding posting, the reconciliation and the emails assume. `PaymentsService` derives the credited net from a webhook as `amount - fee`, except when the reported amount already equals the requested amount (a charge created before the change, or the merchant bearing the fee), in which case it is used as reported. The ledger's cross-check of the net against the request remains the backstop: an amount that matches neither reading fails the funding without crediting it. The poll path needs no change.
 
 ## 10. Questions for Kora support
 
@@ -138,6 +167,7 @@ Things only Kora support can answer (section 10) or only a live-mode test could 
 8. Is the roughly 60 s per-payment cool-down documented, and does it apply to live?
 9. Is there an event id or timestamp on webhook deliveries for deduplication (none was observed)?
 10. Refund list: the exact array syntax for the `status` filter.
+11. Why did the effective default of `merchant_bears_cost` on `POST /charges/initialize` change between 2026-07-30 (payer bore the fee) and 2026-10-27 (merchant bears)? Is it an account setting, and can it be pinned?
 
 ## 11. Documentation inconsistencies found
 

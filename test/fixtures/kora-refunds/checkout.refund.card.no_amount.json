@@ -1,0 +1,31 @@
+{
+  "label": "refund.card.no_amount",
+  "capturedAt": "2026-10-27T06:21:06.503Z",
+  "durationMs": 390,
+  "request": {
+    "method": "POST",
+    "path": "/refunds/initiate",
+    "body": {
+      "payment_reference": "cliqpay-66-card-1793081853125",
+      "reference": "rfd-66-card-1793082066113",
+      "reason": "checkout card refund test"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "status": true,
+      "message": "Refund successfully initiated",
+      "data": {
+        "refund_reference": "rfd-66-card-1793082066113",
+        "refund_date": "2026-10-27T06:21:06.237Z",
+        "status": "processing",
+        "payment_reference": "cliqpay-66-card-1793081853125",
+        "reason": "checkout card refund test",
+        "amount_returned": 1000,
+        "channel": "modal",
+        "currency": "NGN"
+      }
+    }
+  }
+}

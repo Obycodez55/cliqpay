@@ -1,0 +1,11 @@
+{
+  "capturedAt": "2026-10-27T06:34:53.180Z",
+  "method": "POST",
+  "path": "/wh/charge",
+  "headers": {
+    "content-type": "application/json",
+    "x-korapay-signature": "<hmac-sha256-hex>"
+  },
+  "signatureValidOverReserializedData": true,
+  "rawBody": "{\"event\":\"charge.success\",\"data\":{\"reference\":\"cliqpay-66c-default-1793082854736\",\"payment_reference\":\"cliqpay-66c-default-1793082854736\",\"currency\":\"NGN\",\"amount\":1000,\"fee\":13.97,\"payment_method\":\"card\",\"status\":\"success\"}}"
+}

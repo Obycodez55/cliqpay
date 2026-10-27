@@ -1,0 +1,29 @@
+{
+  "label": "charge.initialize.transfer",
+  "capturedAt": "2026-10-27T06:17:35.585Z",
+  "durationMs": 406,
+  "request": {
+    "method": "POST",
+    "path": "/charges/initialize",
+    "body": {
+      "amount": 1000,
+      "currency": "NGN",
+      "reference": "cliqpay-66-transfer-1793081853125",
+      "customer": {
+        "email": "spike@example.com"
+      },
+      "redirect_url": "https://example.com/done"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "status": true,
+      "message": "Charge created successfully",
+      "data": {
+        "reference": "cliqpay-66-transfer-1793081853125",
+        "checkout_url": "https://test-checkout.korapay.com/KPY-PI-202610270617a6sHqD35352/pay"
+      }
+    }
+  }
+}

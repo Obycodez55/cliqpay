@@ -1,0 +1,31 @@
+{
+  "label": "refund.customer_bears.transfer.no_amount",
+  "capturedAt": "2026-10-27T06:27:50.839Z",
+  "durationMs": 1702,
+  "request": {
+    "method": "POST",
+    "path": "/refunds/initiate",
+    "body": {
+      "payment_reference": "cliqpay-66b-transfer-1793082132980",
+      "reference": "rfd-66b-xfer-1793082464429",
+      "reason": "transfer default refund"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "status": true,
+      "message": "Refund successfully initiated",
+      "data": {
+        "refund_reference": "rfd-66b-xfer-1793082464429",
+        "refund_date": "2026-10-27T06:27:50.304Z",
+        "status": "processing",
+        "payment_reference": "cliqpay-66b-transfer-1793082132980",
+        "reason": "transfer default refund",
+        "amount_returned": 1053.75,
+        "channel": "modal",
+        "currency": "NGN"
+      }
+    }
+  }
+}

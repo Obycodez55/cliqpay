@@ -1,0 +1,37 @@
+{
+  "label": "charge.verify.customer_bears.card",
+  "capturedAt": "2026-10-27T06:27:43.880Z",
+  "durationMs": 5480,
+  "request": {
+    "method": "GET",
+    "path": "/charges/cliqpay-66b-card-1793082132980",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "status": true,
+      "message": "Charge retrieved successfully",
+      "data": {
+        "reference": "cliqpay-66b-card-1793082132980",
+        "status": "success",
+        "amount": "1000.00",
+        "amount_paid": "1013.97",
+        "fee": 13.97,
+        "currency": "NGN",
+        "description": "Payment on <merchant>",
+        "transaction_date": "2026-10-27T06:25:19.000Z",
+        "customer": {
+          "name": "spike@example.com",
+          "email": "spike@example.com"
+        },
+        "card": {
+          "card_type": "visa",
+          "first_six": "408412",
+          "last_four": "2787",
+          "expiry": "09/27"
+        }
+      }
+    }
+  }
+}

@@ -603,13 +603,14 @@ export class LedgerService {
     return Money.of(wallet.balance, wallet.currency);
   }
 
-  // Whose wallet a still-pending funding would credit, so a caller can take
-  // that user's lock before posting. Null for anything that is not a pending
+  // What a still-pending funding would credit and to whom, so a caller can
+  // take that user's lock before posting and compare a provider-reported
+  // amount with the requested one. Null for anything that is not a pending
   // funding: nothing to lock for, and the posting itself decides what a
   // duplicate or unknown reference means.
-  async findPendingFundingOwner(
+  async findPendingFunding(
     reference: string,
-  ): Promise<{ userId: string } | null> {
+  ): Promise<{ userId: string; amount: Money } | null> {
     const transaction = await this.dataSource
       .getRepository(Transaction)
       .findOneBy({ reference, type: 'funding', status: 'pending' });
@@ -619,7 +620,12 @@ export class LedgerService {
     const wallet = await this.dataSource
       .getRepository(Account)
       .findOneBy({ id: transaction.recipientWalletId });
-    return wallet?.userId ? { userId: wallet.userId } : null;
+    return wallet?.userId
+      ? {
+          userId: wallet.userId,
+          amount: Money.of(transaction.amount, transaction.currency),
+        }
+      : null;
   }
 
   // One statement, so the balance and the pending total come from the same

@@ -1,0 +1,32 @@
+{
+  "label": "refund.customer_bears.card.principal",
+  "capturedAt": "2026-10-27T06:27:45.326Z",
+  "durationMs": 446,
+  "request": {
+    "method": "POST",
+    "path": "/refunds/initiate",
+    "body": {
+      "payment_reference": "cliqpay-66b-card-1793082132980",
+      "reference": "rfd-66b-card-1793082464429",
+      "amount": 1000,
+      "reason": "card principal refund"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "status": true,
+      "message": "Refund successfully initiated",
+      "data": {
+        "refund_reference": "rfd-66b-card-1793082464429",
+        "refund_date": "2026-10-27T06:27:45.046Z",
+        "status": "processing",
+        "payment_reference": "cliqpay-66b-card-1793082132980",
+        "reason": "card principal refund",
+        "amount_returned": 1000,
+        "channel": "modal",
+        "currency": "NGN"
+      }
+    }
+  }
+}

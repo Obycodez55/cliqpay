@@ -219,6 +219,8 @@ transaction.provider_reference: <Kora's own reference for this payment>
 
 **Equation check:** Debits = net_amount + provider_fee = gross_amount. Credits = net_amount + provider_fee = gross_amount. ✓
 
+**[v14] Who bears the fee is pinned, not assumed.** The posting above holds when the payer bears the provider fee, so `KoraAdapter.initiatePayment` always sends `merchant_bears_cost: false`. Kora's `charge.success` webhook then reports the payer's gross as `amount`; the credited net is `amount - fee`, unless the reported amount already equals the requested one (see ADR-0007).
+
 ---
 
 #### Funding held, then refunded — **[v14, new]**

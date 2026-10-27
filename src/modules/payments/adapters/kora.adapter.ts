@@ -148,6 +148,8 @@ export class KoraAdapter implements PaymentProviderAdapter {
         customer: { email: params.customerEmail },
         notification_url: this.webhookUrl,
         redirect_url: this.redirectUrl,
+        // The funding posting assumes the payer bears Kora's fee
+        merchant_bears_cost: false,
       },
     );
     if (!ok || !body.status || !body.data) {
