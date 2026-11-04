@@ -1,0 +1,54 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/bvn_validation",
+    "body": {
+      "number": "54651333604",
+      "reference": "cliq-ref-123",
+      "metadata": {
+        "userId": "u1"
+      }
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 200,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "f04c67bc"
+  },
+  "responseBody": {
+    "status": true,
+    "response_code": "00",
+    "message": "Verification successful (SANDBOX MODE) - You are in sandbox mode. Switch to production mode for live data.",
+    "detail": "Verification successful (SANDBOX MODE) - You are in sandbox mode. Switch to production mode for live data.",
+    "data": {
+      "lastName": "Jane",
+      "firstName": "John",
+      "middleName": "Doe",
+      "dateOfBirth": "01-Jan-2000",
+      "phoneNumber": "08012345678"
+    },
+    "meta": {},
+    "billing_info": {
+      "was_charged": false,
+      "amount": 0,
+      "currency": "NGN",
+      "note": "No charges in sandbox mode"
+    },
+    "verification": {
+      "status": "VERIFIED",
+      "reference": "ef77a3f3-4234-4333-ab9f-f46ac68e1aed",
+      "verification_id": "3b094daa-3dc8-4103-80f3-ff5dd55d0e82"
+    },
+    "reference_id": "SBX-BVN_BASIC-4UGR4V874R",
+    "is_sandbox": true,
+    "account_verified": true,
+    "verification_status": "sandbox",
+    "metadata": {
+      "userId": "u1"
+    }
+  }
+}

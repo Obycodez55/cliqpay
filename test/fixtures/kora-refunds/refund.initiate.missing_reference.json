@@ -1,0 +1,30 @@
+{
+  "label": "refund.initiate.missing_reference",
+  "capturedAt": "2026-10-23T07:41:17.000Z",
+  "durationMs": 201,
+  "request": {
+    "method": "POST",
+    "path": "/refunds/initiate",
+    "body": {
+      "payment_reference": "cliqpay-spike-bt-1792741121266-c5",
+      "amount": 100
+    }
+  },
+  "response": {
+    "status": 422,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": false,
+      "error": "validation_error",
+      "message": "One or more fields are invalid. Please fix them and try again.",
+      "data": {
+        "reference": {
+          "message": "reference is required",
+          "customErrorMessage": "reference is required"
+        }
+      }
+    }
+  }
+}

@@ -6,10 +6,11 @@ import {
 import { NestFactory } from '@nestjs/core';
 import { Logger, LoggerErrorInterceptor } from 'nestjs-pino';
 import helmet from 'helmet';
-import { json, Request, urlencoded } from 'express';
+import { urlencoded } from 'express';
 import { AppModule } from './app.module';
 import { APP_CONFIG, AppConfig } from './config';
 import { setupApiDocs } from './docs/setup-api-docs';
+import { setupBodyParsers } from './common/body-parsers';
 
 const SHUTDOWN_SIGNALS: NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];
 const FORCE_EXIT_TIMEOUT_MS = 10_000;
@@ -60,14 +61,7 @@ async function bootstrap() {
   app.useLogger(logger);
   setupGracefulShutdown(app, logger);
   app.use(helmet());
-  app.use(
-    json({
-      limit: '1mb',
-      verify: (req, _res, buf) => {
-        (req as Request).rawBody = Buffer.from(buf);
-      },
-    }),
-  );
+  setupBodyParsers(app);
   app.use(urlencoded({ limit: '1mb', extended: true }));
   app.useGlobalInterceptors(new LoggerErrorInterceptor());
   app.useGlobalPipes(

@@ -1,0 +1,42 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/bvn_validation",
+    "body": {
+      "number": "abcdefghijk"
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 400,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "9f8fbd11"
+  },
+  "responseBody": {
+    "status": false,
+    "response_code": "05",
+    "message": "Invalid request data",
+    "detail": "Invalid request data",
+    "data": {},
+    "meta": {},
+    "billing_info": {
+      "was_charged": false,
+      "amount": 0,
+      "currency": ""
+    },
+    "verification": {
+      "status": "NOT-VERIFIED",
+      "reference": "18119b89-2e07-4cab-964c-fcab7a6bf0e3",
+      "verification_id": "dd077b2e-9529-4d92-80b2-4b1a53bda202"
+    },
+    "errors": {
+      "number": [
+        "BVN must be exactly 11 digits"
+      ]
+    },
+    "metadata": {}
+  }
+}

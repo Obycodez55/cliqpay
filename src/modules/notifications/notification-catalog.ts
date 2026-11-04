@@ -49,6 +49,25 @@ export interface FundingCompletedPayload {
   reference: string;
 }
 
+export interface FundingHeldPayload {
+  userId: string;
+  email: string;
+  amount: string;
+  currency: string;
+  // The funding transaction's reference: the in-app dedupe_key, as for
+  // FundingCompletedPayload.
+  reference: string;
+  cap: string;
+}
+
+export interface FundingRefundedPayload {
+  userId: string;
+  email: string;
+  amount: string;
+  currency: string;
+  reference: string;
+}
+
 export interface TransferSentPayload {
   userId: string;
   email: string;
@@ -150,8 +169,23 @@ export interface ReconciliationMismatchPayload {
   provider: string;
   currency: string;
   ledgerBalance: string;
+  suspenseBalance: string;
+  inFlightRefunds: string;
   providerBalance: string;
   delta: string;
+  occurredAt: string;
+}
+
+export interface RefundAttentionRequiredPayload {
+  email: string;
+  reason: string;
+  fundingReference: string;
+  refundReference: string | null;
+  amount: string;
+  currency: string;
+  heldSince: string | null;
+  attempts: number | null;
+  lastFailure: string | null;
   occurredAt: string;
 }
 
@@ -162,6 +196,8 @@ export interface NotificationPayloadMap {
   mfa_challenge_otp: MfaChallengeOtpPayload;
   security_alert: SecurityAlertPayload;
   funding_completed: FundingCompletedPayload;
+  funding_held: FundingHeldPayload;
+  funding_refunded: FundingRefundedPayload;
   transfer_sent: TransferSentPayload;
   transfer_received: TransferReceivedPayload;
   money_request_created: MoneyRequestCreatedPayload;
@@ -173,6 +209,7 @@ export interface NotificationPayloadMap {
   chargeback_received: ChargebackReceivedPayload;
   account_frozen: AccountFrozenPayload;
   reconciliation_mismatch: ReconciliationMismatchPayload;
+  refund_attention_required: RefundAttentionRequiredPayload;
 }
 
 // The in-app channel writes a row addressed to a user (see
@@ -204,6 +241,8 @@ export const NOTIFICATION_CATALOG = {
   mfa_challenge_otp: { channels: ['email'] },
   security_alert: { channels: ['email', 'push', 'in_app'] },
   funding_completed: { channels: ['email', 'in_app'] },
+  funding_held: { channels: ['email', 'in_app'] },
+  funding_refunded: { channels: ['email', 'in_app'] },
   transfer_sent: { channels: ['email', 'push', 'in_app'] },
   transfer_received: { channels: ['email', 'push', 'in_app'] },
   // Cancel is deliberately excluded from this catalog (issue #24) — only
@@ -224,6 +263,7 @@ export const NOTIFICATION_CATALOG = {
   chargeback_received: { channels: ['email'] },
   account_frozen: { channels: ['email'] },
   reconciliation_mismatch: { channels: ['email'] },
+  refund_attention_required: { channels: ['email'] },
 } as const satisfies NotificationCatalogShape;
 
 export type NotificationType = keyof typeof NOTIFICATION_CATALOG;

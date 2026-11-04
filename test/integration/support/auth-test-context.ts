@@ -37,6 +37,8 @@ import { AddPendingPhoneToUsers1784707276065 } from '../../../src/database/migra
 import { AddTransactionPinLockoutToCredentials1785491931164 } from '../../../src/database/migrations/1785491931164-AddTransactionPinLockoutToCredentials';
 import { CreateNotifications1786812506579 } from '../../../src/database/migrations/1786812506579-CreateNotifications';
 import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
+import { AddSuspenseAccountRole1787700000000 } from '../../../src/database/migrations/1787700000000-AddSuspenseAccountRole';
+import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
 import { AuthModule } from '../../../src/modules/auth/auth.module';
 import { AuthService } from '../../../src/modules/auth/auth.service';
 import { Credential } from '../../../src/modules/auth/entities/credential.entity';
@@ -56,6 +58,7 @@ import { EMAIL_SENDER } from '../../../src/modules/notifications/channels/email/
 import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/email/fake-email.adapter';
 import { SMS_SENDER } from '../../../src/modules/notifications/channels/sms/sms-sender.interface';
 import { FakeSmsAdapter } from '../../../src/modules/notifications/channels/sms/fake-sms.adapter';
+import { closeBullmqWorkers } from './bullmq-teardown';
 
 export interface AuthTestContext {
   postgres: StartedPostgreSqlContainer;
@@ -120,6 +123,8 @@ export async function createAuthTestContext(
   );
   await new CreateNotifications1786812506579().up(queryRunner);
   await new AddIsFrozenToUsers1787500000001().up(queryRunner);
+  await new AddKycTierToUsers1787600000002().up(queryRunner);
+  await new AddSuspenseAccountRole1787700000000().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 
@@ -184,6 +189,9 @@ export async function createAuthTestContext(
 export async function destroyAuthTestContext(
   ctx: Partial<AuthTestContext>,
 ): Promise<void> {
+  if (ctx.app) {
+    await closeBullmqWorkers(ctx.app);
+  }
   await ctx.app?.close();
   await ctx.postgres?.stop();
   await ctx.redis?.stop();

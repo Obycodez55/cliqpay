@@ -1,0 +1,90 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/bvn_w_face",
+    "body": {
+      "number": "54651333604",
+      "image": "<omitted 53400 chars>",
+      "face_confidence_threshold": 90
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 200,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "f4b76c7d"
+  },
+  "responseBody": {
+    "status": true,
+    "response_code": "00",
+    "message": "BVN With Face Verification verification successful - You are in sandbox mode. Switch to production mode for live data.",
+    "detail": "BVN With Face Verification verification successful - You are in sandbox mode. Switch to production mode for live data.",
+    "data": {
+      "bvn": "23229512456",
+      "nin": "",
+      "meta": {},
+      "email": "masked@example.invalid",
+      "title": "Mr",
+      "gender": "Male",
+      "lastName": "EKPOMA",
+      "face_data": {
+        "status": true,
+        "message": "Fatch Match",
+        "confidence": 0.040414428711,
+        "response_code": "00",
+        "face_image_provided": "<omitted 162060 chars>"
+      },
+      "firstName": "RONALD",
+      "middleName": "IGNATIUS",
+      "nameOnCard": "RONALD IGNATIUS EKPOMA",
+      "base64Image": "/9j/4AAQSkZJRgABAQAAAQABAAD/4gHYSUNDPaQdlyW==",
+      "dateOfBirth": "11-May-1992",
+      "lgaOfOrigin": "Ekpo",
+      "nationality": "Nigeria",
+      "watchListed": "False",
+      "billing_info": {
+        "amount": "00.00",
+        "currency": "NGN",
+        "was_charged": false,
+        "reference_id": "VER-BVN_W_FACE-OYSRFQOJNX",
+        "transaction_id": "24250b8c-357b-440b-8a1e-3e1ebba49b71"
+      },
+      "phoneNumber1": "07000000001",
+      "phoneNumber2": "",
+      "verification": {
+        "status": "VERIFIED",
+        "reference": "03958383-15dc-471e-a87e-15657dd36ce8",
+        "verification_id": "f95074e6-d2f9-4471-ae7f-3520811e79d5"
+      },
+      "maritalStatus": "Single",
+      "stateOfOrigin": "Akwa Ibom State",
+      "enrollmentBank": "070",
+      "levelOfAccount": "Level 1 - Low Level Accounts",
+      "lgaOfResidence": "Ekpo",
+      "enrollmentBranch": "UNIPORT",
+      "registrationDate": "01-Apr-2015",
+      "stateOfResidence": "Akwa Ibom State",
+      "residentialAddress": "MASKED ADDRESS"
+    },
+    "meta": {},
+    "billing_info": {
+      "was_charged": false,
+      "amount": 0,
+      "currency": "NGN",
+      "note": "No charges in sandbox mode"
+    },
+    "verification": {
+      "status": "VERIFIED",
+      "reference": "f81269f9-0a21-4b33-a40b-0517f313575a",
+      "verification_id": "cc937db8-7d3b-4835-9053-2a5fdaf20948"
+    },
+    "reference_id": "SBX-BVN_W_FACE-5K39HVXLVH",
+    "is_sandbox": true,
+    "account_verified": true,
+    "verification_status": "sandbox",
+    "metadata": {}
+  }
+}

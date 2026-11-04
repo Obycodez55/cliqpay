@@ -1,0 +1,191 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/api/v1/checker-widget/sdk/sessions/initiate/",
+    "body": {
+      "first_name": "Test",
+      "last_name": "User",
+      "email": "spike@example.com",
+      "phone": "08012345678",
+      "widget_id": "<omitted>",
+      "widget_key": "<omitted>",
+      "metadata": {
+        "user_ref": "spike-1",
+        "is_test": true
+      }
+    },
+    "headers": {
+      "content-type": "application/json (no x-api-key: widget id/key are in the body)"
+    }
+  },
+  "httpStatus": 201,
+  "responseHeaders": {
+    "content-type": "application/json"
+  },
+  "responseBody": {
+    "status": true,
+    "message": "Session initiated successfully",
+    "data": {
+      "session": {
+        "id": "0f85318a-bc04-4f1b-acd6-a8bfd107b409",
+        "session_id": "sdk_session_<masked>",
+        "status": "initiated",
+        "full_name": "Test User",
+        "end_user_email": "masked@example.invalid",
+        "end_user_phone": "08012345678",
+        "widget_config": {
+          "id": "<omitted>",
+          "name": "Cliqpay",
+          "purposes": [
+            "data_verification"
+          ],
+          "brand_name": "Cliqpay",
+          "brand_color": "#3f3061",
+          "brand_logo_url": "",
+          "short_description": "A peer-to-peer wallet app for Africa, starting in Nigeria. Send, receive and request money instantly, hold a naira balance, and top up or cash out through your bank.",
+          "selected_channels": [
+            {
+              "id": "74cc359e-0524-4ffa-a3fe-16b9674543eb",
+              "name": "Bank Verification Number (BVN)",
+              "channel_code": "bvn",
+              "verification_type": "kyc",
+              "country": "NG",
+              "country_name": "Nigeria",
+              "pricing": {
+                "KES": "40.00",
+                "NGN": "60.00",
+                "USD": "0.2"
+              },
+              "description": "Verify Nigerian Bank Verification Number",
+              "fields": [
+                {
+                  "name": "number",
+                  "label": "BVN Number",
+                  "required": true,
+                  "data_type": "string",
+                  "help_text": "Your Bank Verification Number",
+                  "placeholder": "Enter 11-digit BVN",
+                  "validation_message": "BVN must be exactly 11 digits",
+                  "validation_pattern": "^\\d{11}$"
+                }
+              ]
+            },
+            {
+              "id": "acd439a0-1d1c-4009-9e55-210d5e1555d3",
+              "name": "National Identity Number (NIN)",
+              "channel_code": "nin",
+              "verification_type": "kyc",
+              "country": "NG",
+              "country_name": "Nigeria",
+              "pricing": {
+                "KES": "50.00",
+                "NGN": "100.00",
+                "USD": "1.0"
+              },
+              "description": "Verify Nigerian National Identity Number",
+              "fields": [
+                {
+                  "name": "number_nin",
+                  "label": "NIN Number",
+                  "required": true,
+                  "data_type": "string",
+                  "help_text": "Your National Identity Number",
+                  "placeholder": "Enter 11-digit NIN",
+                  "validation_message": "NIN must be exactly 11 digits",
+                  "validation_pattern": "^\\d{11}$"
+                }
+              ]
+            }
+          ],
+          "selected_addons": [],
+          "document_verification": [],
+          "address_verification": null,
+          "enable_face_scan": true,
+          "enable_fraud_scan": false,
+          "face_confidence_level": 70,
+          "use_gesture_liveness": true,
+          "show_qr_code_entry": true,
+          "flow_configuration": [],
+          "settings": {},
+          "preferred_background_color": "white",
+          "validate_background_enabled": false,
+          "background_tolerance": 50,
+          "metadata": {
+            "skip": false,
+            "welcome_message": "Welcome to Cliqpay. Let’s quickly verify it’s really you. It takes about a minute and keeps your wallet safe.",
+            "image_comparison": false
+          }
+        },
+        "verification_steps": [],
+        "overall_result": "",
+        "failure_reason": "",
+        "verification_data": {
+          "first_name": "Test",
+          "last_name": "User",
+          "source": "SDK"
+        },
+        "addon_results": {},
+        "face_scan_result": {},
+        "liveness_video_url": "",
+        "ip_address": "<masked>",
+        "ip_location": {
+          "ip": "<masked>",
+          "country": "Nigeria",
+          "country_code": "NG",
+          "region": "Lagos",
+          "region_code": "LA",
+          "city": "Lagos",
+          "zip": "<masked>",
+          "latitude": 0,
+          "longitude": 0,
+          "timezone": "Africa/Lagos",
+          "isp": "<masked>",
+          "organization": "<masked>",
+          "as": "<masked>",
+          "status": "success",
+          "provider": "ip-api",
+          "ip_address": "<masked>",
+          "country_name": "Nigeria",
+          "countryName": "Nigeria",
+          "countryCode": "NG",
+          "organisation": "<masked>",
+          "org": "<masked>",
+          "lat": 0,
+          "lng": 0,
+          "lon": 0
+        },
+        "started_at": "2026-10-22 15:01:15",
+        "completed_at": null,
+        "expires_at": "2026-10-23 15:01:15",
+        "created_at": "2026-10-22 15:01:15",
+        "metadata": {
+          "user_ref": "spike-1",
+          "is_test": true
+        },
+        "redirect_url": "https://tunnel.example.invalid/wh/redirect",
+        "is_used": false,
+        "report_location": {
+          "latitude": 0,
+          "longitude": 0,
+          "source": "ip",
+          "lat": 0,
+          "lng": 0,
+          "lon": 0
+        },
+        "location_source": "ip"
+      },
+      "session_id": "sdk_session_<masked>",
+      "expires_at": "2026-10-23T15:01:15.413297+00:00",
+      "liveness": {
+        "process_id": null,
+        "status": "not_started",
+        "message": "Liveness process will be created during verify step."
+      }
+    },
+    "errors": null,
+    "meta": {
+      "timestamp": "2026-10-22T15:01:15.477248",
+      "version": "v1"
+    }
+  }
+}

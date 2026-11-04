@@ -157,7 +157,7 @@ describe('POST /withdrawals', () => {
       provider: 'kora',
       currency: 'NGN',
     });
-    expect(floatAfter.balance).toBe(floatBefore.balance + 503_000n);
+    expect(floatAfter.balance).toBe(floatBefore.balance - 503_000n);
     // Platform fee is 0 at launch, but the fee_income leg still always
     // posts for withdrawals (unlike a zero-fee transfer) — balance is
     // unchanged, but the ledger_entries assertion below confirms 5 legs.
@@ -193,19 +193,6 @@ describe('POST /withdrawals', () => {
       bankAccountId: sender.bankAccount.id,
       amount: 9_999,
       reference: `cliqpay-wd-min-${sender.userId}`,
-      pin: '1234',
-    }).expect(422);
-  });
-
-  it('rejects an amount above the configured maximum', async () => {
-    const sender = await seedFundedSenderWithBankAccount({
-      balanceMinor: 200_000_000n,
-    });
-
-    await initiate(tokenFor(sender.userId), {
-      bankAccountId: sender.bankAccount.id,
-      amount: 100_000_001,
-      reference: `cliqpay-wd-max-${sender.userId}`,
       pin: '1234',
     }).expect(422);
   });

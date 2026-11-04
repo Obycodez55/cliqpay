@@ -3,6 +3,8 @@ import {
   ChargebackReceivedPayload,
   EmailVerificationOtpPayload,
   FundingCompletedPayload,
+  FundingHeldPayload,
+  FundingRefundedPayload,
   MfaChallengeOtpPayload,
   MoneyRequestCreatedPayload,
   MoneyRequestDeclinedPayload,
@@ -11,6 +13,7 @@ import {
   PasswordResetOtpPayload,
   PhoneVerificationOtpPayload,
   ReconciliationMismatchPayload,
+  RefundAttentionRequiredPayload,
   SecurityAlertPayload,
   TransferReceivedPayload,
   TransferSentPayload,
@@ -73,6 +76,14 @@ export const emailTemplates: {
     subject: 'Your Cliqpay wallet has been funded',
     ...renderEmail('funding_completed', payload),
   }),
+  funding_held: (payload: FundingHeldPayload) => ({
+    subject: `Your ${payload.currency} ${payload.amount} payment is being refunded`,
+    ...renderEmail('funding_held', payload),
+  }),
+  funding_refunded: (payload: FundingRefundedPayload) => ({
+    subject: `Your ${payload.currency} ${payload.amount} refund has been sent`,
+    ...renderEmail('funding_refunded', payload),
+  }),
   transfer_sent: (payload: TransferSentPayload) => ({
     subject: `You sent ${payload.currency} ${payload.amount}`,
     ...renderEmail('transfer_sent', payload),
@@ -116,6 +127,10 @@ export const emailTemplates: {
   reconciliation_mismatch: (payload: ReconciliationMismatchPayload) => ({
     subject: `Reconciliation mismatch: ${payload.provider}/${payload.currency}`,
     ...renderEmail('reconciliation_mismatch', payload),
+  }),
+  refund_attention_required: (payload: RefundAttentionRequiredPayload) => ({
+    subject: `Refund needs attention: ${payload.currency} ${payload.amount} (${payload.reason})`,
+    ...renderEmail('refund_attention_required', payload),
   }),
 };
 
@@ -168,6 +183,18 @@ export const inAppTemplates: {
   funding_completed: (payload: FundingCompletedPayload) => ({
     title: 'Wallet funded',
     body: `Your wallet was funded with ${payload.currency} ${payload.amount}.`,
+    data: { amount: payload.amount, currency: payload.currency },
+    dedupeKey: payload.reference,
+  }),
+  funding_held: (payload: FundingHeldPayload) => ({
+    title: 'Payment being refunded',
+    body: `Your ${payload.currency} ${payload.amount} payment would take your wallet over its ${payload.currency} ${payload.cap} limit, so it is being refunded. Verify your identity to raise your limit.`,
+    data: { amount: payload.amount, currency: payload.currency },
+    dedupeKey: payload.reference,
+  }),
+  funding_refunded: (payload: FundingRefundedPayload) => ({
+    title: 'Payment refunded',
+    body: `${payload.currency} ${payload.amount} has been refunded to the account you paid from.`,
     data: { amount: payload.amount, currency: payload.currency },
     dedupeKey: payload.reference,
   }),

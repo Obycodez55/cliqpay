@@ -1,0 +1,32 @@
+{
+  "label": "refund.transfer.principal",
+  "capturedAt": "2026-10-27T06:21:11.565Z",
+  "durationMs": 1452,
+  "request": {
+    "method": "POST",
+    "path": "/refunds/initiate",
+    "body": {
+      "payment_reference": "cliqpay-66-transfer-1793081853125",
+      "reference": "rfd-66-xfer-1793082070113",
+      "amount": 1000,
+      "reason": "checkout transfer refund test"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "status": true,
+      "message": "Refund successfully initiated",
+      "data": {
+        "refund_reference": "rfd-66-xfer-1793082070113",
+        "refund_date": "2026-10-27T06:21:11.124Z",
+        "status": "processing",
+        "payment_reference": "cliqpay-66-transfer-1793081853125",
+        "reason": "checkout transfer refund test",
+        "amount_returned": 1000,
+        "channel": "modal",
+        "currency": "NGN"
+      }
+    }
+  }
+}

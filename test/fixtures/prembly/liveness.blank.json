@@ -1,0 +1,45 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/biometrics/face/liveliness_check",
+    "body": {
+      "image": "<omitted 4172 chars>"
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 200,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "b5313988"
+  },
+  "responseBody": {
+    "status": true,
+    "response_code": "00",
+    "message": "Verification successful (SANDBOX MODE) - You are in sandbox mode. Switch to production mode for live data.",
+    "detail": "Verification successful (SANDBOX MODE) - You are in sandbox mode. Switch to production mode for live data.",
+    "data": {
+      "confidence": 0.9999910736083985,
+      "confidence_in_percentage": 99.99910736083984
+    },
+    "meta": {},
+    "billing_info": {
+      "was_charged": false,
+      "amount": 0,
+      "currency": "NGN",
+      "note": "No charges in sandbox mode"
+    },
+    "verification": {
+      "status": "VERIFIED",
+      "reference": "bbf1ced0-cca3-4588-90c6-cc57d5c21931",
+      "verification_id": "b23a6043-76e7-4fa7-8d79-3a5f9a9bc883"
+    },
+    "reference_id": "SBX-LIVELINESS_CHECK-AS6ZON2ZCD",
+    "is_sandbox": true,
+    "account_verified": true,
+    "verification_status": "sandbox",
+    "metadata": {}
+  }
+}

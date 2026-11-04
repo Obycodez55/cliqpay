@@ -1,0 +1,30 @@
+{
+  "label": "refund.initiate.negative_amount",
+  "capturedAt": "2026-10-23T07:41:18.095Z",
+  "durationMs": 652,
+  "request": {
+    "method": "POST",
+    "path": "/refunds/initiate",
+    "body": {
+      "payment_reference": "cliqpay-spike-bt-1792741121266-c5",
+      "reference": "RFD-c5-neg",
+      "amount": -5
+    }
+  },
+  "response": {
+    "status": 422,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": false,
+      "error": "validation_error",
+      "message": "One or more fields are invalid. Please fix them and try again.",
+      "data": {
+        "amount": {
+          "message": "amount must be greater than or equal to 0"
+        }
+      }
+    }
+  }
+}

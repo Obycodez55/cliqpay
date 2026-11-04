@@ -1,0 +1,68 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/bvn",
+    "body": {
+      "number": "54651333604"
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 200,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "a7fbffba"
+  },
+  "responseBody": {
+    "status": true,
+    "response_code": "00",
+    "message": "Bank Verification Number (BVN) verification successful - You are in sandbox mode. Switch to production mode for live data.",
+    "detail": "Bank Verification Number (BVN) verification successful - You are in sandbox mode. Switch to production mode for live data.",
+    "data": {
+      "bvn": "23418321365",
+      "nin": "",
+      "email": "masked@example.invalid",
+      "title": "Mr",
+      "gender": "Male",
+      "lastName": "EKOM",
+      "firstName": "RONALD",
+      "middleName": "DONATIUS",
+      "nameOnCard": "EKOM RONALD DONATIUS",
+      "base64Image": "base64 image content",
+      "dateOfBirth": "11-May-2004",
+      "lgaOfOrigin": "Inyem Ekpo",
+      "nationality": "Nigeria",
+      "watchListed": "False",
+      "phoneNumber1": "07000000001",
+      "phoneNumber2": "",
+      "maritalStatus": "Single",
+      "stateOfOrigin": "Akwa Ibom State",
+      "enrollmentBank": "070",
+      "levelOfAccount": "Level 1 - Low Level Accounts",
+      "lgaOfResidence": "Inyem Ekpo",
+      "enrollmentBranch": "UNIPORT",
+      "registrationDate": "01-Apr-2015",
+      "stateOfResidence": "Akwa Ibom State",
+      "residentialAddress": "MASKED ADDRESS"
+    },
+    "meta": {},
+    "billing_info": {
+      "was_charged": false,
+      "amount": 0,
+      "currency": "NGN",
+      "note": "No charges in sandbox mode"
+    },
+    "verification": {
+      "status": "VERIFIED",
+      "reference": "dae79c5d-939e-4b09-92b2-c5e891b14d18",
+      "verification_id": "9b93a087-6d95-4f6e-b27c-52885a093046"
+    },
+    "reference_id": "SBX-BVN-NVA42BRBJ2",
+    "is_sandbox": true,
+    "account_verified": true,
+    "verification_status": "verified",
+    "metadata": {}
+  }
+}

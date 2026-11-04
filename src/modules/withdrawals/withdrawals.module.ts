@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AuthModule } from '../auth/auth.module';
 import { PaymentsModule } from '../payments/payments.module';
+import { KycModule } from '../kyc/kyc.module';
 import { LedgerModule } from '../ledger/ledger.module';
 import { UsersModule } from '../users/users.module';
 import { EventBusModule } from '../../shared/events/event-bus.module';
@@ -22,6 +23,7 @@ import { WithdrawalsService } from './withdrawals.service';
     AuthModule,
     PaymentsModule,
     LedgerModule,
+    KycModule,
     UsersModule,
     EventBusModule,
   ],

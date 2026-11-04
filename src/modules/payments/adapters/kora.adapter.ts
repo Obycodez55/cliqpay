@@ -1,16 +1,24 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { APP_CONFIG, AppConfig } from '../../../config';
+import {
+  JsonResult,
+  ProviderHttpError,
+  requestJson,
+} from '../../../shared/http/request-json';
 import { Money } from '../../../shared/primitives/money';
 import {
   InitiatePaymentParams,
   InitiatePaymentResult,
   InitiatePayoutParams,
   InitiatePayoutResult,
+  InitiateRefundParams,
+  InitiateRefundResult,
   PaymentProviderAdapter,
   ResolveBankAccountResult,
   VerifyChargeResult,
   VerifyPayoutResult,
+  VerifyRefundResult,
 } from './payment-provider.interface';
 import { extractTopLevelJsonField } from '../internal/raw-json';
 
@@ -70,23 +78,6 @@ interface KoraResolveBankAccountResponse {
   };
 }
 
-// Ground truth: a real sandbox call to POST /transactions/disburse, run
-// during issue #28's design (per the same discipline as ADR-0007/the
-// resolve-bank-account call above) — not guessed from Kora's docs. The
-// accepted case returns HTTP 200 with `data.status: "processing"`:
-//   {"status":true,"message":"Transfer initiated successfully.","data":
-//    {"amount":"1000.00","fee":"30.00","currency":"NGN","status":"processing",
-//     "reference":"...","message":"Payout processing","customer":{...}}}
-// A synchronous rejection (bad bank code, bad account) returns HTTP 409:
-//   {"status":false,"error":"conflict","message":"Invalid bank provided.",
-//    "data":{"status":"failed","message":"Invalid bank provided.","reference":"..."}}
-// Neither response carries a Kora-generated id distinct from the `reference`
-// we sent — re-fetching the same disbursement via its status endpoint
-// (`GET /transactions/{reference}`) confirms the same: only `reference` is
-// echoed back, never a separate id. ADR-0007 originally assumed withdrawals
-// would differ from funding on this point; its Phase 4 correction records
-// this finding — ledger's `postWithdrawal` mirrors `reference` into
-// `providerReference` the same way funding does, not a distinct value.
 interface KoraDisburseResponse {
   status: boolean;
   message: string;
@@ -98,26 +89,6 @@ interface KoraDisburseResponse {
   };
 }
 
-// Ground truth for GET /transactions/{reference} on a payout: the same
-// endpoint and `data` envelope ADR-0007's Phase 4 correction already
-// captured from a real sandbox call made during issue #28's design, while
-// that disbursement was still `processing`:
-//   {"status":true,"message":"Transfer initiated successfully.","data":
-//    {"amount":"1000.00","fee":"30.00","currency":"NGN","status":"processing",
-//     "reference":"...","message":"Payout processing","customer":{...}}}
-// A follow-up live sandbox call to re-confirm the terminal `success`/`failed`
-// shapes specifically for this issue was blocked in this environment (any
-// live Kora disbursement call is treated as a real-money action and refused
-// by this session's tooling, not something a sandbox flag can opt out of
-// here) — so the terminal shapes are taken on the strength of that same
-// captured envelope plus Kora's docs (developers.korapay.com/docs/payouts),
-// not independently re-observed the way ADR-0007's other corrections were.
-// `amount` stays the decimal-string form already confirmed above; `status`
-// mirrors the charge endpoint's terminal values ("success"/"failed"), and a
-// failed payout's `message` field is read as the failure reason, the same
-// field this same envelope already carries for `processing`. Flagged for
-// confirmation against a real terminal response before this handles
-// production traffic — see the withdrawal-poll implementation notes.
 interface KoraPayoutStatusResponse {
   status: boolean;
   message: string;
@@ -130,14 +101,28 @@ interface KoraPayoutStatusResponse {
   };
 }
 
-// Ground truth for the request/response shapes below: docs/adr/0007, backed
-// by a real sandbox charge (POST /charges/initialize, then GET
-// /charges/{reference}) run during design — not guessed from Kora's docs.
-// `notification_url`/`redirect_url` are both optional per that sandbox
-// check, but sending them explicitly pins this backend's webhook and the
-// customer's post-checkout destination in code (reviewable, per-environment
-// config) instead of depending entirely on whatever's set in Kora's
-// dashboard, which nothing in this repo could confirm (Phase 2 audit, M2).
+// Ground truth: docs/research/kora-refunds.md and test/fixtures/kora-refunds.
+// Failures carry a Kora `code` (AA021 conflict, AA025 invalid amount, AA026
+// not found); only the status and `message` are relied on here.
+interface KoraRefundInitiateResponse {
+  status: boolean;
+  message: string;
+  code?: string;
+  data?: { status: string; refund_reference: string } | null;
+}
+
+interface KoraRefundStatusResponse {
+  status: boolean;
+  message: string;
+  code?: string;
+  data?: {
+    status: string;
+    amount: string;
+    currency: string;
+    reference: string;
+  } | null;
+}
+
 @Injectable()
 export class KoraAdapter implements PaymentProviderAdapter {
   private readonly secretKey: string;
@@ -153,65 +138,40 @@ export class KoraAdapter implements PaymentProviderAdapter {
   async initiatePayment(
     params: InitiatePaymentParams,
   ): Promise<InitiatePaymentResult> {
-    let response: Response;
-    try {
-      response = await fetch(`${KORA_BASE_URL}/charges/initialize`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.secretKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          // Kora's amount is major units (naira), not minor units — the
-          // one place that conversion happens, right at the provider
-          // boundary. Sent as a decimal string, not a float, to avoid any
-          // binary-float round-off on the way out.
-          amount: params.amount.toDecimalString(),
-          currency: params.amount.currency,
-          reference: params.reference,
-          customer: { email: params.customerEmail },
-          notification_url: this.webhookUrl,
-          redirect_url: this.redirectUrl,
-        }),
-        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
-      });
-    } catch (error) {
+    const { ok, status, body } = await this.request<KoraInitializeResponse>(
+      'POST',
+      '/charges/initialize',
+      {
+        amount: params.amount.toDecimalString(),
+        currency: params.amount.currency,
+        reference: params.reference,
+        customer: { email: params.customerEmail },
+        notification_url: this.webhookUrl,
+        redirect_url: this.redirectUrl,
+        // The funding posting assumes the payer bears Kora's fee
+        merchant_bears_cost: false,
+      },
+    );
+    if (!ok || !body.status || !body.data) {
       throw new Error(
-        `KoraAdapter: network error (${(error as Error).message})`,
-      );
-    }
-
-    const body = (await response.json()) as KoraInitializeResponse;
-    if (!response.ok || !body.status || !body.data) {
-      throw new Error(
-        `KoraAdapter: ${response.status} ${body.message ?? 'unknown error'}`,
+        `KoraAdapter: ${status} ${body.message ?? 'unknown error'}`,
       );
     }
 
     return { checkoutUrl: body.data.checkout_url };
   }
 
-  // The self-verify poll path (issue #14) — called only for transactions
+  // The self-verify poll path — called only for transactions
   // whose webhook never arrived within the normal window, so this doesn't
   // run per-request.
   async verifyCharge(reference: string): Promise<VerifyChargeResult> {
-    let response: Response;
-    try {
-      response = await fetch(`${KORA_BASE_URL}/charges/${reference}`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${this.secretKey}` },
-        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
-      });
-    } catch (error) {
+    const { ok, status, body } = await this.request<KoraVerifyChargeResponse>(
+      'GET',
+      `/charges/${reference}`,
+    );
+    if (!ok || !body.status || !body.data) {
       throw new Error(
-        `KoraAdapter: network error (${(error as Error).message})`,
-      );
-    }
-
-    const body = (await response.json()) as KoraVerifyChargeResponse;
-    if (!response.ok || !body.status || !body.data) {
-      throw new Error(
-        `KoraAdapter: ${response.status} ${body.message ?? 'unknown error'}`,
+        `KoraAdapter: ${status} ${body.message ?? 'unknown error'}`,
       );
     }
 
@@ -234,33 +194,14 @@ export class KoraAdapter implements PaymentProviderAdapter {
     return { status: 'pending' };
   }
 
-  // The external reconciliation path (issue #15). Sums `available_balance`
-  // AND `pending_balance` — `float_ngn` is credited the moment a charge
-  // succeeds (postFunding runs off the webhook/poll result, not off Kora's
-  // own settlement), so it reflects money Kora owes us regardless of
-  // whether Kora has settled it yet. Comparing against `available_balance`
-  // alone (an earlier version of this method did) undercounts by whatever's
-  // still mid-settlement (T+1 in Nigeria) and produces a mismatch alert on
-  // every successful funding until it settles — a false positive by
-  // construction, not a real drift.
   async getBalance(currency: string): Promise<Money> {
-    let response: Response;
-    try {
-      response = await fetch(`${KORA_BASE_URL}/balances`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${this.secretKey}` },
-        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
-      });
-    } catch (error) {
+    const { ok, status, body } = await this.request<KoraBalancesResponse>(
+      'GET',
+      '/balances',
+    );
+    if (!ok || !body.status || !body.data) {
       throw new Error(
-        `KoraAdapter: network error (${(error as Error).message})`,
-      );
-    }
-
-    const body = (await response.json()) as KoraBalancesResponse;
-    if (!response.ok || !body.status || !body.data) {
-      throw new Error(
-        `KoraAdapter: ${response.status} ${body.message ?? 'unknown error'}`,
+        `KoraAdapter: ${status} ${body.message ?? 'unknown error'}`,
       );
     }
 
@@ -282,46 +223,29 @@ export class KoraAdapter implements PaymentProviderAdapter {
     return available.add(pending);
   }
 
-  // 400/404 are Kora's normal shape for "couldn't resolve this" (bad
-  // account number or bad bank code, confirmed against the real sandbox —
-  // see KoraResolveBankAccountResponse) — a typed `not_found` result, not a
-  // thrown error. Any other non-ok status (401, 5xx, ...) is a genuine
-  // system failure and still throws, same as every other adapter method.
   async resolveBankAccount(
     bankCode: string,
     accountNumber: string,
   ): Promise<ResolveBankAccountResult> {
-    let response: Response;
-    try {
-      response = await fetch(`${KORA_BASE_URL}/misc/banks/resolve`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.secretKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ bank: bankCode, account: accountNumber }),
-        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
-      });
-    } catch (error) {
-      throw new Error(
-        `KoraAdapter: network error (${(error as Error).message})`,
+    const { ok, status, body } =
+      await this.request<KoraResolveBankAccountResponse>(
+        'POST',
+        '/misc/banks/resolve',
+        { bank: bankCode, account: accountNumber },
       );
-    }
 
-    const body = (await response.json()) as KoraResolveBankAccountResponse;
-
-    if (response.ok && body.status && body.data) {
+    if (ok && body.status && body.data) {
       return {
         status: 'resolved',
         bankName: body.data.bank_name,
         accountName: body.data.account_name,
       };
     }
-    if (response.status === 400 || response.status === 404) {
+    if (status === 400 || status === 404) {
       return { status: 'not_found' };
     }
     throw new Error(
-      `KoraAdapter: ${response.status} ${body.message ?? 'unknown error'}`,
+      `KoraAdapter: ${status} ${body.message ?? 'unknown error'}`,
     );
   }
 
@@ -332,16 +256,14 @@ export class KoraAdapter implements PaymentProviderAdapter {
   async initiatePayout(
     params: InitiatePayoutParams,
   ): Promise<InitiatePayoutResult> {
-    let response: Response;
+    let response: JsonResult<KoraDisburseResponse>;
     try {
-      response = await fetch(`${KORA_BASE_URL}/transactions/disburse`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.secretKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      response = await this.request<KoraDisburseResponse>(
+        'POST',
+        '/transactions/disburse',
+        {
           reference: params.reference,
+          notification_url: this.webhookUrl,
           destination: {
             type: 'bank_account',
             amount: params.amount.toDecimalString(),
@@ -353,26 +275,23 @@ export class KoraAdapter implements PaymentProviderAdapter {
             },
             customer: { name: params.accountName, email: params.customerEmail },
           },
-        }),
-        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
-      });
+        },
+      );
     } catch (error) {
-      // A network error means Kora's receipt of the request is genuinely
-      // unknown — it may have arrived and started processing. Not a thrown
-      // error: see InitiatePayoutResult's `unknown` case for why treating
-      // this as a rejection would be wrong post-debit.
-      return {
-        status: 'unknown',
-        detail: `network error (${(error as Error).message})`,
-      };
+      // Whatever went wrong getting or reading the response — network error,
+      // timeout, unreadable body — Kora's receipt of the request is genuinely
+      // unknown.
+      if (error instanceof ProviderHttpError) {
+        return { status: 'unknown', detail: error.message };
+      }
+      throw error;
     }
+    const { ok, status, body } = response;
 
-    const body = (await response.json()) as KoraDisburseResponse;
-
-    if (response.ok && body.status && body.data?.status === 'processing') {
+    if (ok && body.status && body.data?.status === 'processing') {
       return { status: 'accepted' };
     }
-    if (response.status === 409 && body.data?.status === 'failed') {
+    if (status === 409 && body.data?.status === 'failed') {
       return { status: 'rejected', reason: body.data.message };
     }
     // Any other shape (5xx, an unrecognized 2xx/4xx body) is not a
@@ -380,7 +299,7 @@ export class KoraAdapter implements PaymentProviderAdapter {
     // error above.
     return {
       status: 'unknown',
-      detail: `${response.status} ${body.message ?? 'unknown error'}`,
+      detail: `${status} ${body.message ?? 'unknown error'}`,
     };
   }
 
@@ -388,23 +307,13 @@ export class KoraAdapter implements PaymentProviderAdapter {
   // payouts whose webhook never arrived within the normal window, mirroring
   // verifyCharge's role and status mapping for funding.
   async verifyPayout(reference: string): Promise<VerifyPayoutResult> {
-    let response: Response;
-    try {
-      response = await fetch(`${KORA_BASE_URL}/transactions/${reference}`, {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${this.secretKey}` },
-        signal: AbortSignal.timeout(KORA_TIMEOUT_MS),
-      });
-    } catch (error) {
+    const { ok, status, body } = await this.request<KoraPayoutStatusResponse>(
+      'GET',
+      `/transactions/${reference}`,
+    );
+    if (!ok || !body.status || !body.data) {
       throw new Error(
-        `KoraAdapter: network error (${(error as Error).message})`,
-      );
-    }
-
-    const body = (await response.json()) as KoraPayoutStatusResponse;
-    if (!response.ok || !body.status || !body.data) {
-      throw new Error(
-        `KoraAdapter: ${response.status} ${body.message ?? 'unknown error'}`,
+        `KoraAdapter: ${status} ${body.message ?? 'unknown error'}`,
       );
     }
 
@@ -418,6 +327,86 @@ export class KoraAdapter implements PaymentProviderAdapter {
       return { status: 'failed', reason: body.data.message };
     }
     return { status: 'pending' };
+  }
+
+  // `webhook_url` is sent because a refund carries no other callback address,
+  // so without it Kora uses whatever URL the dashboard happens to hold.
+  // `amount` is always sent so Kora refunds exactly the credited principal
+  // rather than the payer's gross.
+  async initiateRefund(
+    params: InitiateRefundParams,
+  ): Promise<InitiateRefundResult> {
+    let response: JsonResult<KoraRefundInitiateResponse>;
+    try {
+      response = await this.request<KoraRefundInitiateResponse>(
+        'POST',
+        '/refunds/initiate',
+        {
+          payment_reference: params.paymentReference,
+          reference: params.reference,
+          amount: params.amount.toDecimalString(),
+          reason: params.reason,
+          webhook_url: this.webhookUrl,
+        },
+      );
+    } catch (error) {
+      if (error instanceof ProviderHttpError) {
+        return { status: 'unknown', detail: error.message };
+      }
+      throw error;
+    }
+    const { ok, status, body } = response;
+
+    if (ok && body.status) {
+      return { status: 'accepted' };
+    }
+    if (status === 409 && body.message?.startsWith('Refund already exists')) {
+      return { status: 'already_exists' };
+    }
+    if (status >= 400 && status < 500 && body.message) {
+      return { status: 'rejected', reason: body.message };
+    }
+    return {
+      status: 'unknown',
+      detail: `${status} ${body.message ?? 'unknown error'}`,
+    };
+  }
+
+  async verifyRefund(reference: string): Promise<VerifyRefundResult> {
+    const { ok, status, body } = await this.request<KoraRefundStatusResponse>(
+      'GET',
+      `/refunds/${reference}`,
+    );
+    if (status === 404 && body.code === 'AA026') {
+      return { status: 'not_found' };
+    }
+    if (!ok || !body.status || !body.data) {
+      throw new Error(
+        `KoraAdapter: ${status} ${body.message ?? 'unknown error'}`,
+      );
+    }
+
+    if (body.data.status === 'success') {
+      return {
+        status: 'success',
+        amount: Money.fromDecimalString(body.data.amount, body.data.currency),
+      };
+    }
+    if (body.data.status === 'failed') {
+      return { status: 'failed', reason: 'Refund failed at the provider' };
+    }
+    return { status: 'pending' };
+  }
+
+  private request<T>(method: 'GET' | 'POST', path: string, body?: unknown) {
+    return requestJson<T>({
+      provider: 'KoraAdapter',
+      url: `${KORA_BASE_URL}${path}`,
+      method,
+      headers: { Authorization: `Bearer ${this.secretKey}` },
+      body,
+      timeoutMs: KORA_TIMEOUT_MS,
+    });
   }
 
   verifyWebhookSignature(rawBody: Buffer, signature: string): boolean {

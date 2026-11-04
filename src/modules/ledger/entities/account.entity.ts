@@ -12,6 +12,7 @@ export type AccountRole =
   | 'fee_income'
   | 'fee_expense'
   | 'fee_recovery'
+  | 'suspense'
   | 'user_wallet';
 
 /**

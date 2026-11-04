@@ -1,0 +1,47 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/biometrics/face/comparison",
+    "body": {
+      "image_one": "<omitted 8196 chars>",
+      "image_two": "<omitted 53400 chars>",
+      "face_confidence_threshold": 90
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 200,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "4cd2c40d"
+  },
+  "responseBody": {
+    "status": true,
+    "response_code": "00",
+    "message": "Fatch Match - You are in sandbox mode. Switch to production mode for live data.",
+    "detail": "Fatch Match - You are in sandbox mode. Switch to production mode for live data.",
+    "data": {
+      "message": "Fatch Match",
+      "confidence": 100
+    },
+    "meta": {},
+    "billing_info": {
+      "was_charged": false,
+      "amount": 0,
+      "currency": "NGN",
+      "note": "No charges in sandbox mode"
+    },
+    "verification": {
+      "status": "VERIFIED",
+      "reference": "3b15fa95-d0ff-4858-8841-e72162cd62f2",
+      "verification_id": "0e52868d-3ada-4193-829c-0ba79e75f51f"
+    },
+    "reference_id": "SBX-IMAGE_COMPARISON-T0P2GR9S63",
+    "is_sandbox": true,
+    "account_verified": true,
+    "verification_status": "sandbox",
+    "metadata": {}
+  }
+}

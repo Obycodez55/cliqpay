@@ -169,3 +169,21 @@ here, does) serve more than one namespace.
   (withdrawals) and Phase 6 (KYC) a decision procedure that already exists,
   rather than relitigating the boundary each time a new provider capability
   lands.
+
+## Amendment: `GET /wallet/limits`
+
+`GET /wallet/limits` (today's remaining daily allowance and balance headroom)
+lives on `PaymentsController`. It is a read-only composition of `kyc`, which
+owns the tier's numbers and the day-start rule, and `ledger`, which owns the
+sums, so it needs a module that already depends on both. `payments` is the
+only module on the `/wallet` surface that does, so the route adds no new
+module edge. It is the one deliberate non-rails route in `payments`, and if
+more routes like it appear a dedicated module should be considered. `kyc`
+supplies `getWalletCapacity`, which takes the ledger readers as arguments (the
+same shape as the enforcement checks) and reuses their internals, so the
+figures cannot disagree with what enforcement allows.
+
+ADR-0021 applies the same test to refunds: settling a refund (`DR suspense /
+CR float`) is a ledger posting rule; initiating a refund and reading its
+status is a `payments` concern, on the same seam: `payments` hands `ledger`
+provider facts.

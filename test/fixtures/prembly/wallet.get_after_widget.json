@@ -1,0 +1,37 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/wallet",
+    "body": null,
+    "headers": {
+      "content-type": "application/json (no x-api-key: widget id/key are in the body)"
+    }
+  },
+  "httpStatus": 200,
+  "responseHeaders": {
+    "content-type": "application/json"
+  },
+  "responseBody": {
+    "status": true,
+    "message": "Wallet retrieved successfully",
+    "data": {
+      "id": "701cffb8-7aa9-498a-af18-4c0ea11e5c06",
+      "organisation_id": "2e09b040-3398-405b-99f9-57df12352db8",
+      "organisation_name": "Obycodez",
+      "balance": "0.00",
+      "currency": "NGN",
+      "is_active": true,
+      "is_locked": false,
+      "threshold_amount": null,
+      "threshold_alert_sent": false,
+      "metadata": {},
+      "created_at": "2026-10-22 09:06:34",
+      "updated_at": "2026-10-22 09:06:34"
+    },
+    "errors": null,
+    "meta": {
+      "timestamp": "2026-10-22T15:30:41.646964",
+      "version": "v1"
+    }
+  }
+}

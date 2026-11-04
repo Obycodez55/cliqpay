@@ -1,0 +1,12 @@
+{
+  "synthetic": "SYNTHETIC: built from the Prembly docs, not captured. The sandbox cannot produce this response.",
+  "request": { "method": "POST", "path": "/verification/bvn_validation", "body": { "number": "22222222222" } },
+  "httpStatus": 429,
+  "responseBody": {
+    "status": false,
+    "message": "Request was throttled.",
+    "data": null,
+    "errors": null,
+    "meta": { "version": "v1" }
+  }
+}

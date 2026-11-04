@@ -1,0 +1,33 @@
+{
+  "label": "refund.get.completion_failed",
+  "capturedAt": "2026-10-23T07:39:33.512Z",
+  "durationMs": 375,
+  "request": {
+    "method": "GET",
+    "path": "/refunds/RFD-c3-f1",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": true,
+      "message": "Refund details retrieved successfully",
+      "data": {
+        "amount": "1053.75",
+        "status": "failed",
+        "currency": "NGN",
+        "destination": "customer",
+        "reference": "RFD-c3-f1",
+        "reason": "",
+        "payment_reference": "cliqpay-spike-bt-1792741121266-c3",
+        "transaction_amount": "1053.75",
+        "payment_method": "bank_transfer",
+        "created_at": "2026-10-23 08:39:29",
+        "completed_at": "2026-10-23 08:39:29"
+      }
+    }
+  }
+}

@@ -6,6 +6,8 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 
+export type KycTier = 'tier0' | 'tier1' | 'tier2' | 'tier3';
+
 // Identity only — no credential fields. Those live on auth's `Credential`
 // (1:1 via a plain `userId` column, no FK — see ADR-0005) since `auth` and
 // `users` are separate core modules.
@@ -52,6 +54,9 @@ export class User {
   // pendingEmail (issue #9).
   @Column({ type: 'varchar', nullable: true })
   pendingPhone: string | null;
+
+  @Column('varchar')
+  kycTier: KycTier;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;

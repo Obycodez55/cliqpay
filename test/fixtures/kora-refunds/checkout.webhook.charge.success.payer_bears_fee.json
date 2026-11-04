@@ -1,0 +1,11 @@
+{
+  "capturedAt": "2026-10-27T06:35:12.505Z",
+  "method": "POST",
+  "path": "/wh/charge",
+  "headers": {
+    "content-type": "application/json",
+    "x-korapay-signature": "<hmac-sha256-hex>"
+  },
+  "signatureValidOverReserializedData": true,
+  "rawBody": "{\"event\":\"charge.success\",\"data\":{\"reference\":\"cliqpay-66c-payerbears-1793082854736\",\"payment_reference\":\"cliqpay-66c-payerbears-1793082854736\",\"currency\":\"NGN\",\"amount\":1013.97,\"fee\":13.97,\"payment_method\":\"card\",\"status\":\"success\"}}"
+}

@@ -33,9 +33,6 @@ const envSchema = z
         'ENCRYPTION_KEY must be a 64-character hex string (32 bytes)',
       ),
 
-    // HMAC-SHA256 pepper applied before bcrypt on transaction PINs — 32
-    // bytes as hex, required unconditionally (unlike the provider secrets
-    // below) since there's no unpeppered fallback to degrade to. See
     // ADR-0009: this key can never be rotated without invalidating every
     // PIN in the system.
     TRANSACTION_PIN_PEPPER: z
@@ -45,10 +42,16 @@ const envSchema = z
         'TRANSACTION_PIN_PEPPER must be a 64-character hex string (32 bytes)',
       ),
 
-    // Named per concrete provider, not a real/fake toggle — `fake` is just
-    // another option in the same set, so adding a second real provider for a
-    // channel (e.g. SES alongside Brevo) is adding an enum value, not
-    // reshaping this into something else.
+    // Deterministic lookup hashes (BVN, NIN, bank account numbers) only —
+    // kept apart from ENCRYPTION_KEY so rotating either one never silently
+    // breaks the other's guarantees.
+    IDENTIFIER_HASH_KEY: z
+      .string()
+      .regex(
+        /^[0-9a-fA-F]{64}$/,
+        'IDENTIFIER_HASH_KEY must be a 64-character hex string (32 bytes)',
+      ),
+
     EMAIL_PROVIDER: z.enum(['brevo', 'fake']).default('fake'),
     SMS_PROVIDER: z.enum(['termii', 'fake']).default('fake'),
     PUSH_PROVIDER: z.enum(['fcm', 'fake']).default('fake'),
@@ -64,24 +67,10 @@ const envSchema = z
     FIREBASE_CLIENT_EMAIL: z.string().optional(),
     FIREBASE_PRIVATE_KEY: z.string().optional(),
 
-    // Same real/fake-as-just-another-provider pattern as the notification
-    // channels above — 'fake' (the default) runs FakeAdapter, no network,
-    // no Kora credentials required.
     PAYMENT_PROVIDER: z.enum(['kora', 'fake']).default('fake'),
     KORA_SECRET_KEY: z.string().optional(),
 
-    // Sent as `notification_url` on every charge — this backend's own
-    // webhook receiver, not a frontend page. Optional/undocumented until
-    // now (Phase 2 audit, M2): without it, the webhook path depended
-    // entirely on whatever's configured in Kora's dashboard, which nothing
-    // in this repo could confirm or review.
     KORA_WEBHOOK_URL: z.url().optional(),
-    // Sent as `redirect_url` — where Kora's hosted checkout sends the
-    // customer back to after paying. No frontend exists yet
-    // (docs/architecture.md §9), so this is a placeholder until one does.
-    // The webhook, not this redirect, is what actually completes the
-    // funding transaction (§4.2) — this only affects where the customer's
-    // browser ends up.
     PAYMENT_REDIRECT_URL: z.url().optional(),
 
     RECONCILIATION_ALERT_EMAIL: z.email(),
@@ -94,18 +83,8 @@ const envSchema = z
       .positive()
       .default(180),
 
-    // Flat, config-driven platform fee on P2P transfers, minor units.
-    // Launches at 0 — see docs/architecture.md §4.2 for why the fee_income
-    // leg is only posted when this is non-zero.
     TRANSFER_PLATFORM_FEE: z.coerce.number().int().nonnegative().default(0),
-    // Bounds per transfer, minor units. The maximum is an interim ceiling
-    // until Phase 6 KYC tier limits replace it.
     TRANSFER_MIN_AMOUNT: z.coerce.number().int().nonnegative().default(10_000),
-    TRANSFER_MAX_AMOUNT: z.coerce
-      .number()
-      .int()
-      .positive()
-      .default(100_000_000),
 
     // Money requests (ADR-0012) — expiry is derived at read time, never
     // swept, so this only controls what gets stamped on `expires_at` at
@@ -119,19 +98,11 @@ const envSchema = z
       .positive()
       .default(3),
 
-    // Withdrawal bounds mirror TRANSFER_MIN_AMOUNT/TRANSFER_MAX_AMOUNT's
-    // pattern (docs/architecture.md §6 Phase 4). Platform fee is flat,
-    // config-driven, launches at 0, same as TRANSFER_PLATFORM_FEE.
     WITHDRAWAL_MIN_AMOUNT: z.coerce
       .number()
       .int()
       .nonnegative()
       .default(10_000),
-    WITHDRAWAL_MAX_AMOUNT: z.coerce
-      .number()
-      .int()
-      .positive()
-      .default(100_000_000),
     WITHDRAWAL_PLATFORM_FEE: z.coerce.number().int().nonnegative().default(0),
     WITHDRAWAL_PROVIDER_FEE: z.coerce
       .number()
@@ -145,11 +116,13 @@ const envSchema = z
     // unconditionally, same as TRANSACTION_PIN_PEPPER — there's no
     // unguarded fallback to degrade to.
     INTERNAL_API_SECRET: z.string().min(32),
+
+    KYC_PROVIDER: z.enum(['prembly', 'fake']).default('fake'),
+    KYC_RETENTION_DAYS: z.coerce.number().int().min(2).default(30),
+    PREMBLY_SECRET_KEY: z.string().optional(),
   })
   .superRefine((env, ctx) => {
-    // A provider's own credentials are only required when it's the one
-    // actually selected — this is what lets EMAIL_PROVIDER=fake (etc., the
-    // default) run with zero real credentials configured.
+    // A provider's own credentials are only required when it's the one actually selected
     const requireWhen = (
       condition: boolean,
       fields: { path: string; value: string | undefined }[],
@@ -158,7 +131,7 @@ const envSchema = z
       for (const { path, value } of fields) {
         if (!value) {
           ctx.addIssue({
-            code: z.ZodIssueCode.custom,
+            code: 'custom',
             path: [path],
             message: `${path} is required when its provider is selected`,
           });
@@ -184,6 +157,22 @@ const envSchema = z
       { path: 'KORA_WEBHOOK_URL', value: env.KORA_WEBHOOK_URL },
       { path: 'PAYMENT_REDIRECT_URL', value: env.PAYMENT_REDIRECT_URL },
     ]);
+    requireWhen(env.KYC_PROVIDER === 'prembly', [
+      { path: 'PREMBLY_SECRET_KEY', value: env.PREMBLY_SECRET_KEY },
+    ]);
+
+    for (const other of ['ENCRYPTION_KEY', 'TRANSACTION_PIN_PEPPER'] as const) {
+      if (
+        env.IDENTIFIER_HASH_KEY &&
+        env.IDENTIFIER_HASH_KEY.toLowerCase() === env[other].toLowerCase()
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['IDENTIFIER_HASH_KEY'],
+          message: `IDENTIFIER_HASH_KEY must differ from ${other}`,
+        });
+      }
+    }
 
     // FakeAdapter validates webhook signatures against a hardcoded key
     // committed to the repo (see fake.adapter.ts) — a production deploy
@@ -191,9 +180,17 @@ const envSchema = z
     // webhook. Fail at boot, not silently.
     if (env.NODE_ENV === 'production' && env.PAYMENT_PROVIDER === 'fake') {
       ctx.addIssue({
-        code: z.ZodIssueCode.custom,
+        code: 'custom',
         path: ['PAYMENT_PROVIDER'],
         message: 'PAYMENT_PROVIDER must not be "fake" in production',
+      });
+    }
+
+    if (env.NODE_ENV === 'production' && env.KYC_PROVIDER === 'fake') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['KYC_PROVIDER'],
+        message: 'KYC_PROVIDER must not be "fake" in production',
       });
     }
   });
@@ -231,6 +228,9 @@ function buildConfig(env: Env) {
     transactionPin: {
       pepper: env.TRANSACTION_PIN_PEPPER,
     },
+    identifierHash: {
+      key: env.IDENTIFIER_HASH_KEY,
+    },
     notifications: {
       emailProvider: env.EMAIL_PROVIDER,
       smsProvider: env.SMS_PROVIDER,
@@ -265,7 +265,6 @@ function buildConfig(env: Env) {
     transfers: {
       platformFee: env.TRANSFER_PLATFORM_FEE,
       minAmount: env.TRANSFER_MIN_AMOUNT,
-      maxAmount: env.TRANSFER_MAX_AMOUNT,
     },
     moneyRequests: {
       expiryDays: env.MONEY_REQUEST_EXPIRY_DAYS,
@@ -273,12 +272,18 @@ function buildConfig(env: Env) {
     },
     withdrawals: {
       minAmount: env.WITHDRAWAL_MIN_AMOUNT,
-      maxAmount: env.WITHDRAWAL_MAX_AMOUNT,
       platformFee: env.WITHDRAWAL_PLATFORM_FEE,
       providerFee: env.WITHDRAWAL_PROVIDER_FEE,
     },
     internal: {
       apiSecret: env.INTERNAL_API_SECRET,
+    },
+    kyc: {
+      provider: env.KYC_PROVIDER,
+      retentionDays: env.KYC_RETENTION_DAYS,
+      prembly: {
+        secretKey: env.PREMBLY_SECRET_KEY,
+      },
     },
   };
 }

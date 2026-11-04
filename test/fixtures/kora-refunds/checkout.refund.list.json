@@ -1,0 +1,58 @@
+{
+  "label": "refund.list",
+  "capturedAt": "2026-10-27T06:21:17.385Z",
+  "durationMs": 227,
+  "request": {
+    "method": "GET",
+    "path": "/refunds?limit=3",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "status": true,
+      "message": "Refunds retrieved successfully",
+      "data": {
+        "has_more": true,
+        "refunds": [
+          {
+            "pointer": "cus_568",
+            "reference": "rfd-66-xfer-1793082070113",
+            "status": "success",
+            "amount": "1000.00",
+            "currency": "NGN",
+            "payment_reference": "cliqpay-66-transfer-1793081853125",
+            "reason": "checkout transfer refund test",
+            "transaction_amount": "1000.00",
+            "created_at": "2026-10-27 07:21:11",
+            "completed_at": "2026-10-27 07:21:11"
+          },
+          {
+            "pointer": "cus_567",
+            "reference": "rfd-66-card-1793082066113",
+            "status": "success",
+            "amount": "1000.00",
+            "currency": "NGN",
+            "payment_reference": "cliqpay-66-card-1793081853125",
+            "reason": "checkout card refund test",
+            "transaction_amount": "1000.00",
+            "created_at": "2026-10-27 07:21:06",
+            "completed_at": "2026-10-27 07:21:06"
+          },
+          {
+            "pointer": "cus_554",
+            "reference": "rfd-contract-0f3801b7-be9e-4f08-bee4-c2f2368",
+            "status": "success",
+            "amount": "1000.00",
+            "currency": "NGN",
+            "payment_reference": "cliqpay-ct-07a85f52-ba48",
+            "reason": "contract test",
+            "transaction_amount": "1053.75",
+            "created_at": "2026-10-23 22:03:04",
+            "completed_at": "2026-10-23 22:03:04"
+          }
+        ]
+      }
+    }
+  }
+}

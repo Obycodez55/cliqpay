@@ -1,0 +1,15 @@
+{
+  "synthetic": "SYNTHETIC: built from the Prembly docs, not captured. The sandbox cannot produce this response.",
+  "request": { "method": "POST", "path": "/verification/bvn_validation", "body": { "number": "22222222222" } },
+  "httpStatus": 404,
+  "responseBody": {
+    "status": false,
+    "response_code": "01",
+    "message": "Record not found",
+    "detail": "Record not found",
+    "data": {},
+    "meta": {},
+    "verification": { "status": "NOT-VERIFIED", "reference": "00000000-0000-4000-8000-000000000001", "verification_id": "00000000-0000-4000-8000-000000000002" },
+    "metadata": {}
+  }
+}

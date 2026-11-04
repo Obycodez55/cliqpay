@@ -216,6 +216,8 @@ describe('NotificationService', () => {
           provider: 'kora',
           currency: 'NGN',
           ledgerBalance: '0',
+          suspenseBalance: '0',
+          inFlightRefunds: '0',
           providerBalance: '0',
           delta: '0',
           occurredAt: OCCURRED_AT,

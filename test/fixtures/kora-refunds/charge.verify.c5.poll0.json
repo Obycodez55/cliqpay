@@ -1,0 +1,33 @@
+{
+  "label": "charge.verify.c5.poll0",
+  "capturedAt": "2026-10-23T07:38:54.621Z",
+  "durationMs": 217,
+  "request": {
+    "method": "GET",
+    "path": "/charges/cliqpay-spike-bt-1792741121266-c5",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": true,
+      "message": "Charge retrieved successfully",
+      "data": {
+        "reference": "cliqpay-spike-bt-1792741121266-c5",
+        "status": "processing",
+        "amount": "1000.00",
+        "amount_paid": "0.00",
+        "fee": 0,
+        "currency": "NGN",
+        "description": "Payment on <merchant>",
+        "customer": {
+          "name": "Spike Tester",
+          "email": "spike@example.com"
+        }
+      }
+    }
+  }
+}

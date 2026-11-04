@@ -16,6 +16,7 @@ import {
   buildTestConfigModule,
   buildTestJwtModule,
   TEST_ENCRYPTION_KEY,
+  TEST_IDENTIFIER_HASH_KEY,
   TEST_PIN_PEPPER,
 } from './test-app-config';
 import {
@@ -43,9 +44,12 @@ import { CreateBankAccounts1787200000000 } from '../../../src/database/migration
 import { AddWithdrawalReversalTransactionType1787300000000 } from '../../../src/database/migrations/1787300000000-AddWithdrawalReversalTransactionType';
 import { EncryptBankAccountNumbers1787400000000 } from '../../../src/database/migrations/1787400000000-EncryptBankAccountNumbers';
 import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
+import { CreateTierLimits1787600000001 } from '../../../src/database/migrations/1787600000001-CreateTierLimits';
+import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
 import { CreateTransactionsAndLedgerEntries1784707276066 } from '../../../src/database/migrations/1784707276066-CreateTransactionsAndLedgerEntries';
 import { AddFundingQueryIndexes1785488695081 } from '../../../src/database/migrations/1785488695081-AddFundingQueryIndexes';
 import { EnforceLedgerEntriesAppendOnly1785491930164 } from '../../../src/database/migrations/1785491930164-EnforceLedgerEntriesAppendOnly';
+import { AddKycLimitQueryIndexes1787600000005 } from '../../../src/database/migrations/1787600000005-AddKycLimitQueryIndexes';
 import { AuthModule } from '../../../src/modules/auth/auth.module';
 import { AuthService } from '../../../src/modules/auth/auth.service';
 import { MfaService } from '../../../src/modules/auth/mfa.service';
@@ -64,11 +68,17 @@ import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
 import { User } from '../../../src/modules/users/entities/user.entity';
 import { UsersModule } from '../../../src/modules/users/users.module';
-import { UsersService } from '../../../src/modules/users/users.service';
+import {
+  KycTier,
+  UsersService,
+} from '../../../src/modules/users/users.service';
 import { PaymentsModule } from '../../../src/modules/payments/payments.module';
 import { PaymentsService } from '../../../src/modules/payments/payments.service';
 import { PAYMENT_PROVIDER_ADAPTER } from '../../../src/modules/payments/adapters/payment-provider.interface';
 import { FakeAdapter } from '../../../src/modules/payments/adapters/fake.adapter';
+import { KycService } from '../../../src/modules/kyc/kyc.service';
+import { TransfersModule } from '../../../src/modules/transfers/transfers.module';
+import { TransfersService } from '../../../src/modules/transfers/transfers.service';
 import { WithdrawalsModule } from '../../../src/modules/withdrawals/withdrawals.module';
 import { WithdrawalsService } from '../../../src/modules/withdrawals/withdrawals.service';
 import { BankAccount } from '../../../src/modules/withdrawals/entities/bank-account.entity';
@@ -77,14 +87,8 @@ import { EMAIL_SENDER } from '../../../src/modules/notifications/channels/email/
 import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/email/fake-email.adapter';
 import { SMS_SENDER } from '../../../src/modules/notifications/channels/sms/sms-sender.interface';
 import { FakeSmsAdapter } from '../../../src/modules/notifications/channels/sms/fake-sms.adapter';
-import { NotificationEventsProcessor } from '../../../src/modules/notifications/internal/notification-events.processor';
-import { OtpNotificationProcessor } from '../../../src/modules/notifications/internal/otp.processor';
-import { ChannelDispatchProcessor } from '../../../src/modules/notifications/internal/channel-dispatch.processor';
-import { FundingPollProcessor } from '../../../src/modules/payments/internal/funding-poll.processor';
-import { WithdrawalPollProcessor } from '../../../src/modules/payments/internal/withdrawal-poll.processor';
-import { ReconciliationProcessor } from '../../../src/modules/payments/internal/reconciliation.processor';
-import { NotificationRetentionProcessor } from '../../../src/modules/notifications/internal/retention.processor';
 import { Money } from '../../../src/shared/primitives/money';
+import { closeBullmqWorkers } from './bullmq-teardown';
 
 // A superset of AuthTestContext's own fields (plus payments/withdrawals'
 // own) so this context can be passed straight into
@@ -101,6 +105,8 @@ export interface WithdrawalsTestContext {
   ledgerService: LedgerService;
   paymentsService: PaymentsService;
   withdrawalsService: WithdrawalsService;
+  transfersService: TransfersService;
+  kycService: KycService;
   dataSource: DataSource;
   userRepo: Repository<User>;
   credentialRepo: Repository<Credential>;
@@ -128,7 +134,6 @@ export interface WithdrawalsTestContext {
 export async function createWithdrawalsTestContext(
   withdrawalConfig: {
     minAmount?: number;
-    maxAmount?: number;
     platformFee?: number;
     providerFee?: number;
   } = {},
@@ -172,6 +177,9 @@ export async function createWithdrawalsTestContext(
   await new AddWithdrawalReversalTransactionType1787300000000().up(queryRunner);
   await new EncryptBankAccountNumbers1787400000000().up(queryRunner);
   await new AddIsFrozenToUsers1787500000001().up(queryRunner);
+  await new CreateTierLimits1787600000001().up(queryRunner);
+  await new AddKycTierToUsers1787600000002().up(queryRunner);
+  await new AddKycLimitQueryIndexes1787600000005().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 
@@ -182,7 +190,6 @@ export async function createWithdrawalsTestContext(
     },
     withdrawals: {
       minAmount: withdrawalConfig.minAmount ?? 10_000,
-      maxAmount: withdrawalConfig.maxAmount ?? 100_000_000,
       platformFee: withdrawalConfig.platformFee ?? 0,
       providerFee: withdrawalConfig.providerFee ?? 3_000,
     },
@@ -201,6 +208,7 @@ export async function createWithdrawalsTestContext(
       AuthModule,
       PaymentsModule,
       WithdrawalsModule,
+      TransfersModule,
       NotificationsModule,
     ],
   }).compile();
@@ -247,6 +255,8 @@ export async function createWithdrawalsTestContext(
     ledgerService: moduleRef.get(LedgerService),
     paymentsService: moduleRef.get(PaymentsService),
     withdrawalsService: moduleRef.get(WithdrawalsService),
+    transfersService: moduleRef.get(TransfersService),
+    kycService: moduleRef.get(KycService),
     dataSource,
     userRepo: dataSource.getRepository(User),
     credentialRepo: dataSource.getRepository(Credential),
@@ -266,33 +276,11 @@ export async function createWithdrawalsTestContext(
   };
 }
 
-// Same BullMQ multi-worker shutdown hazard as payments-test-context.ts's
-// forceCloseWorkers — see that file's comment for the full explanation,
-// including the [v2] note on NotificationRetentionProcessor having been
-// missing from this same list here too.
-async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
-  const hosts = [
-    NotificationEventsProcessor,
-    OtpNotificationProcessor,
-    ChannelDispatchProcessor,
-    FundingPollProcessor,
-    WithdrawalPollProcessor,
-    ReconciliationProcessor,
-    NotificationRetentionProcessor,
-  ];
-  await Promise.all(
-    hosts.map(async (hostClass) => {
-      const host = app.get(hostClass, { strict: false });
-      await host?.worker?.close(true);
-    }),
-  );
-}
-
 export async function destroyWithdrawalsTestContext(
   ctx: Partial<WithdrawalsTestContext>,
 ): Promise<void> {
   if (ctx.app) {
-    await forceCloseWorkers(ctx.app);
+    await closeBullmqWorkers(ctx.app);
   }
   await ctx.app?.close();
   await ctx.postgres?.stop();
@@ -310,6 +298,7 @@ export async function seedWithdrawalUser(
     phone: string;
     username: string;
     pin?: string;
+    kycTier?: KycTier;
   },
 ): Promise<{ userId: string; walletId: string }> {
   const pin = overrides.pin ?? '1234';
@@ -324,6 +313,11 @@ export async function seedWithdrawalUser(
     await manager
       .getRepository(User)
       .update({ id: user.id }, { emailVerifiedAt: new Date() });
+    await ctx.usersService.setKycTier(
+      manager,
+      user.id,
+      overrides.kycTier ?? 'tier3',
+    );
     const wallet = await ctx.ledgerService.createUserWallet(
       manager,
       user.id,
@@ -393,7 +387,10 @@ export async function seedBankAccount(
     bankCode: args.bankCode ?? '033',
     bankName: args.bankName ?? 'United Bank for Africa',
     accountNumberCiphertext: encryptSecret(accountNumber, encryptionKey),
-    accountNumberHash: hmacHex(accountNumber, encryptionKey),
+    accountNumberHash: hmacHex(
+      accountNumber,
+      encryptionKeyFromHex(TEST_IDENTIFIER_HASH_KEY),
+    ),
     accountName: args.accountName ?? 'Ada Lovelace',
   });
   const saved = await ctx.bankAccountRepo.save(bankAccount);

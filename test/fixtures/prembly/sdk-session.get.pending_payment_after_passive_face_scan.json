@@ -1,0 +1,310 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/checker-widget/sdk/sessions/sdk_session_<masked>/",
+    "body": null,
+    "headers": {
+      "content-type": "application/json (no x-api-key: widget id/key are in the body)"
+    }
+  },
+  "httpStatus": 200,
+  "responseHeaders": {
+    "content-type": "application/json"
+  },
+  "responseBody": {
+    "status": true,
+    "message": "Session details retrieved successfully",
+    "data": {
+      "id": "cabddc44-a990-4af8-aa30-edb98c623d67",
+      "session_id": "sdk_session_<masked>",
+      "status": "pending_payment",
+      "full_name": "Test User",
+      "end_user_email": "masked@example.invalid",
+      "end_user_phone": "08012345678",
+      "widget_config": {
+        "id": "<omitted>",
+        "name": "Cliqpay",
+        "purposes": [
+          "data_verification"
+        ],
+        "brand_name": "Cliqpay",
+        "brand_color": "#3f3061",
+        "brand_logo_url": "",
+        "short_description": "A peer-to-peer wallet app for Africa, starting in Nigeria. Send, receive and request money instantly, hold a naira balance, and top up or cash out through your bank.",
+        "selected_channels": [
+          {
+            "id": "74cc359e-0524-4ffa-a3fe-16b9674543eb",
+            "name": "Bank Verification Number (BVN)",
+            "channel_code": "bvn",
+            "verification_type": "kyc",
+            "country": "NG",
+            "country_name": "Nigeria",
+            "pricing": {
+              "KES": "40.00",
+              "NGN": "60.00",
+              "USD": "0.2"
+            },
+            "description": "Verify Nigerian Bank Verification Number",
+            "fields": [
+              {
+                "name": "number",
+                "label": "BVN Number",
+                "required": true,
+                "data_type": "string",
+                "help_text": "Your Bank Verification Number",
+                "placeholder": "Enter 11-digit BVN",
+                "validation_message": "BVN must be exactly 11 digits",
+                "validation_pattern": "^\\d{11}$"
+              }
+            ]
+          },
+          {
+            "id": "acd439a0-1d1c-4009-9e55-210d5e1555d3",
+            "name": "National Identity Number (NIN)",
+            "channel_code": "nin",
+            "verification_type": "kyc",
+            "country": "NG",
+            "country_name": "Nigeria",
+            "pricing": {
+              "KES": "50.00",
+              "NGN": "100.00",
+              "USD": "1.0"
+            },
+            "description": "Verify Nigerian National Identity Number",
+            "fields": [
+              {
+                "name": "number_nin",
+                "label": "NIN Number",
+                "required": true,
+                "data_type": "string",
+                "help_text": "Your National Identity Number",
+                "placeholder": "Enter 11-digit NIN",
+                "validation_message": "NIN must be exactly 11 digits",
+                "validation_pattern": "^\\d{11}$"
+              }
+            ]
+          }
+        ],
+        "selected_addons": [],
+        "document_verification": [],
+        "address_verification": null,
+        "enable_face_scan": true,
+        "enable_fraud_scan": false,
+        "face_confidence_level": 70,
+        "use_gesture_liveness": false,
+        "show_qr_code_entry": true,
+        "flow_configuration": [],
+        "settings": {},
+        "preferred_background_color": "white",
+        "validate_background_enabled": false,
+        "background_tolerance": 50,
+        "metadata": {
+          "skip": false,
+          "welcome_message": "Welcome to Cliqpay. Let’s quickly verify it’s really you. It takes about a minute and keeps your wallet safe.",
+          "image_comparison": false
+        }
+      },
+      "verification_steps": [],
+      "overall_result": "",
+      "failure_reason": "",
+      "verification_data": {
+        "source": "SDK",
+        "currency": "NGN",
+        "last_name": "User",
+        "first_name": "Test",
+        "current_balance": "0.00",
+        "required_amount": "60.00",
+        "pending_payment_data_url": "<omitted 951 chars>",
+        "insufficient_balance_reason": "Data collected, awaiting payment"
+      },
+      "addon_results": {},
+      "face_scan_result": {
+        "is_live": true,
+        "is_match": null,
+        "liveness": {
+          "status": "passed",
+          "is_live": true,
+          "message": "Liveness decision from provider process status",
+          "confidence": 99,
+          "provider_state": "3",
+          "provider_result": "1",
+          "full_provider_response": {
+            "id": "25f71e44-f814-4ea7-ae65-65246c3294e8",
+            "idFace": {
+              "result": "FOUND",
+              "personId": "<masked>"
+            },
+            "status": 3,
+            "liveness": 1,
+            "riskLevel": {
+              "result": "inconclusive"
+            }
+          }
+        },
+        "comparison": {
+          "status": "pending",
+          "message": "Face comparison pending"
+        },
+        "confidence": 0,
+        "liveness_status": "passed"
+      },
+      "liveness_video_url": "",
+      "ip_address": "<masked>",
+      "ip_location": {
+        "as": "<masked>",
+        "ip": "<masked>",
+        "isp": "<masked>",
+        "lat": 0,
+        "lng": 0,
+        "lon": 0,
+        "org": "<masked>",
+        "zip": "<masked>",
+        "city": "Lagos",
+        "region": "Lagos",
+        "status": "success",
+        "country": "Nigeria",
+        "latitude": 0,
+        "provider": "ip-api",
+        "timezone": "Africa/Lagos",
+        "longitude": 0,
+        "ip_address": "<masked>",
+        "countryCode": "NG",
+        "countryName": "Nigeria",
+        "region_code": "LA",
+        "country_code": "NG",
+        "country_name": "Nigeria",
+        "organisation": "<masked>",
+        "organization": "<masked>",
+        "ip_latitude": 6.4474,
+        "ip_longitude": 3.3903,
+        "ip_city": "Lagos",
+        "ip_region": "Lagos",
+        "ip_country": "Nigeria",
+        "map_source": "device"
+      },
+      "started_at": "2026-10-22 15:27:07",
+      "completed_at": null,
+      "expires_at": "2026-10-23 15:27:07",
+      "created_at": "2026-10-22 15:27:07",
+      "metadata": {
+        "is_test": true,
+        "user_ref": "spike-2",
+        "sdk_device_data": {
+          "os": "Linux",
+          "gps": {
+            "lat": 0,
+            "lon": 0,
+            "accuracy": 50000
+          },
+          "ssid": null,
+          "bssid": null,
+          "screen": {
+            "width": 384,
+            "height": 851,
+            "availWidth": 384,
+            "colorDepth": 24,
+            "pixelDepth": 24,
+            "availHeight": 851
+          },
+          "vendor": "Google Inc.",
+          "browser": "Chrome",
+          "carrier": null,
+          "deviceId": "41d91b665491f91ae0b3214353188709cf39942612b69531ef97746b9addabb7",
+          "language": "en-GB",
+          "platform": "Linux armv81",
+          "timezone": "Africa/Lagos",
+          "uniqueId": "41d91b665491f91ae0b3214353188709cf39942612b69531ef97746b9addabb7",
+          "ipAddress": "102.89.69.90",
+          "languages": [
+            "en-GB",
+            "en-US",
+            "en"
+          ],
+          "userAgent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Mobile Safari/537.36",
+          "deviceName": null,
+          "deviceType": "mobile",
+          "lastSeenAt": "2026-10-22T15:30:03.618Z",
+          "deviceModel": null,
+          "firstSeenAt": "2026-10-22T15:30:03.618Z",
+          "isVpnActive": null,
+          "networkType": "wifi",
+          "manufacturer": null,
+          "timesSeen30d": 1,
+          "advertisingId": "4841b091-50a7-4fce-9edf-e09f23d9c3a9",
+          "totalSessions": 1,
+          "timesSeenToday": 1
+        },
+        "liveness_process": {
+          "source": "backend_api_contract",
+          "endpoint": "/processes/v1/",
+          "process_id": "25f71e44-f814-4ea7-ae65-65246c3294e8",
+          "last_response": {
+            "id": "25f71e44-f814-4ea7-ae65-65246c3294e8",
+            "idFace": {
+              "result": "FOUND",
+              "personId": "<masked>"
+            },
+            "status": 3,
+            "liveness": 1,
+            "riskLevel": {
+              "result": "inconclusive"
+            }
+          },
+          "last_checked_at": "2026-10-22T15:30:08.851194+00:00"
+        },
+        "liveness_process_id": "25f71e44-f814-4ea7-ae65-65246c3294e8",
+        "sdk_verification_details": {
+          "data": {
+            "channel": "bvn",
+            "payload": {
+              "number": "54651333604"
+            },
+            "geolocation": {
+              "accuracy": 50000,
+              "latitude": 0,
+              "longitude": 0
+            }
+          }
+        }
+      },
+      "redirect_url": "https://tunnel.example.invalid/wh/redirect",
+      "is_used": false,
+      "report_location": {
+        "latitude": 0,
+        "longitude": 0,
+        "source": "device",
+        "accuracy": 50000,
+        "lat": 0,
+        "lng": 0,
+        "lon": 0
+      },
+      "location_source": "device",
+      "liveness": {
+        "enabled": true,
+        "status": "passed",
+        "process_id": "25f71e44-f814-4ea7-ae65-65246c3294e8",
+        "is_live": true,
+        "provider_state": "3",
+        "provider_result": "1",
+        "full_provider_response": {
+          "id": "25f71e44-f814-4ea7-ae65-65246c3294e8",
+          "idFace": {
+            "result": "FOUND",
+            "personId": "<masked>"
+          },
+          "status": 3,
+          "liveness": 1,
+          "riskLevel": {
+            "result": "inconclusive"
+          }
+        },
+        "error": null
+      }
+    },
+    "errors": null,
+    "meta": {
+      "timestamp": "2026-10-22T15:30:28.713000",
+      "version": "v1"
+    }
+  }
+}

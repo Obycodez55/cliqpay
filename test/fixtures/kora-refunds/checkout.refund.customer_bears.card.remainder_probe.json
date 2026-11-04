@@ -1,0 +1,22 @@
+{
+  "label": "refund.customer_bears.card.remainder_probe",
+  "capturedAt": "2026-10-27T06:28:57.231Z",
+  "durationMs": 974,
+  "request": {
+    "method": "POST",
+    "path": "/refunds/initiate",
+    "body": {
+      "payment_reference": "cliqpay-66b-card-1793082132980",
+      "reference": "rfd-66b-cardr-1793082464429"
+    }
+  },
+  "response": {
+    "status": 422,
+    "body": {
+      "status": false,
+      "code": "AA025",
+      "message": "A full refund cannot be initiated for this transaction. Please enter an amount less than or equal to NGN 13.97",
+      "data": null
+    }
+  }
+}

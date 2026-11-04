@@ -18,16 +18,6 @@ export class TransferAmountTooSmallException extends DomainException {
   }
 }
 
-export class TransferAmountTooLargeException extends DomainException {
-  readonly code = 'TRANSFER_AMOUNT_TOO_LARGE';
-  constructor(maxAmount: string) {
-    super(
-      `Transfer amount exceeds the maximum of ${maxAmount}`,
-      HttpStatus.UNPROCESSABLE_ENTITY,
-    );
-  }
-}
-
 export class SenderEmailNotVerifiedException extends DomainException {
   readonly code = 'SENDER_EMAIL_NOT_VERIFIED';
   constructor() {
@@ -80,16 +70,6 @@ export class MoneyRequestAmountTooSmallException extends DomainException {
   constructor(minAmount: string) {
     super(
       `Requested amount is below the minimum of ${minAmount}`,
-      HttpStatus.UNPROCESSABLE_ENTITY,
-    );
-  }
-}
-
-export class MoneyRequestAmountTooLargeException extends DomainException {
-  readonly code = 'MONEY_REQUEST_AMOUNT_TOO_LARGE';
-  constructor(maxAmount: string) {
-    super(
-      `Requested amount exceeds the maximum of ${maxAmount}`,
       HttpStatus.UNPROCESSABLE_ENTITY,
     );
   }

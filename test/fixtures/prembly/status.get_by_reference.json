@@ -1,0 +1,28 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/verification/00262ebf-6826-492c-9161-ac45d7aab42d/status",
+    "body": null,
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 404,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "8b7eb58a"
+  },
+  "responseBody": {
+    "status": false,
+    "message": "Verification '00262ebf-6826-492c-9161-ac45d7aab42d' could not be found",
+    "data": null,
+    "errors": {
+      "error_code": "01"
+    },
+    "meta": {
+      "timestamp": "2026-10-22T14:42:13.323634",
+      "version": "v1"
+    }
+  }
+}

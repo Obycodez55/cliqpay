@@ -1,0 +1,30 @@
+{
+  "label": "charge.initialize.customer_bears.card",
+  "capturedAt": "2026-10-27T06:22:13.946Z",
+  "durationMs": 966,
+  "request": {
+    "method": "POST",
+    "path": "/charges/initialize",
+    "body": {
+      "amount": 1000,
+      "currency": "NGN",
+      "reference": "cliqpay-66b-card-1793082132980",
+      "customer": {
+        "email": "spike@example.com"
+      },
+      "redirect_url": "https://example.com/done",
+      "merchant_bears_cost": false
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "status": true,
+      "message": "Charge created successfully",
+      "data": {
+        "reference": "cliqpay-66b-card-1793082132980",
+        "checkout_url": "https://test-checkout.korapay.com/KPY-PI-202610270622QkzA2213788/pay"
+      }
+    }
+  }
+}

@@ -20,6 +20,8 @@ const bodies = {
   mfa_challenge_otp: compile('mfa-challenge-otp.hbs'),
   security_alert: compile('security-alert.hbs'),
   funding_completed: compile('funding-completed.hbs'),
+  funding_held: compile('funding-held.hbs'),
+  funding_refunded: compile('funding-refunded.hbs'),
   transfer_sent: compile('transfer-sent.hbs'),
   transfer_received: compile('transfer-received.hbs'),
   money_request_created: compile('money-request-created.hbs'),
@@ -31,6 +33,7 @@ const bodies = {
   chargeback_received: compile('chargeback-received.hbs'),
   account_frozen: compile('account-frozen.hbs'),
   reconciliation_mismatch: compile('reconciliation-mismatch.hbs'),
+  refund_attention_required: compile('refund-attention-required.hbs'),
 };
 
 // The plain-text part is a low-fidelity fallback almost no mail client

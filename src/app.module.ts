@@ -19,6 +19,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { TransfersModule } from './modules/transfers/transfers.module';
 import { WithdrawalsModule } from './modules/withdrawals/withdrawals.module';
 import { DisputesModule } from './modules/disputes/disputes.module';
+import { KycModule } from './modules/kyc/kyc.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { DisputesModule } from './modules/disputes/disputes.module';
     TransfersModule,
     WithdrawalsModule,
     DisputesModule,
+    KycModule,
     TerminusModule,
   ],
   controllers: [AppController],

@@ -1,0 +1,37 @@
+{
+  "note": "Sandbox NGN balance around the webhook-capture refunds of issue 66",
+  "steps": [
+    {
+      "label": "balances.default.before",
+      "at": "2026-10-27T06:35:40.788Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6818474.86
+      }
+    },
+    {
+      "label": "balances.default.after",
+      "at": "2026-10-27T06:35:45.747Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6817474.86
+      }
+    },
+    {
+      "label": "balances.payerbears.before",
+      "at": "2026-10-27T06:35:46.229Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6817474.86
+      }
+    },
+    {
+      "label": "balances.payerbears.after",
+      "at": "2026-10-27T06:35:51.207Z",
+      "NGN": {
+        "pending_balance": 0,
+        "available_balance": 6816474.86
+      }
+    }
+  ]
+}

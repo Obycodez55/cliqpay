@@ -1,0 +1,47 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/biometrics/face/comparison",
+    "body": {
+      "image_one": "https://res.cloudinary.com/dh3i1wodq/image/upload/v1675417496/cbimage_3_drqdoc.jpg",
+      "image_two": "https://res.cloudinary.com/dh3i1wodq/image/upload/v1677955197/face_image_tkmmwz.jpg",
+      "face_confidence_threshold": 90
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 200,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "1293b130"
+  },
+  "responseBody": {
+    "status": true,
+    "response_code": "00",
+    "message": "Fatch Match - You are in sandbox mode. Switch to production mode for live data.",
+    "detail": "Fatch Match - You are in sandbox mode. Switch to production mode for live data.",
+    "data": {
+      "message": "Fatch Match",
+      "confidence": 100
+    },
+    "meta": {},
+    "billing_info": {
+      "was_charged": false,
+      "amount": 0,
+      "currency": "NGN",
+      "note": "No charges in sandbox mode"
+    },
+    "verification": {
+      "status": "VERIFIED",
+      "reference": "13f74286-14e4-4fe8-9f0a-435856bbb069",
+      "verification_id": "c1a4c05a-d99a-4f56-b780-e64d58822f8f"
+    },
+    "reference_id": "SBX-IMAGE_COMPARISON-QRYZTQB1KU",
+    "is_sandbox": true,
+    "account_verified": true,
+    "verification_status": "sandbox",
+    "metadata": {}
+  }
+}

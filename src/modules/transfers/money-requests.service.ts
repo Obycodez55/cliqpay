@@ -4,6 +4,8 @@ import { DataSource, Repository, WhereExpressionBuilder } from 'typeorm';
 import { EntityNotFoundError } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { UsersService } from '../users/users.service';
+import { KycService } from '../kyc/kyc.service';
+import { LedgerService } from '../ledger/ledger.service';
 import { EventBusService } from '../../shared/events/event-bus.service';
 import {
   MONEY_REQUEST_CREATED_EVENT,
@@ -30,7 +32,6 @@ import {
 } from './dto/money-request-response.dto';
 import { TransfersService } from './transfers.service';
 import {
-  MoneyRequestAmountTooLargeException,
   MoneyRequestAmountTooSmallException,
   MoneyRequestNotFoundException,
   MoneyRequestNotPayableException,
@@ -102,6 +103,8 @@ export class MoneyRequestsService {
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly usersService: UsersService,
     private readonly transfersService: TransfersService,
+    private readonly kycService: KycService,
+    private readonly ledgerService: LedgerService,
     private readonly eventBus: EventBusService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
@@ -114,20 +117,22 @@ export class MoneyRequestsService {
     requesterId: string,
     dto: CreateMoneyRequestDto,
   ): Promise<MoneyRequestResponseDto> {
-    const { minAmount, maxAmount } = this.config.transfers;
+    const { minAmount } = this.config.transfers;
     if (dto.amount < minAmount) {
       throw new MoneyRequestAmountTooSmallException(
         Money.of(minAmount, NGN).toDecimalString(),
       );
     }
-    if (dto.amount > maxAmount) {
-      throw new MoneyRequestAmountTooLargeException(
-        Money.of(maxAmount, NGN).toDecimalString(),
-      );
-    }
     if (dto.payerUserId === requesterId) {
       throw new SelfMoneyRequestException();
     }
+
+    await this.kycService.checkCanReceive(
+      this.dataSource.manager,
+      requesterId,
+      Money.of(dto.amount, NGN),
+      (m) => this.ledgerService.getBalanceAndPendingFunding(m, requesterId),
+    );
 
     const requester = await this.usersService.findById(requesterId);
     let payer: CounterpartyUser;
@@ -332,7 +337,7 @@ export class MoneyRequestsService {
         throw new MoneyRequestNotPayableException();
       }
 
-      const result = await this.transfersService.finalizeTransfer(
+      const { result } = await this.transfersService.finalizeTransfer(
         payerId,
         prepared,
         dto.reference,

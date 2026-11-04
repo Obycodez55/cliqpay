@@ -1,0 +1,33 @@
+{
+  "label": "charge.initialize.b",
+  "capturedAt": "2026-10-23T07:35:22.242Z",
+  "durationMs": 364,
+  "request": {
+    "method": "POST",
+    "path": "/charges/initialize",
+    "body": {
+      "amount": 1000,
+      "currency": "NGN",
+      "reference": "cliqpay-spike-1792740920729-b",
+      "customer": {
+        "email": "spike@example.com"
+      },
+      "notification_url": "https://tunnel.example.invalid/wh/charge",
+      "redirect_url": "https://tunnel.example.invalid/wh/redirect"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": true,
+      "message": "Charge created successfully",
+      "data": {
+        "reference": "cliqpay-spike-1792740920729-b",
+        "checkout_url": "https://test-checkout.korapay.com/KPY-PI-202610230735FPcjgf22128/pay"
+      }
+    }
+  }
+}

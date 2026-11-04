@@ -186,18 +186,6 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
     }).expect(422);
   });
 
-  it('rejects an amount above the configured maximum', async () => {
-    const sender = await seedFundedSender({ balanceMinor: 200_000_000n });
-    const recipient = await seedRecipient();
-
-    await send(tokenFor(sender.userId), {
-      recipientUserId: recipient.userId,
-      amount: 100_000_001,
-      reference: `cliqpay-xfer-max-${sender.userId}`,
-      pin: '1234',
-    }).expect(422);
-  });
-
   it("rejects when the sender's email is not verified", async () => {
     const sender = await seedFundedSender({ emailVerified: false });
     const recipient = await seedRecipient();
@@ -329,6 +317,29 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
         id: sender.walletId,
       });
       expect(senderAccount.balance).toBe(5_000_000n - 500_000n);
+    });
+
+    it('publishes the transfer notifications exactly once when two identical requests race', async () => {
+      const sender = await seedFundedSender();
+      const recipient = await seedRecipient();
+      const body = {
+        recipientUserId: recipient.userId,
+        amount: 500_000,
+        reference: `cliqpay-xfer-race-${sender.userId}`,
+        pin: '1234',
+      };
+      const emailCountBefore = ctx.emailAdapter.sent.length;
+
+      const [a, b] = await Promise.all([
+        send(tokenFor(sender.userId), body),
+        send(tokenFor(sender.userId), body),
+      ]);
+
+      expect([a.status, b.status]).toEqual([201, 201]);
+      expect(b.body).toEqual(a.body);
+      await waitFor(() => ctx.emailAdapter.sent.length >= emailCountBefore + 2);
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      expect(ctx.emailAdapter.sent.length - emailCountBefore).toBe(2);
     });
 
     it('rejects a reference already used by a different sender with 409', async () => {

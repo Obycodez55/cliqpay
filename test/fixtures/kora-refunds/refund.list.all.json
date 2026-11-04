@@ -1,0 +1,73 @@
+{
+  "label": "refund.list.all",
+  "capturedAt": "2026-10-23T07:40:56.586Z",
+  "durationMs": 676,
+  "request": {
+    "method": "GET",
+    "path": "/refunds?limit=20",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": true,
+      "message": "Refunds retrieved successfully",
+      "data": {
+        "has_more": false,
+        "refunds": [
+          {
+            "pointer": "cus_54A",
+            "reference": "RFD-c3-s2",
+            "status": "success",
+            "amount": "1053.75",
+            "currency": "NGN",
+            "payment_reference": "cliqpay-spike-bt-1792741121266-c3",
+            "reason": null,
+            "transaction_amount": "1053.75",
+            "created_at": "2026-10-23 08:40:52",
+            "completed_at": "2026-10-23 08:40:52"
+          },
+          {
+            "pointer": "cus_549",
+            "reference": "RFD-c3-f1",
+            "status": "failed",
+            "amount": "1053.75",
+            "currency": "NGN",
+            "payment_reference": "cliqpay-spike-bt-1792741121266-c3",
+            "reason": null,
+            "transaction_amount": "1053.75",
+            "created_at": "2026-10-23 08:39:29",
+            "completed_at": "2026-10-23 08:39:29"
+          },
+          {
+            "pointer": "cus_548",
+            "reference": "RFD-cliqpay-spike-bt-1792740976159-2",
+            "status": "success",
+            "amount": "1053.75",
+            "currency": "NGN",
+            "payment_reference": "cliqpay-spike-bt-1792740976159-2",
+            "reason": "cliqpay spike",
+            "transaction_amount": "1053.75",
+            "created_at": "2026-10-23 08:38:18",
+            "completed_at": "2026-10-23 08:38:18"
+          },
+          {
+            "pointer": "cus_547",
+            "reference": "RFD-cliqpay-spike-bt-1792740961307-1",
+            "status": "success",
+            "amount": "1000.00",
+            "currency": "NGN",
+            "payment_reference": "cliqpay-spike-bt-1792740961307-1",
+            "reason": "cliqpay spike",
+            "transaction_amount": "1000.00",
+            "created_at": "2026-10-23 08:37:06",
+            "completed_at": "2026-10-23 08:37:06"
+          }
+        ]
+      }
+    }
+  }
+}

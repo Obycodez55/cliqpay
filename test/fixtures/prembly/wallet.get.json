@@ -1,0 +1,39 @@
+{
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/wallet",
+    "body": null,
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 200,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "a4ef2a0c"
+  },
+  "responseBody": {
+    "status": true,
+    "message": "Wallet retrieved successfully",
+    "data": {
+      "id": "00000000-0000-0000-0000-000000000000",
+      "organisation_id": "00000000-0000-0000-0000-000000000000",
+      "organisation_name": "MASKED",
+      "balance": "0.00",
+      "currency": "NGN",
+      "is_active": true,
+      "is_locked": false,
+      "threshold_amount": null,
+      "threshold_alert_sent": false,
+      "metadata": {},
+      "created_at": "2026-10-22 09:06:34",
+      "updated_at": "2026-10-22 09:06:34"
+    },
+    "errors": null,
+    "meta": {
+      "timestamp": "2026-10-22T14:41:02.902788",
+      "version": "v1"
+    }
+  }
+}

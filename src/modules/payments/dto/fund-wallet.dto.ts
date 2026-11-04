@@ -1,12 +1,16 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsInt, IsPositive, Matches, MaxLength } from 'class-validator';
+import { IsInt, Matches, MaxLength, Min } from 'class-validator';
+
+// NGN 100: the smallest amount Kora can refund, and a held funding must
+// always be refundable.
+export const MIN_FUNDING_AMOUNT_MINOR = 10_000;
 
 export class FundWalletDto {
   @IsInt()
-  @IsPositive()
+  @Min(MIN_FUNDING_AMOUNT_MINOR)
   @ApiProperty({
     example: 500000,
-    description: 'Amount in minor units (kobo)',
+    description: 'Amount in minor units (kobo), at least 10000 (NGN 100)',
   })
   amount: number;
 

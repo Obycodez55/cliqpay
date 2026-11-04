@@ -1,0 +1,42 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/biometrics/face/liveliness_check",
+    "body": {
+      "image": "not-an-image"
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 400,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "43ee2e09"
+  },
+  "responseBody": {
+    "status": false,
+    "response_code": "05",
+    "message": "Invalid request data",
+    "detail": "Invalid request data",
+    "data": {},
+    "meta": {},
+    "billing_info": {
+      "was_charged": false,
+      "amount": 0,
+      "currency": ""
+    },
+    "verification": {
+      "status": "NOT-VERIFIED",
+      "reference": "d8463261-9c4c-4335-a244-5743ec557b7c",
+      "verification_id": "38b0baba-fe66-4bf2-9e46-d1dbb84cdc0f"
+    },
+    "errors": {
+      "image": [
+        "Facial image must be base64 encoded (JPEG or PNG) or a valid URL"
+      ]
+    },
+    "metadata": {}
+  }
+}

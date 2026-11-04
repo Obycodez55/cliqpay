@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import * as request from 'supertest';
 import { JwtService } from '@nestjs/jwt';
+import { KycTier } from '../../src/modules/users/users.service';
 import {
   TransfersTestContext,
   createTransfersTestContext,
@@ -69,12 +70,17 @@ describe('POST /money-requests/:id/pay', () => {
   }
 
   async function seedPayer(
-    overrides: { pin?: string; balanceMinor?: bigint } = {},
+    overrides: {
+      pin?: string;
+      balanceMinor?: bigint;
+      kycTier?: KycTier;
+    } = {},
   ) {
     const identity = nextIdentity('payer');
     const { userId, walletId } = await seedTransferUser(ctx, {
       ...identity,
       pin: overrides.pin,
+      kycTier: overrides.kycTier,
     });
     if (overrides.balanceMinor) {
       await fundWallet(ctx, {
@@ -106,6 +112,57 @@ describe('POST /money-requests/:id/pay', () => {
       .set('Authorization', `Bearer ${token}`)
       .send(body);
   }
+
+  it('asks an unverified (tier 0) payer to verify, leaving the request pending and posting nothing', async () => {
+    const requester = await seedRequester();
+    const payer = await seedPayer({
+      balanceMinor: 20_000_000n,
+      kycTier: 'tier0',
+    });
+    const created = await createRequest(requester.userId, payer.userId, 10_000);
+    const reference = `cliqpay-payreq-tier0-${payer.userId}`;
+
+    const res = await pay(tokenFor(payer.userId), created.id, {
+      reference,
+      pin: '1234',
+    }).expect(422);
+
+    expect(JSON.stringify(res.body)).toContain('Verify your BVN or NIN');
+    expect(
+      (await ctx.moneyRequestRepo.findOneByOrFail({ id: created.id })).status,
+    ).toBe('pending');
+    expect(await ctx.transactionRepo.findOneBy({ reference })).toBeNull();
+  });
+
+  it('rejects paying a request that exceeds the payer’s daily limit, leaving the request pending and posting nothing', async () => {
+    const requester = await seedRequester();
+    const payer = await seedPayer({
+      balanceMinor: 20_000_000n,
+      kycTier: 'tier1',
+    });
+    const created = await createRequest(
+      requester.userId,
+      payer.userId,
+      5_000_001,
+    );
+    const reference = `cliqpay-payreq-limit-${payer.userId}`;
+
+    await pay(tokenFor(payer.userId), created.id, {
+      reference,
+      pin: '1234',
+    }).expect(422);
+
+    const moneyRequest = await ctx.moneyRequestRepo.findOneByOrFail({
+      id: created.id,
+    });
+    expect(moneyRequest.status).toBe('pending');
+    expect(moneyRequest.transactionId).toBeNull();
+    expect(await ctx.transactionRepo.findOneBy({ reference })).toBeNull();
+    const wallet = await ctx.accountRepo.findOneByOrFail({
+      id: payer.walletId,
+    });
+    expect(wallet.balance).toBe(20_000_000n);
+  });
 
   it('rejects an unauthenticated pay', async () => {
     await request(ctx.app.getHttpServer())

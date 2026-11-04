@@ -1,6 +1,10 @@
-# Cliqpay — Project Documentation (v12)
+# Cliqpay — Project Documentation (v14)
 
 > Cliqpay is a production-grade peer-to-peer payment platform. A Venmo-equivalent for Africa — built on NestJS, PostgreSQL, TypeORM, currently integrated with Kora.
+
+> **v14 changes:** Issue #48 design pass (balance cap on webhook-completed funding). A funding that completes by webhook or poll and would take the wallet over its tier cap is no longer credited: it is posted into a new provider-scoped `suspense` liability account (`funding` row status `held`) and refunded to the payer through Kora's Refunds API after the transaction commits, with the cap check made under the per-user advisory lock, which also closes the previously unlocked webhook credit. §4.3 becomes `float = Σ wallets + fee_income + suspense`. Kora's refund behaviour was verified against its sandbox first (`docs/research/kora-refunds.md`): Kora keeps its pay-in fee, so the refund is for the credited principal and the payer bears the fee (provisional, ADR-0021). A failed refund stays in suspense and is recovered by a refund poll, bounded retry and ops alerts. New transaction type `funding_refund` (one row per attempt), funding statuses `held` and `refunded`. See [ADR-0021](adr/0021-hold-then-refund-for-cap-breaching-funding.md).
+
+> **v13 changes:** Phase 6 design pass (KYC tiers). Kora's Identity API, checked against its actual docs during design, returns BVN/NIN lookup data (including address — no separate address-verification product exists) but only a same-photo face-match, not true liveness — it can't back Tier 3's "full KYC + liveness check" as originally assumed (ADR-0018). `KycProvider` is backed by a dedicated KYC provider instead (BVN/NIN lookup via Prembly, ADR-0020, which supersedes ADR-0018's original provider choice), so this also corrects §3's original "Kora... built-in KYC/KYB verification APIs" rationale for identity verification specifically — Kora remains the payment/payout provider, unaffected. A new `kyc` module owns `tier_limits` and `kyc_verifications`, keeping `ledger`'s zero-peer-dependency property intact the same way `transfers`/`withdrawals`/`disputes` do (ADR-0017); the daily-limit race is closed with a transaction-scoped Postgres advisory lock (`pg_advisory_xact_lock`) rather than reaching into `ledger`'s private wallet-row lock, since there is no seam to hook a check into that private implementation without coupling the two modules. Also: the daily limit is one aggregate figure across transfers-out and withdrawals (not per-operation-type), reset on a calendar day pinned to `Africa/Lagos` rather than a literal rolling 24h window; the balance cap is enforced at funding-initiation and on incoming P2P transfers, with webhook-completed overflow explicitly out of scope at the time (since closed by v14: it is held and refunded); Tier 3 turned out not to need new object-storage infrastructure after all, since the selfie and liveness frames go inline in the submit request to the liveness provider's job and are discarded; `TRANSFER_MAX_AMOUNT`/`WITHDRAWAL_MAX_AMOUNT` are retired now that the tier daily limit subsumes them (§6 Phase 3/4's own notes already flagged these as interim).
 
 > **v12 changes:** Phase 5 design pass (chargebacks & disputes). Kora's webhook system doesn't model chargebacks/disputes at all (confirmed against its docs — only `charge.*`/`transfer.*`/`refund.*` events exist), which invalidated the original "provider webhook handling" assumption — chargebacks are admin-triggered instead, via a new internal shared-secret-gated endpoint (no `AdminUser` model exists yet; see §9). A new `disputes` module owns ingestion and lifecycle, keeping `ledger`'s zero-peer-dependency property intact (ADR-0016) — `ledger` gains `postChargeback()`, `users` gains `isFrozen` plus `freeze()`/`unfreeze()`. Freeze is strictly negative-balance-triggered (not `≤ 0`) and lifts only via dispute resolution, never automatically from a balance-restoring top-up — the freeze represents an unresolved dispute, not an arithmetic state. Resolution is two-way: `upheld` leaves the debt standing (→ collections), `resolved` posts a second compensating transaction re-crediting the user. Also: `disputes` table, partial-chargeback amount capping against the original transaction, `dispute_reference` as a dedicated dedupe key (§5); Paystack's real dispute-webhook support (`charge.dispute.*`) noted but deliberately not adopted for this alone (issue #33).
 
@@ -37,7 +41,7 @@
 
 Cliqpay is a production-grade virtual wallet and peer-to-peer payment platform built for real users across Africa. Users can fund their wallets, send and receive money from other Cliqpay users, split bills, withdraw to their bank accounts, and interact with a social transaction feed — all in a secure, reliable, and scalable system.
 
-**Payment Provider:** [Kora](https://korahq.com/) — chosen for multi-country support without per-country verification requirements, and built-in KYC/KYB verification APIs. **[v3]** The system is architected to be provider-agnostic at the data layer — Kora is the only *active* provider, not a structural assumption baked into the schema.
+**Payment Provider:** [Kora](https://korahq.com/) — chosen for multi-country support without per-country verification requirements, and built-in KYC/KYB verification APIs. **[v3]** The system is architected to be provider-agnostic at the data layer — Kora is the only *active* provider, not a structural assumption baked into the schema. **[v13]** Kora's KYC/KYB APIs cover identity data lookup (BVN/NIN) but not true liveness detection — identity verification for Phase 6 uses a separate KYC provider, Prembly for BVN/NIN lookup; see §6 Phase 6 and [ADR-0020](adr/0020-prembly-as-kyc-lookup-provider.md), which supersedes ADR-0018. This doesn't affect Kora's role as the payment/payout provider.
 
 **Target Market:** Nigeria first, with multi-currency and multi-country support built into the architecture from the start.
 
@@ -124,6 +128,8 @@ Every money movement that touches multiple accounts must succeed or fail as a un
 
 **[v2] Lock ordering:** any operation that locks more than one wallet row (e.g. a P2P transfer locking sender + recipient) must acquire those locks in a single global order — by `account_id` ascending, regardless of transfer direction. Without this, two concurrent transfers between the same pair of accounts in opposite directions will deadlock under load. Lock rows first, *then* check balance, *then* write the debit — never check-then-lock (that's a TOCTOU race that lets a balance check pass and then get invalidated before the debit lands).
 
+**[v13] User-level locks:** KYC limit checks take a per-user advisory lock (`pg_advisory_xact_lock(hashtext(userId))`); a transfer that needs both the sender's and the recipient's takes them in ascending lock-key order, once when the keys are equal, and does so before any wallet-row lock (ADR-0017). **[v14]** The funding completion path (webhook and poll) takes the same lock before its cap check and before any row lock (ADR-0021).
+
 ### 3.6 Provider Abstraction — **[v3, new]**
 
 Cliqpay is built against one active provider (Kora), but nothing about *which* provider it is should be hardcoded into account names, schema, or ledger logic. Two things make this real:
@@ -166,9 +172,10 @@ MFA is a **challenge/verify** cycle (`mfa_challenges`), not a single check: a ch
 | `fee_expense`  | **Yes**                | Expense | **[v2]** That provider's own fee, gross, before recovery                                   |
 | `fee_recovery` | **Yes**                | Equity  | **[v2]** Offsetting recovery — always equals fee_expense above                             |
 | `fee_income`   | No — per currency only | Equity  | Cliqpay's own platform fee revenue, regardless of which provider processed the transaction |
+| `suspense`     | **Yes**                | Liability | **[v14]** Money in a provider's float that is owed back to a payer, not to a user wallet: a funding held because crediting it would breach the balance cap, until its refund settles |
 
 
-**[v3] Why the split:** `float`, `fee_expense`, and `fee_recovery` are provider-scoped because they represent something specific to *that* provider — real cash sitting there, and that provider's own fee structure. `fee_income` is Cliqpay's own margin and doesn't change based on which rail moved the money, so it stays per-currency only. Example for NGN with Kora as the only active provider: `float_ngn` (provider: `'kora'`), `fee_expense_ngn` (provider: `'kora'`), `fee_recovery_ngn` (provider: `'kora'`), `fee_income_ngn` (provider: `null`). If Paystack were added later for NGN, it would get its own `float_ngn` / `fee_expense_ngn` / `fee_recovery_ngn` rows (same role, same currency, different `provider` value) — `fee_income_ngn` stays a single shared account.
+**[v3] Why the split:** `float`, `fee_expense`, and `fee_recovery` are provider-scoped because they represent something specific to *that* provider — real cash sitting there, and that provider's own fee structure. `fee_income` is Cliqpay's own margin and doesn't change based on which rail moved the money, so it stays per-currency only. Example for NGN with Kora as the only active provider: `float_ngn` (provider: `'kora'`), `fee_expense_ngn` (provider: `'kora'`), `fee_recovery_ngn` (provider: `'kora'`), `fee_income_ngn` (provider: `null`). If Paystack were added later for NGN, it would get its own `float_ngn` / `fee_expense_ngn` / `fee_recovery_ngn` rows (same role, same currency, different `provider` value) — `fee_income_ngn` stays a single shared account. **[v14]** `suspense` is provider-scoped like `float`, because the held money sits in one provider's balance.
 
 **User Accounts** — one wallet per user per currency they hold, never provider-scoped:
 
@@ -211,6 +218,37 @@ transaction.provider_reference: <Kora's own reference for this payment>
 **Balance effect:** `float_ngn` ↑ by net_amount · `user_wallet` ↑ by net_amount · expense/recovery pair nets to zero.
 
 **Equation check:** Debits = net_amount + provider_fee = gross_amount. Credits = net_amount + provider_fee = gross_amount. ✓
+
+**[v14] Who bears the fee is pinned, not assumed.** The posting above holds when the payer bears the provider fee, so `KoraAdapter.initiatePayment` always sends `merchant_bears_cost: false`. Kora's `charge.success` webhook then reports the payer's gross as `amount`; the credited net is `amount - fee`, unless the reported amount already equals the requested one (see ADR-0007).
+
+---
+
+#### Funding held, then refunded — **[v14, new]**
+
+*A funding that completes (webhook or poll) while crediting it would take the wallet over its tier balance cap. The wallet is not credited; the payment is held and refunded to the payer ([ADR-0021](adr/0021-hold-then-refund-for-cap-breaching-funding.md)).*
+
+Hold, on the funding row (`pending` -> `held`), in the transaction that took the user lock and found the breach:
+
+```
+DEBIT  float_ngn         net_amount
+CREDIT suspense_ngn      net_amount
+DEBIT  fee_expense_ngn   provider_fee
+CREDIT fee_recovery_ngn  provider_fee
+
+metadata: { gross_amount }
+transaction.provider: 'kora'
+
+```
+
+The same transaction creates a `funding_refund` attempt row (`pending`, no entries). After commit the refund is initiated through the provider for `net_amount`. When the refund succeeds (attempt row `pending` -> `completed`, funding `held` -> `refunded`):
+
+```
+DEBIT  suspense_ngn      net_amount
+CREDIT float_ngn         net_amount
+
+```
+
+A failed attempt posts nothing; the money stays in suspense and a later attempt (a new row and a new provider reference) can settle it. Only the credited principal is refunded: Kora keeps its pay-in fee, so the payer bears it and Cliqpay bears no provider cost. This is provisional until refunds of hosted-checkout and card payments are verified (`docs/research/kora-refunds.md` section 3); refunding the gross instead would reverse the fee recovery and would amend §4.3.
 
 ---
 
@@ -298,13 +336,15 @@ CREDIT float_ngn       amount
 At any point in time, per currency, this must hold across **all active providers for that currency**:
 
 ```
-Σ over active providers p: float_<ccy>[p] = Σ(user wallet balances in <ccy>) + fee_income_<ccy>
+Σ over active providers p: float_<ccy>[p] = Σ(user wallet balances in <ccy>) + fee_income_<ccy> + Σ over active providers p: suspense_<ccy>[p]
 
 ```
 
-With Kora as the only active provider, this collapses to exactly the v2 equation (`float_ngn[kora] = Σ(user wallets) + fee_income_ngn`) — the generalization only starts to matter the day a second provider is added, and it costs nothing to write it this way now.
+With Kora as the only active provider, this collapses to exactly the v2 equation (`float_ngn[kora] = Σ(user wallets) + fee_income_ngn + suspense_ngn[kora]`) — the generalization only starts to matter the day a second provider is added, and it costs nothing to write it this way now.
 
 **[v2] Note:** `fee_expense` and `fee_recovery` don't appear in this equation — they always move together in equal amounts, so they cancel out and never affect the invariant. They exist purely for fee reporting, not for reconciliation math.
+
+**[v14] Suspense:** held money is still in the provider's balance, so float does not change when a payment is held; it falls when the refund settles. Suspense is the one term added to the right-hand side since v2.
 
 **[v2] Important limitation:** this equation is guaranteed to hold by construction — every transaction posts balanced debits and credits, so internal self-consistency can't actually break unless someone bypasses the ledger layer. It tells you your books agree with themselves. It does **not** tell you your books agree with reality — see §4.4.
 
@@ -316,6 +356,7 @@ The check that actually catches real production failures — a dropped webhook, 
 - For each (provider, currency) pair: fetch that provider's reported balance, compare to `float_<ccy>[provider]`'s ledger balance
 - Mismatch → alert immediately, do not auto-correct — a human investigates before anything is adjusted
 - Every run's result (provider, currency, match/mismatch, both values, timestamp) is logged and queryable
+- **[v14]** Kora debits its balance when a refund is initiated, before the ledger settles it, so the comparison subtracts refunds initiated but not yet settled from float, and the report and the mismatch alert carry the suspense balance and the in-flight refund total
 
 This is a first-class production requirement, not a nice-to-have — it belongs in Phase 2, as soon as real money starts moving.
 
@@ -327,7 +368,7 @@ This is a first-class production requirement, not a nice-to-have — it belongs 
 accounts
   id                uuid PK
   type              enum (asset | liability | equity | expense)
-  role              enum (float | fee_income | fee_expense | fee_recovery | fx_clearing | fx_spread_income | user_wallet)
+  role              enum (float | fee_income | fee_expense | fee_recovery | suspense | fx_clearing | fx_spread_income | user_wallet)
   provider          varchar nullable   -- CHECK (provider IN ('kora')) — set for float / fee_expense / fee_recovery; null for fee_income, fx_*, user_wallet
   user_id           uuid FK nullable   -- null for system accounts
   currency          varchar            -- ISO 4217, e.g. 'NGN', 'USD'
@@ -339,8 +380,8 @@ transactions
   reference             varchar unique     -- Cliqpay's own idempotency key (client-supplied for client-initiated ops)
   provider              varchar nullable   -- CHECK (provider IN ('kora')) — which provider processed this; null for purely internal transactions (p2p, profit withdrawal)
   provider_reference     varchar nullable  -- the provider's own reference for this operation; indexed, used to correlate webhooks
-  type                  enum (funding | p2p_transfer | withdrawal | chargeback | profit_withdrawal | bill_split | scheduled)
-  status                enum (pending | completed | failed | reversed | disputed)
+  type                  enum (funding | funding_refund | p2p_transfer | withdrawal | withdrawal_reversal | chargeback | chargeback_reversal | profit_withdrawal | bill_split | scheduled)
+  status                enum (pending | completed | failed | reversed | disputed | held | refunded)   -- held/refunded: funding rows only ([v14])
   reverses_transaction_id uuid FK nullable  -- set on chargeback/reversal rows
   amount                bigint             -- minor units
   currency              varchar
@@ -419,6 +460,8 @@ disputes
   updated_at                timestamptz
 
 ```
+
+> **[v14] Note on** `funding_refund`**:** one row per refund attempt of a held funding, `reverses_transaction_id` pointing at the funding row, `reference` = `provider_reference` = the refund reference (`rfd-<funding id>-<attempt>`), `status` `pending` -> `completed` | `failed`. Only a `completed` attempt has ledger entries. `funding.status` `held` means the money is in suspense awaiting resolution; `refunded` means a refund attempt completed.
 
 > **[v9] Note on** `money_requests.status`**:** there is deliberately no
 > `expired` value. Expiry is derived from `expires_at` at read time and
@@ -508,6 +551,7 @@ Each phase exits with a working, production-quality slice of the system. No phas
 - **[v2]** External reconciliation job — scheduled diff of each provider's `float_<ccy>` against that provider's reported balance, alerting on mismatch
 - Transaction history endpoint (paginated)
 - Email notification on successful funding
+- **[v14]** A funding that would breach the balance cap when it completes is held and refunded instead of credited (§4.2, Phase 6)
 
 **Key concepts:** Webhooks, idempotency, event-driven money movement, atomic writes, external reconciliation, provider adapter pattern
 
@@ -587,21 +631,33 @@ Each phase exits with a working, production-quality slice of the system. No phas
 
 **Goal:** Users have tiers. Limits are enforced per tier.
 
-> **[v4] Regulatory status:** this is a personal project with no live legal exposure. The tier model below is deliberately built to match how CBN's real tiered-KYC framework actually works, and verification is done through **Kora's sandbox environment only** — no real BVN/NIN lookups against NIBSS/NIMC, ever, in this project. If this ever moves toward a real launch, two things need re-confirming before anything else: the exact limits in the *current* CBN circular (they've shifted over time and shouldn't be trusted from this document), and — separately — whether Cliqpay itself needs to hold its own licensing status or can legally operate under Kora's, since that determines whether `user_wallet` is really Cliqpay's liability at all (see §7). **[v7]** Separate from financial licensing: basic data-protection practice (not over-collecting, honoring a delete request, not leaking test data) starts applying the moment any real person's real data touches the system — even a friend testing the app — regardless of whether Cliqpay is a licensed financial entity. "Personal project" changes the licensing calculus, not that one.
+> **[v4] Regulatory status:** this is a personal project with no live legal exposure. The tier model below is deliberately built to match how CBN's real tiered-KYC framework actually works, and verification is done through **sandbox environments only** — no real BVN/NIN lookups against NIBSS/NIMC, ever, in this project. If this ever moves toward a real launch, two things need re-confirming before anything else: the exact limits in the *current* CBN circular (they've shifted over time and shouldn't be trusted from this document), and — separately — whether Cliqpay itself needs to hold its own licensing status or can legally operate under Kora's, since that determines whether `user_wallet` is really Cliqpay's liability at all (see §7). **[v7]** Separate from financial licensing: basic data-protection practice (not over-collecting, honoring a delete request, not leaking test data) starts applying the moment any real person's real data touches the system — even a friend testing the app — regardless of whether Cliqpay is a licensed financial entity. "Personal project" changes the licensing calculus, not that one.
 
-- **[v4]** Tier model, corrected to match the real framework — there is no "unverified but functional" tier anymore (BVN/NIN is mandatory even at the lowest tier per CBN's 2024 update):
+> **[v13] Provider correction:** the original assumption that Kora's own KYC/KYB API would back `KycProvider` (§3's stated rationale for choosing Kora) didn't survive contact with Kora's actual Identity API docs — it returns BVN/NIN lookup data including address, but only a same-photo face-match, not liveness. `KycProvider` is backed by **Prembly** for BVN/NIN lookup instead ([ADR-0020](adr/0020-prembly-as-kyc-lookup-provider.md), superseding ADR-0018); liveness has no real provider until a separate liveness issue lands, so Tier 3 is unreachable outside the fake provider until then. Kora is unaffected as the payment/payout provider.
+
+- **[v4]** Tier model, corrected to match the real framework — there is no "unverified but functional" tier anymore (BVN/NIN is mandatory even at the lowest tier per CBN's 2024 update). **[v13]** Tier is always derived server-side from whichever pieces are currently verified, never set directly by an "upgrade to tier N" call, and only ever moves up automatically, never down:
   - **Tier 0** — registered, email-verified — cannot fund, send, or withdraw yet
-  - **Tier 1** — BVN or NIN — modest daily limit and balance cap
-  - **Tier 2** — BVN + NIN + address verification — higher daily limit and balance cap
-  - **Tier 3** — full KYC + liveness check — highest daily limit, no balance cap
-- **[v4]** `KycProvider` interface, mirroring the `PaymentProviderAdapter` pattern (§3.6) — `KoraSandboxKycProvider` (real integration shape, sandbox data) and `FakeKycProvider` (deterministic, no network, for offline/unit tests)
-- `tier_limits` seeded with CBN-shaped reference defaults (daily limit + balance cap per tier per currency) — configuration data, not hardcoded, and explicitly labeled as a snapshot to reconfirm against the live circular before any real launch
-- Daily/transaction limits enforced per tier per operation type
-- **[v2]** Limit checks run inside the same locked transaction as the money movement, against a rolling-window sum — not just at the API layer — to close the race where concurrent requests jointly exceed a limit
-- Tier upgrade flow
+  - **Tier 1** — BVN or NIN verified — daily debit limit **₦50,000**, balance cap **₦300,000**
+  - **Tier 2** — BVN **and** NIN both verified **and belonging to the same person** (address comes back for free on either lookup, so it's not a separate check) — daily debit limit **₦200,000**, balance cap **₦500,000**
+  - **Tier 3** — BVN and NIN verified, **and** `liveness_verified` (a passing liveness check on either identifier's capture, in any order) — daily debit limit **₦5,000,000**, no balance cap
+- **[v13]** `KycProvider` interface, mirroring the `PaymentProviderAdapter` pattern (§3.6) — `PremblyKycProvider` (recorded sandbox shapes, `docs/research/prembly-kyc.md`) and `FakeKycProvider` (deterministic, no network, for offline/unit tests). `verifyBvn`/`verifyNin` are synchronous identity lookups (address comes back on the same call); `submitLiveness`, `getLivenessResult` and `parseWebhookJobId` cover liveness, which `PremblyKycProvider` rejects with `LIVENESS_UNAVAILABLE` (HTTP 503) until a liveness provider is chosen; the provider-agnostic job machinery below stays. `submitLiveness` returns either a final outcome or a pending job id, so a synchronous or an asynchronous provider can sit behind the same interface. No separate address endpoint.
+- **[v13]** Same-person check ([ADR-0019](adr/0019-bvn-nin-same-person-check.md)): whichever of BVN/NIN is verified second is compared with the first — names by token match (case, diacritics, punctuation and token order ignored; a missing middle name tolerated; at least two shared non-initial tokens, or the single token of a one-token name), dates of birth when both sides have one — inside the persist transaction under the per-user lock, before anything is written. A mismatch is `IDENTITY_MISMATCH` (422), persists nothing and still counts as a failed attempt; a missing name fails closed. Each source's name and date of birth are kept in `kyc_verifications.identity`. There is deliberately no comparison with the account's profile name, so one mistyped or squatted identifier on an otherwise-empty account is still possible.
+- **[v13]** Liveness is optional on `POST /kyc/verify-bvn` / `verify-nin` via a nested `liveness` capture (`selfieImage`, 6–8 `livenessImages` as base64 JPEGs of at most 1,000,000 characters each, `consentGranted: true`); those two routes alone take a larger JSON body (about 9 MB) and only for callers with a validly signed token. Identity is verified synchronously as before; the liveness job is then tracked in `kyc_liveness_jobs`: one pending job per user, a 15-second poll job re-fetches pending results, and a job still pending after 30 minutes gets one last poll and, if the provider still has no verdict, is failed with any later result discarded (the user retries); each tick is time-bounded and a job that errors five polls in a row is skipped until that final poll. A public, unauthenticated `POST /kyc/webhook` is trigger-only — its body is never trusted, it just names a job to re-poll. A failed liveness never rolls back a verified identity, but counts as a failed attempt toward the 5-per-24h limit (an attempt succeeds only when identity and, if sent, liveness both pass). A same-identifier call with a `liveness` capture while `liveness_verified` is false reaches the provider and changes only that flag; once it is true the call is a free no-op. The response carries `livenessResult` (`passed`, `failed`, `pending`, `not_requested`) and `GET /kyc/status` carries `livenessPending` plus the tier's `dailyDebitLimit` and `balanceCap` (null when uncapped) as Money objects — a "remaining today" figure needs the ledger and belongs on a wallet-level endpoint. Images are never persisted, logged or sent to Sentry.
+- **[v13]** Cutover: existing users start at `tier0` (limit and cap both zero, so they cannot send, withdraw or fund) with no automatic backfill, and a zero limit or cap surfaces as `KYC_VERIFICATION_REQUIRED` rather than a ₦0 limit message; a cutover plan (backfill or a verification prompt) is needed before this ships to real users.
+- `tier_limits` seeded with CBN-shaped reference defaults (daily limit + balance cap per tier per currency) — configuration data, not hardcoded, and explicitly labeled as a snapshot to reconfirm against the live circular before any real launch. **[v13]** The daily limit is one aggregate figure across transfers-out and withdrawals combined, not per-operation-type — funding (money in) isn't limited by it at all, only indirectly bounded by the balance cap.
+- **[v13]** A new `kyc` module owns `tier_limits`, `kyc_verifications`, and the verification/upgrade HTTP surface, keeping `ledger`'s zero-peer-dependency property intact the same way `transfers`/`withdrawals`/`disputes` do. Tier itself stays on `User`, owned by `users` (same shape as `isFrozen`, ADR-0016) — `kyc` calls `usersService.setKycTier()`, never writes the column directly. See [ADR-0017](adr/0017-kyc-module-boundary-and-limit-race-safety.md).
+- **[v13]** Limit checks run inside the same locked transaction as the money movement — `kyc.checkAndReserveLimit(manager, userId, amount, readDebitedSince)`, called by `transfers`/`withdrawals` with their own open `EntityManager` before posting; the caller supplies the ledger fact (the user's debited principal since the start of the WAT day, via a new read-only `ledger.getDebitedSince`), so `kyc` imports no ledger code and reads no ledger table. The race (concurrent requests jointly exceeding a limit) is closed with a transaction-scoped Postgres advisory lock (`pg_advisory_xact_lock(hashtext(userId))`), not by hooking into `ledger`'s private wallet-row lock, which has no seam for a caller to plug into. The window is a **calendar day reset in `Africa/Lagos` (WAT)**, not a literal rolling 24h window.
+- **[v13]** For funding, the balance cap is enforced at initiation (incoming transfers are covered by the next bullet), against the projected balance: the wallet balance plus the user's in-flight `pending` funding transactions plus the requested amount must not exceed the tier's cap, otherwise checkout is never started. `kyc.checkBalanceCap(manager, userId, requested, readBalanceAndPending)` takes the same per-user advisory lock as the daily-limit check and the caller supplies the ledger facts; the check and the pending-funding insert share one transaction, with the provider call outside it. Counting pending fundings is what stops several unpaid checkouts from each passing against a balance that hasn't moved. **[v14]** A funding that completes by webhook or poll is checked again at completion, under the same per-user lock: `kyc.checkIncomingCredit` (non-throwing, caller supplies the ledger facts) compares the stored balance plus the credit with the cap, without counting other pending fundings, which are checked when they complete. A breach is held in `suspense` and refunded through the provider instead of credited (§4.2, ADR-0021). An out-of-band bank credit with no matching pending funding is not credited at all today (it surfaces as a reconciliation mismatch). Withdrawal and chargeback reversals stay exempt and can overshoot the cap by their own amount. Only `pending` fundings created in the last 24 hours count (a named constant in `ledger`, not config): Kora documents no expiry for a hosted checkout, so an abandoned one would otherwise hold headroom forever. The trade-off: a link older than 24 hours that is paid late still completes through the webhook, where the completion check holds and refunds it if it breaches the cap.
+- **[v13]** The balance cap also bounds incoming P2P transfers (`sendMoney` and money-request payments): `kyc.checkTransferLimits` takes the sender's and the recipient's advisory locks in ascending lock-key order (never sender-then-recipient, which deadlocks A->B against B->A), then checks the sender's daily limit and the recipient's cap (balance + pending funding + amount). A refusal is `RECIPIENT_UNABLE_TO_RECEIVE` with no details, so the sender learns nothing of the recipient's tier or balance; a tier-0 recipient cannot receive any transfer until verified. Replays still win over the check, and compensating credits (withdrawal and chargeback reversals) are exempt. See [ADR-0017](adr/0017-kyc-module-boundary-and-limit-race-safety.md).
+- **[v13]** Creating a money request also checks the requester's own receive headroom: `kyc.checkCanReceive` rejects a request the requester could not currently receive (`KYC_VERIFICATION_REQUIRED` for tier 0, `BALANCE_CAP_EXCEEDED` with the remaining headroom otherwise), so a request that is already unpayable is never sent. It is advisory (no lock, no write); a request can still become unpayable later, and the payer's error stays the generic `RECIPIENT_UNABLE_TO_RECEIVE`.
+- **[v13]** `TRANSFER_MAX_AMOUNT`/`WITHDRAWAL_MAX_AMOUNT` (§6 Phase 3/4's interim ceilings) are retired — a single transfer/withdrawal that alone exceeds the tier's daily limit already fails the same check a cumulative one would, so the flat config ceiling is redundant once tier limits exist. The `_MIN_AMOUNT` values are untouched.
+- **[v13]** BVN/NIN stored as AES-256-GCM ciphertext plus a deterministic HMAC hash (same pattern as `bank_accounts.account_number`, ADR-0015) — each hash unique across all users, so a BVN/NIN already linked to one account can't verify a second one. The hash is keyed with its own `IDENTIFIER_HASH_KEY`, not the AES `ENCRYPTION_KEY` (the bank account hash too), so rotating one key never breaks the other; `pnpm db:rekey-identifier-hashes` re-derives every hash from the decrypted ciphertext (ADR-0015 amendment). Address fields stored plain from the lookup response (not sensitive enough to warrant encryption the way an account number is). Selfies are never persisted — sent inline to the liveness provider, result stored, image discarded. The NIN lookup's photo is discarded by the adapter and never logged, stored or returned. The provider-returned legal name is stored as its own field, separate from whatever the user originally registered — no rejection on a mismatch, both are kept.
+- **[v13]** 5 failed verification attempts per identity type (BVN, NIN) per user per rolling 24h — a brute-force/probing control on an 11-digit identifier, the same class of concern ADR-0009 addressed for transaction PINs, but a cooldown rather than a lockout since nothing is being protected that needs a support-unlock path.
+- **[v13]** `GET /wallet/limits` returns the caller's tier, today's remaining daily allowance and the balance-cap headroom, from the same `kyc` helper the limit checks use so the figures cannot drift from what a transfer or funding would enforce. It lives in `payments` (the one deliberate non-rails route; see the ADR-0008 amendment) because it needs the ledger facts `payments` already reads for funding, and takes no lock.
+- Tier upgrade flow — `POST /kyc/verify-bvn` and `POST /kyc/verify-nin`, tier recomputed after each success
 - Limit exceeded error responses with clear messaging
 
-**Key concepts:** State machines, access control, KYC API integration via adapter pattern, race-safe limit enforcement
+**Key concepts:** State machines, access control, KYC API integration via adapter pattern, race-safe limit enforcement, transaction-scoped advisory locking
 
 ---
 
@@ -660,6 +716,7 @@ Each phase exits with a working, production-quality slice of the system. No phas
 - Activate new system accounts for a currency (`float_usd`, etc., tied to whichever provider(s) support that currency) via the same boot-seeding logic from Phase 1
 - Fund foreign currency wallet via the active provider
 - Transfer between same-currency wallets (no change needed — already currency-scoped)
+- **[v13]** KYC daily-limit enforcement (§6 Phase 6) assumes one NGN `user_wallet` per user today: `ledger.getDebitedSince` resolves a single wallet by `(userId, role)`, the limit is a single NGN figure per tier, and the per-user advisory lock serializes across all of a user's currencies. Multi-currency wallets need `getDebitedSince` to take a currency, a decision on whether the daily limit is per currency or converted to one figure, and a review of the lock key (ADR-0017 Consequences).
 - **[v2] Cross-currency transfer**, worked example:
 
 ```
@@ -733,6 +790,7 @@ These are non-negotiable standards applied across all phases, not deferred to a 
 - Ledger entries are append-only — never updated or deleted; reversals are compensating transactions, never mutations. **[v8]** DB-enforced, not just application convention: a trigger rejects any `UPDATE`/`DELETE` against `ledger_entries` outright, regardless of which code path issues it — added during Phase 2's audit (L2) after finding this held only because every code path happened to never violate it, not because anything stopped one from doing so.
 - **[v7]** This extends to migrations: no migration ever `UPDATE`s or `DELETE`s a row in `ledger_entries` or a historical `transactions` row, including "just this once" bug fixes — a correction is always a new compensating transaction, never a migration touching old data
 - **[v7]** Database backups with point-in-time recovery enabled from day one — usually a checkbox on managed Postgres, not custom work, and the one thing that actually protects against losing the ledger outright
+- **[v14]** Held money lives in the provider-scoped `suspense` liability account (§4.1); a refund settles it with a compensating posting, never a mutation of the hold
 - Internal invariant (§4.3) reconciliation runnable on demand and schedulable as a background job
 - **[v2] External reconciliation (§4.4), per provider, against each provider's reported balance — the check that actually catches real drift, not just self-consistency**
 - All monetary values stored and computed as integer minor units — never floating point, never a shared decimal type without a fixed scale
@@ -797,7 +855,7 @@ Planned clients: **React Native** for the mobile app, **React/Next.js** for an i
 - **Token storage is a client-side security decision, but it's the one that can quietly undo all the session-security work already done.** Access/refresh tokens must live in iOS Keychain / Android Keystore-backed secure storage (e.g. `react-native-keychain`), never in plain `AsyncStorage` — a revocable, replay-detecting session design (§3.7) doesn't help if the token itself sits in plaintext on the device.
 - **Deep linking for the Kora payment redirect.** Funding currently opens a hosted payment page; on mobile that means a WebView/system browser plus a registered URL scheme to return to the app. Important: the **webhook stays the source of truth**, same as today — the deep link is only what brings the user back into the UI, it never triggers the ledger write itself. **[v8]** The config surface this will eventually point at already exists (`PAYMENT_REDIRECT_URL`, sent to Kora as `redirect_url` on every charge) — it's a placeholder web URL for now since no frontend exists yet; swapping it for a real deep link scheme when mobile is built is a config change, not new plumbing.
 - **Client-side idempotency key persistence.** The idempotency key for a client-initiated action (§3.4) needs to be generated and persisted locally *before* the request fires, so the app can safely retry the same key after being backgrounded or losing connectivity mid-request, instead of generating a new key and risking a duplicate.
-- **Tier 3 liveness check needs media upload plumbing** that doesn't exist yet — object storage (S3-compatible) plus an upload endpoint for the mobile client to submit the selfie/video Kora's KYC API requires.
+- **Tier 3 liveness needs camera capture on the client, not storage on the server.** The mobile client captures a selfie and 6–8 frames and submits them inline on `POST /kyc/verify-bvn` / `verify-nin`; the backend forwards them to the liveness provider and discards them (§6 Phase 6, ADR-0018 amendment), so no object storage or upload endpoint is needed.
 - **Real-time balance updates: default to push-notification-triggers-refetch, not WebSockets**, unless a concrete need for live updates emerges — simpler, and consistent with how comparable wallet apps handle it. Worth stating as the default so it isn't left ambiguous and someone builds a WebSocket layer that wasn't actually needed.
 
 ---
@@ -868,7 +926,7 @@ TDD is concentrated where it earns its keep — the service layer doing actual m
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | Unit (TDD)     | Ledger math, fee calculations, limit-window logic                                                                                                                                                 | Co-located `__tests__/` per module                                               |
 | Integration    | Full service methods against a real test Postgres (Testcontainers) — proves idempotency and atomicity against an actual DB engine, not a mock                                                     | `test/integration/`, not owned by any one module since these are about the seams |
-| Contract       | Confirms `KoraAdapter`/`KoraSandboxKycProvider` still match what `FakeAdapter`/`FakeKycProvider` assume — run against Kora's real sandbox                                                         | `test/contract/`, slower cadence (nightly/pre-release), not per-commit           |
+| Contract       | Confirms `KoraAdapter`/`PremblyKycProvider` still match what `FakeAdapter`/`FakeKycProvider` assume — run against Kora's real sandbox                                                         | `test/contract/`, slower cadence (nightly/pre-release), not per-commit           |
 | Property-based | Generates random sequences of valid operations (funding, P2P, withdrawal, random order and amounts) and asserts the §4.3 invariant never breaks, rather than relying only on hand-picked examples | Alongside ledger unit tests, using `fast-check`                                  |
 
 

@@ -7,13 +7,24 @@ import {
   UnauthorizedException,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { LedgerService } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
+import { KycService } from '../kyc/kyc.service';
+import { runInTransaction } from '../../database/transaction.util';
 import { Money } from '../../shared/primitives/money';
 import {
   FUNDING_COMPLETED_EVENT,
+  FUNDING_HELD_EVENT,
+  FUNDING_REFUNDED_EVENT,
   FundingCompletedEventPayload,
+  FundingHeldEventPayload,
+  FundingRefundedEventPayload,
+  REFUND_ATTENTION_REQUIRED_EVENT,
+  RefundAttentionReason,
+  RefundAttentionRequiredEventPayload,
   RECONCILIATION_MISMATCH_EVENT,
   ReconciliationMismatchEventPayload,
   WITHDRAWAL_COMPLETED_EVENT,
@@ -24,24 +35,28 @@ import {
 import { EventBusService } from '../../shared/events/event-bus.service';
 import { FundWalletDto } from './dto/fund-wallet.dto';
 import { FundWalletResponseDto } from './dto/fund-wallet-response.dto';
+import { WalletLimitsResponseDto } from './dto/wallet-limits-response.dto';
 import {
   InitiatePaymentResult,
   InitiatePayoutParams,
   InitiatePayoutResult,
+  InitiateRefundResult,
   PAYMENT_PROVIDER_ADAPTER,
   PaymentProviderAdapter,
   ResolveBankAccountResult,
   VerifyChargeResult,
   VerifyPayoutResult,
 } from './adapters/payment-provider.interface';
-import { isUniqueViolation } from '../../database/postgres-errors.util';
 import { extractTopLevelJsonField } from './internal/raw-json';
 import {
   CompleteWithdrawalResult,
+  HoldFundingResult,
   IdempotentReplay,
   PostFundingFacts,
   PostFundingResult,
   ReverseWithdrawalResult,
+  SettleRefundResult,
+  StalePendingRefund,
 } from '../ledger/ledger.service';
 import {
   ACTIVE_RECONCILIATION_PAIRS,
@@ -52,6 +67,20 @@ const NGN = 'NGN'; // Funding is NGN-only for now — see issue #12.
 
 const STALE_FUNDING_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
 const STALE_WITHDRAWAL_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+const STALE_REFUND_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+
+// Kora answers a second attempt on the same payment with a 429 for about a
+// minute, and never accepts a refund reference twice, so each retry is a new
+// attempt after a wait. Element n is the wait after attempt n fails.
+const REFUND_RETRY_DELAYS_MS = [
+  10 * 60 * 1000,
+  60 * 60 * 1000,
+  6 * 60 * 60 * 1000,
+  24 * 60 * 60 * 1000,
+];
+const MAX_REFUND_ATTEMPTS = REFUND_RETRY_DELAYS_MS.length + 1;
+const HELD_TOO_LONG_MS = 24 * 60 * 60 * 1000;
+const REFUND_ALERT_REPEAT_MS = 24 * 60 * 60 * 1000;
 
 // Ground truth: docs/adr/0007 — confirmed against a real webhook Kora
 // delivered during the Phase 2 e2e pass, not just docs. Only the fields
@@ -137,6 +166,48 @@ function validatePayoutWebhookData(parsed: unknown): KoraPayoutWebhookData {
   };
 }
 
+// Ground truth: docs/research/kora-refunds.md, captured refund webhooks.
+// `reference` is our refund reference; `payment_reference` is a Kora-internal
+// id and is deliberately not read. `amount` is the refund's own amount.
+interface KoraRefundWebhookData {
+  reference: string;
+  status: string;
+  amount: string | number;
+  statusReason?: string;
+}
+
+function validateRefundWebhookData(parsed: unknown): KoraRefundWebhookData {
+  if (typeof parsed !== 'object' || parsed === null) {
+    throw new BadRequestException('Malformed webhook payload');
+  }
+  const { reference, status, amount, status_reason } = parsed as Record<
+    string,
+    unknown
+  >;
+  if (
+    typeof reference !== 'string' ||
+    reference.length === 0 ||
+    typeof status !== 'string' ||
+    status.length === 0 ||
+    (typeof amount !== 'string' && typeof amount !== 'number')
+  ) {
+    throw new BadRequestException('Malformed webhook payload');
+  }
+  return {
+    reference,
+    status,
+    amount,
+    statusReason: typeof status_reason === 'string' ? status_reason : undefined,
+  };
+}
+
+const REFUND_REASON = 'Wallet balance limit exceeded';
+
+type RefundRequest = Pick<
+  HoldFundingResult,
+  'refundReference' | 'fundingReference' | 'netAmount'
+>;
+
 /**
  * The one exported surface of the payments module — see
  * docs/architecture.md §10. Never posts ledger entries directly — hands
@@ -149,8 +220,10 @@ export class PaymentsService {
   private readonly reconciliationAlertEmail: string;
 
   constructor(
+    @InjectDataSource() private readonly dataSource: DataSource,
     private readonly ledgerService: LedgerService,
     private readonly usersService: UsersService,
+    private readonly kycService: KycService,
     private readonly eventBus: EventBusService,
     @Inject(PAYMENT_PROVIDER_ADAPTER)
     private readonly adapter: PaymentProviderAdapter,
@@ -200,25 +273,32 @@ export class PaymentsService {
     ]);
 
     try {
-      await this.ledgerService.createPendingFundingTransaction({
-        reference: dto.reference,
-        provider: 'kora',
-        providerReference: dto.reference,
-        amount,
-        recipientWalletId: wallet.id,
-        metadata: { checkoutUrl: null, grossAmount: null },
+      await runInTransaction(this.dataSource, async (manager) => {
+        await this.kycService.checkBalanceCap(manager, userId, amount, (m) =>
+          this.ledgerService.getBalanceAndPendingFunding(m, userId),
+        );
+        await this.ledgerService.createPendingFundingTransactionWithinTransaction(
+          manager,
+          {
+            reference: dto.reference,
+            provider: 'kora',
+            providerReference: dto.reference,
+            amount,
+            recipientWalletId: wallet.id,
+            metadata: { checkoutUrl: null, grossAmount: null },
+          },
+        );
       });
     } catch (error) {
-      if (isUniqueViolation(error, 'UQ_transactions_reference')) {
-        const raced = await this.ledgerService.checkIdempotentReplay(
-          dto.reference,
-          userId,
-          fingerprint,
-        );
-        const racedResponse = resolveFundingReplay(raced);
-        if (racedResponse) {
-          return racedResponse;
-        }
+      // A racing duplicate may have committed first; its result is the answer.
+      const raced = await this.ledgerService.checkIdempotentReplay(
+        dto.reference,
+        userId,
+        fingerprint,
+      );
+      const racedResponse = resolveFundingReplay(raced);
+      if (racedResponse) {
+        return racedResponse;
       }
       throw error;
     }
@@ -240,6 +320,28 @@ export class PaymentsService {
       result.checkoutUrl,
     );
     return { checkoutUrl: result.checkoutUrl };
+  }
+
+  async getWalletLimits(userId: string): Promise<WalletLimitsResponseDto> {
+    const capacity = await runInTransaction(this.dataSource, (manager) =>
+      this.kycService.getWalletCapacity(manager, userId, NGN, {
+        readDebitedSince: (m, since) =>
+          this.ledgerService.getDebitedSince(m, userId, since),
+        readBalanceAndPending: (m) =>
+          this.ledgerService.getBalanceAndPendingFunding(m, userId),
+      }),
+    );
+    return {
+      tier: capacity.tier,
+      dailyLimit: capacity.dailyLimit.toJSON(),
+      debitedToday: capacity.debitedToday.toJSON(),
+      remainingToday: capacity.remainingToday.toJSON(),
+      resetsAt: capacity.resetsAt.toISOString(),
+      balanceCap: capacity.balanceCap?.toJSON() ?? null,
+      balance: capacity.balance.toJSON(),
+      pendingFunding: capacity.pendingFunding.toJSON(),
+      headroom: capacity.headroom?.toJSON() ?? null,
+    };
   }
 
   // Signature verified against the raw bytes Kora actually signed (see
@@ -302,11 +404,12 @@ export class PaymentsService {
     if (event === 'charge.success' || event === 'charge.failed') {
       return this.processFundingWebhookData(parsedData);
     }
-    // Other known events (refund.*) aren't a modeled feature yet
-    // (CLAUDE.md's incremental-build rule) — logged and ignored rather than
-    // guessed at. An absent/unrecognized `event` on what both existing
-    // callers (Kora's real webhook, this repo's own tests) always send is
-    // treated the same way, not defaulted to either handler.
+    if (event === 'refund.success' || event === 'refund.failed') {
+      return this.processRefundWebhookData(parsedData);
+    }
+    // An absent or unrecognized `event` on what Kora's real webhook and this
+    // repo's own tests always send is logged and ignored, not defaulted to
+    // any handler.
     this.logger.debug(
       `handleKoraWebhook: unrecognized or missing event "${String(event)}" — ignoring`,
     );
@@ -348,19 +451,379 @@ export class PaymentsService {
       }
     }
 
-    const result = await this.ledgerService.postFunding({
-      reference: data.reference,
-      netAmount,
-      providerFee,
-      providerStatus,
-    });
-    if (!result) {
-      // Duplicate delivery of an already-resolved transaction, or a
-      // provider-reported failure — either way, nothing further to publish.
+    await this.completeFunding(
+      {
+        reference: data.reference,
+        netAmount,
+        providerFee,
+        providerStatus,
+      },
+      'webhook',
+    );
+  }
+
+  // The one path a funding outcome takes, from the webhook and the poll
+  // alike. A success is checked against the user's balance cap under their
+  // advisory lock, in the same transaction that posts it: credited when it
+  // fits, held in suspense when it would breach the cap. A
+  // failed outcome moves no money, so it skips the check.
+  private async completeFunding(
+    reported: PostFundingFacts,
+    source: 'webhook' | 'poll',
+  ): Promise<void> {
+    const pending =
+      reported.providerStatus === 'success'
+        ? await this.ledgerService.findPendingFunding(reported.reference)
+        : null;
+    // Kora's webhook `amount` is the payer's gross when the payer bears the
+    // fee and the requested amount when the merchant does; the charge status
+    // the poll reads is the requested amount either way. The ledger's own
+    // cross-check against the request still rejects anything that matches
+    // neither reading.
+    const facts =
+      source === 'webhook' && pending
+        ? {
+            ...reported,
+            netAmount: reported.netAmount.equals(pending.amount)
+              ? reported.netAmount
+              : reported.netAmount.subtract(reported.providerFee),
+          }
+        : reported;
+    if (!pending) {
+      // Failed, unknown or already resolved: postFunding is idempotent and
+      // handles each.
+      const result = await this.ledgerService.postFunding(facts);
+      if (result) {
+        await this.publishFundingCompletedEvent(result);
+      }
       return;
     }
 
-    await this.publishFundingCompletedEvent(result);
+    const outcome = await runInTransaction(this.dataSource, async (manager) => {
+      const verdict = await this.kycService.checkIncomingCredit(
+        manager,
+        pending.userId,
+        facts.netAmount,
+        (m) => this.ledgerService.getWalletBalance(m, pending.userId),
+      );
+      if (verdict.allowed) {
+        const credited = await this.ledgerService.postFundingWithinTransaction(
+          manager,
+          facts,
+        );
+        return credited ? { kind: 'credited' as const, credited } : null;
+      }
+      const held = await this.ledgerService.holdFundingWithinTransaction(
+        manager,
+        facts,
+      );
+      return held ? { kind: 'held' as const, held, cap: verdict.cap } : null;
+    });
+    if (!outcome) {
+      // A duplicate delivery, or the poll and the webhook racing: the other
+      // one already resolved it.
+      return;
+    }
+    if (outcome.kind === 'credited') {
+      await this.publishFundingCompletedEvent(outcome.credited);
+      return;
+    }
+    this.logger.warn(
+      `completeFunding: funding "${outcome.held.fundingReference}" would take the wallet over its balance cap — held in suspense, refund attempt "${outcome.held.refundReference}" pending`,
+    );
+    await this.publishFundingHeldEvent(outcome.held, outcome.cap);
+    await this.initiateRefund(outcome.held);
+  }
+
+  // Runs only after the hold has committed (CLAUDE.md: provider calls never
+  // sit inside a DB transaction). Whatever happens here, the money is safe
+  // in suspense and the pending attempt row is durable, so nothing is
+  // thrown: a failure must not turn the webhook into a non-2xx that Kora
+  // retries into the idempotency guard.
+  private async initiateRefund(request: RefundRequest): Promise<void> {
+    let result: InitiateRefundResult;
+    try {
+      result = await this.adapter.initiateRefund({
+        reference: request.refundReference,
+        paymentReference: request.fundingReference,
+        amount: request.netAmount,
+        reason: REFUND_REASON,
+      });
+    } catch (error) {
+      this.logger.error(
+        `initiateRefund: refund "${request.refundReference}" could not be started (${(error as Error).message}) — attempt left pending`,
+      );
+      return;
+    }
+
+    if (result.status === 'rejected') {
+      await this.ledgerService.failRefund({
+        refundReference: request.refundReference,
+        reason: result.reason,
+      });
+      this.logger.error(
+        `initiateRefund: refund "${request.refundReference}" rejected by the provider (${result.reason}) — funding stays held`,
+      );
+      return;
+    }
+    if (result.status === 'unknown') {
+      this.logger.warn(
+        `initiateRefund: no confirmed answer for refund "${request.refundReference}" (${result.detail}) — attempt left pending`,
+      );
+    }
+    await this.markRefundInitiated(request.refundReference);
+  }
+
+  // Only the reconciliation's in-flight figure depends on this, so a failure
+  // is logged rather than allowed to fail the webhook or the poll.
+  private async markRefundInitiated(refundReference: string): Promise<void> {
+    try {
+      await this.ledgerService.markRefundInitiated(refundReference);
+    } catch (error) {
+      this.logger.error(
+        `markRefundInitiated: could not record refund "${refundReference}" as initiated (${(error as Error).message}) — reconciliation may flag a mismatch until it settles`,
+      );
+    }
+  }
+
+  private async processRefundWebhookData(parsed: unknown): Promise<void> {
+    const data = validateRefundWebhookData(parsed);
+
+    if (data.status !== 'success' && data.status !== 'failed') {
+      this.logger.debug(
+        `processRefundWebhookData: non-terminal status "${data.status}" for refund "${data.reference}" — leaving pending`,
+      );
+      return;
+    }
+
+    if (data.status === 'failed') {
+      await this.ledgerService.failRefund({
+        refundReference: data.reference,
+        reason: data.statusReason ?? 'Refund failed',
+      });
+      return;
+    }
+
+    let amount: Money;
+    try {
+      amount = Money.fromDecimalString(String(data.amount), NGN);
+    } catch (error) {
+      throw new BadRequestException(
+        `Malformed webhook payload: ${(error as Error).message}`,
+      );
+    }
+    const result = await this.ledgerService.settleRefund({
+      refundReference: data.reference,
+      providerReportedAmount: amount,
+    });
+    if (!result) {
+      // Usually a duplicate delivery, an unknown reference or a mismatched
+      // amount. A success for an attempt that did not settle the funding,
+      // when the funding is already refunded, means Kora paid out twice.
+      await this.alertOnLateSuccess(data.reference);
+      return;
+    }
+    await this.publishFundingRefundedEvent(result);
+  }
+
+  private async alertOnLateSuccess(refundReference: string): Promise<void> {
+    const context = await this.ledgerService.findRefundContext(refundReference);
+    if (
+      !context ||
+      context.fundingStatus !== 'refunded' ||
+      context.attemptStatus === 'completed'
+    ) {
+      return;
+    }
+    await this.publishRefundAttention({
+      reason: 'late_success_after_refunded',
+      fundingReference: context.fundingReference,
+      refundReference,
+      amount: context.netAmount,
+      heldSince: null,
+      attempts: null,
+      lastFailure: null,
+    });
+  }
+
+  // The refund recovery job: every step is independent, so
+  // one failing does not stop the others, and the whole run is safe to repeat.
+  async pollStaleRefundTransactions(): Promise<void> {
+    const steps: [string, () => Promise<void>][] = [
+      ['resolve stale refunds', () => this.resolveStaleRefunds()],
+      ['start refund retries', () => this.retryFailedRefunds()],
+      ['alert on held fundings', () => this.alertOnHeldFundings()],
+    ];
+    for (const [name, step] of steps) {
+      try {
+        await step();
+      } catch (error) {
+        this.logger.error(
+          `pollStaleRefundTransactions: failed to ${name} (${(error as Error).message}) — will retry on the next run`,
+        );
+      }
+    }
+  }
+
+  private async resolveStaleRefunds(): Promise<void> {
+    const stale = await this.ledgerService.findStalePendingRefunds(
+      new Date(Date.now() - STALE_REFUND_THRESHOLD_MS),
+    );
+    for (const refund of stale) {
+      try {
+        await this.resolveStaleRefund(refund);
+      } catch (error) {
+        this.logger.error(
+          `pollStaleRefundTransactions: could not resolve refund "${refund.refundReference}" (${(error as Error).message}) — will retry on the next run`,
+        );
+      }
+    }
+  }
+
+  private async resolveStaleRefund(refund: StalePendingRefund): Promise<void> {
+    const result = await this.adapter.verifyRefund(refund.refundReference);
+    switch (result.status) {
+      case 'pending':
+        return;
+      case 'not_found':
+        // The initiate call never reached Kora, so the same reference is
+        // still unused and safe to send again.
+        await this.initiateRefund(refund);
+        return;
+      case 'failed':
+        await this.ledgerService.failRefund({
+          refundReference: refund.refundReference,
+          reason: result.reason,
+        });
+        return;
+      case 'success': {
+        const settled = await this.ledgerService.settleRefund({
+          refundReference: refund.refundReference,
+          providerReportedAmount: result.amount,
+        });
+        if (settled) {
+          await this.publishFundingRefundedEvent(settled);
+        } else {
+          await this.alertOnLateSuccess(refund.refundReference);
+        }
+        return;
+      }
+    }
+  }
+
+  private async retryFailedRefunds(): Promise<void> {
+    const now = Date.now();
+    for (const held of await this.ledgerService.findHeldFundings()) {
+      if (
+        held.hasPendingAttempt ||
+        !held.lastAttemptFailedAt ||
+        held.attempts >= MAX_REFUND_ATTEMPTS ||
+        now - held.lastAttemptFailedAt.getTime() <
+          REFUND_RETRY_DELAYS_MS[held.attempts - 1]
+      ) {
+        continue;
+      }
+      const next = await this.ledgerService.startRefundAttempt(
+        held.fundingTransactionId,
+      );
+      if (next) {
+        await this.initiateRefund({
+          refundReference: next.refundReference,
+          fundingReference: held.fundingReference,
+          netAmount: held.netAmount,
+        });
+      }
+    }
+  }
+
+  // One alert per reason per day: the last send time lives on the funding,
+  // so it survives restarts and a run that is repeated.
+  private async alertOnHeldFundings(): Promise<void> {
+    const now = Date.now();
+    for (const held of await this.ledgerService.findHeldFundings()) {
+      const exhausted =
+        !held.hasPendingAttempt &&
+        held.attempts >= MAX_REFUND_ATTEMPTS &&
+        held.lastAttemptFailedAt !== null;
+      const reasons: RefundAttentionReason[] = [];
+      if (exhausted) {
+        reasons.push('retries_exhausted');
+      }
+      if (now - held.heldSince.getTime() >= HELD_TOO_LONG_MS) {
+        reasons.push('held_too_long');
+      }
+      const due = reasons.filter((reason) => {
+        const last = held.alerts[reason];
+        return (
+          !last || now - new Date(last).getTime() >= REFUND_ALERT_REPEAT_MS
+        );
+      });
+      if (due.length === 0) {
+        continue;
+      }
+      const sent: string[] = [];
+      for (const reason of due) {
+        const published = await this.publishRefundAttention({
+          reason,
+          fundingReference: held.fundingReference,
+          refundReference: null,
+          amount: held.netAmount,
+          heldSince: held.heldSince,
+          attempts: held.attempts,
+          lastFailure: held.lastFailureReason,
+        });
+        if (published) {
+          sent.push(reason);
+        }
+      }
+      if (sent.length > 0) {
+        await this.ledgerService.setRefundAlerts(held.fundingTransactionId, {
+          ...held.alerts,
+          ...Object.fromEntries(
+            sent.map((reason) => [reason, new Date(now).toISOString()]),
+          ),
+        });
+      }
+    }
+  }
+
+  private async publishRefundAttention(alert: {
+    reason: RefundAttentionReason;
+    fundingReference: string;
+    refundReference: string | null;
+    amount: Money;
+    heldSince: Date | null;
+    attempts: number | null;
+    lastFailure: string | null;
+  }): Promise<boolean> {
+    const occurredAt = new Date();
+    this.logger.error(
+      `refund needs attention (${alert.reason}): funding "${alert.fundingReference}", ${alert.amount.toDecimalString()}`,
+    );
+    try {
+      await this.eventBus.publish<string, RefundAttentionRequiredEventPayload>({
+        name: REFUND_ATTENTION_REQUIRED_EVENT,
+        payload: {
+          email: this.reconciliationAlertEmail,
+          reason: alert.reason,
+          fundingReference: alert.fundingReference,
+          refundReference: alert.refundReference,
+          amount: alert.amount.toDecimalString(),
+          currency: alert.amount.currency,
+          heldSince: alert.heldSince?.toISOString() ?? null,
+          attempts: alert.attempts,
+          lastFailure: alert.lastFailure,
+          occurredAt: occurredAt.toISOString(),
+        },
+        occurredAt,
+      });
+      return true;
+    } catch (error) {
+      this.logger.error(
+        `publishRefundAttention: could not publish the ${alert.reason} alert for "${alert.fundingReference}" (${(error as Error).message}) — it will be retried on the next run if still due`,
+      );
+      return false;
+    }
   }
 
   // Issue #29. Resolves whichever of the two `pending` origins the
@@ -468,14 +931,7 @@ export class PaymentsService {
             providerStatus: 'failed',
           };
 
-    const result = await this.ledgerService.postFunding(facts);
-    if (!result) {
-      // The webhook (or an earlier poll tick) already resolved this —
-      // no-op, not a duplicate posting.
-      return;
-    }
-
-    await this.publishFundingCompletedEvent(result);
+    await this.completeFunding(facts, 'poll');
   }
 
   // The withdrawal self-verify poll job (issue #31, mirrors #14's funding
@@ -562,25 +1018,30 @@ export class PaymentsService {
   // transaction, never this job (CLAUDE.md, "corrections are compensating
   // transactions, never mutations of history").
   private async reconcilePair(pair: ActiveReconciliationPair): Promise<void> {
-    const [ledgerBalance, providerBalance] = await Promise.all([
-      this.ledgerService.getFloatBalance(pair.provider, pair.currency),
+    const [figures, providerBalance] = await Promise.all([
+      this.ledgerService.getReconciliationFigures(pair.provider, pair.currency),
       this.adapter.getBalance(pair.currency),
     ]);
+    // Kora debits a refund when it accepts it, before the ledger settles it,
+    // so the provider should hold float minus refunds still in flight. Held
+    // money itself is still in the provider's balance and needs no
+    // adjustment.
+    const expected = figures.float.subtract(figures.inFlightRefunds);
 
     // Every run's result is logged, match or mismatch — §4.4's
     // "logged and reviewable" requirement.
     this.logger.debug(
-      `reconcileFloatBalances: ${pair.provider}/${pair.currency} ledger=${ledgerBalance.toDecimalString()} provider=${providerBalance.toDecimalString()}`,
+      `reconcileFloatBalances: ${pair.provider}/${pair.currency} ledger=${figures.float.toDecimalString()} suspense=${figures.suspense.toDecimalString()} inFlightRefunds=${figures.inFlightRefunds.toDecimalString()} provider=${providerBalance.toDecimalString()}`,
     );
 
-    if (ledgerBalance.equals(providerBalance)) {
+    if (expected.equals(providerBalance)) {
       return;
     }
 
-    const delta = ledgerBalance.subtract(providerBalance);
+    const delta = expected.subtract(providerBalance);
     const occurredAt = new Date();
     this.logger.error(
-      `reconcileFloatBalances: mismatch for ${pair.provider}/${pair.currency} — ledger=${ledgerBalance.toDecimalString()} provider=${providerBalance.toDecimalString()} delta=${delta.toDecimalString()}`,
+      `reconcileFloatBalances: mismatch for ${pair.provider}/${pair.currency} — ledger=${figures.float.toDecimalString()} suspense=${figures.suspense.toDecimalString()} inFlightRefunds=${figures.inFlightRefunds.toDecimalString()} provider=${providerBalance.toDecimalString()} delta=${delta.toDecimalString()}`,
     );
 
     await this.eventBus.publish<string, ReconciliationMismatchEventPayload>({
@@ -589,7 +1050,9 @@ export class PaymentsService {
         email: this.reconciliationAlertEmail,
         provider: pair.provider,
         currency: pair.currency,
-        ledgerBalance: ledgerBalance.toDecimalString(),
+        ledgerBalance: figures.float.toDecimalString(),
+        suspenseBalance: figures.suspense.toDecimalString(),
+        inFlightRefunds: figures.inFlightRefunds.toDecimalString(),
         providerBalance: providerBalance.toDecimalString(),
         delta: delta.toDecimalString(),
         occurredAt: occurredAt.toISOString(),
@@ -617,6 +1080,54 @@ export class PaymentsService {
     } catch (error) {
       this.logger.error(
         `publishFundingCompletedEvent: funding posted successfully for user "${result.userId}", but publishing the completion notification failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
+  }
+
+  private async publishFundingHeldEvent(
+    held: HoldFundingResult,
+    cap: Money,
+  ): Promise<void> {
+    try {
+      const user = await this.usersService.findById(held.userId);
+      await this.eventBus.publish<string, FundingHeldEventPayload>({
+        name: FUNDING_HELD_EVENT,
+        payload: {
+          userId: held.userId,
+          email: user.email,
+          amount: held.netAmount.toDecimalString(),
+          currency: held.netAmount.currency,
+          reference: held.fundingReference,
+          cap: cap.toDecimalString(),
+        },
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `publishFundingHeldEvent: funding "${held.fundingReference}" was held, but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
+  }
+
+  private async publishFundingRefundedEvent(
+    result: SettleRefundResult,
+  ): Promise<void> {
+    try {
+      const user = await this.usersService.findById(result.userId);
+      await this.eventBus.publish<string, FundingRefundedEventPayload>({
+        name: FUNDING_REFUNDED_EVENT,
+        payload: {
+          userId: result.userId,
+          email: user.email,
+          amount: result.netAmount.toDecimalString(),
+          currency: result.netAmount.currency,
+          reference: result.fundingReference,
+        },
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `publishFundingRefundedEvent: refund "${result.refundReference}" settled, but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
       );
     }
   }

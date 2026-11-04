@@ -1,0 +1,22 @@
+{
+  "label": "refund.get.retry_after_failed",
+  "capturedAt": "2026-10-23T07:39:37.717Z",
+  "durationMs": 582,
+  "request": {
+    "method": "GET",
+    "path": "/refunds/RFD-c3-s2",
+    "body": null
+  },
+  "response": {
+    "status": 404,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": false,
+      "code": "AA026",
+      "message": "Refund not found",
+      "data": null
+    }
+  }
+}

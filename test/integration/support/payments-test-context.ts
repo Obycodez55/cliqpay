@@ -27,6 +27,11 @@ import { EnforceLedgerEntriesAppendOnly1785491930164 } from '../../../src/databa
 import { CreateCredentials1784707276062 } from '../../../src/database/migrations/1784707276062-CreateCredentials';
 import { CreateNotifications1786812506579 } from '../../../src/database/migrations/1786812506579-CreateNotifications';
 import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
+import { CreateTierLimits1787600000001 } from '../../../src/database/migrations/1787600000001-CreateTierLimits';
+import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
+import { AddSuspenseAccountRole1787700000000 } from '../../../src/database/migrations/1787700000000-AddSuspenseAccountRole';
+import { AddHeldFundingStatusesAndRefundType1787700000001 } from '../../../src/database/migrations/1787700000001-AddHeldFundingStatusesAndRefundType';
+import { AddKycLimitQueryIndexes1787600000005 } from '../../../src/database/migrations/1787600000005-AddKycLimitQueryIndexes';
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
 import { Account } from '../../../src/modules/ledger/entities/account.entity';
@@ -34,7 +39,11 @@ import { LedgerEntry } from '../../../src/modules/ledger/entities/ledger-entry.e
 import { Transaction } from '../../../src/modules/ledger/entities/transaction.entity';
 import { User } from '../../../src/modules/users/entities/user.entity';
 import { UsersModule } from '../../../src/modules/users/users.module';
-import { UsersService } from '../../../src/modules/users/users.service';
+import {
+  KycTier,
+  UsersService,
+} from '../../../src/modules/users/users.service';
+import { KycService } from '../../../src/modules/kyc/kyc.service';
 import { PaymentsModule } from '../../../src/modules/payments/payments.module';
 import { PaymentsService } from '../../../src/modules/payments/payments.service';
 import { PAYMENT_PROVIDER_ADAPTER } from '../../../src/modules/payments/adapters/payment-provider.interface';
@@ -42,14 +51,8 @@ import { FakeAdapter } from '../../../src/modules/payments/adapters/fake.adapter
 import { NotificationsModule } from '../../../src/modules/notifications/notifications.module';
 import { EMAIL_SENDER } from '../../../src/modules/notifications/channels/email/email-sender.interface';
 import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/email/fake-email.adapter';
-import { NotificationEventsProcessor } from '../../../src/modules/notifications/internal/notification-events.processor';
-import { OtpNotificationProcessor } from '../../../src/modules/notifications/internal/otp.processor';
-import { ChannelDispatchProcessor } from '../../../src/modules/notifications/internal/channel-dispatch.processor';
-import { FundingPollProcessor } from '../../../src/modules/payments/internal/funding-poll.processor';
-import { WithdrawalPollProcessor } from '../../../src/modules/payments/internal/withdrawal-poll.processor';
-import { ReconciliationProcessor } from '../../../src/modules/payments/internal/reconciliation.processor';
-import { NotificationRetentionProcessor } from '../../../src/modules/notifications/internal/retention.processor';
 
+import { closeBullmqWorkers } from './bullmq-teardown';
 export interface PaymentsTestContext {
   postgres: StartedPostgreSqlContainer;
   redis: StartedTestContainer;
@@ -57,6 +60,7 @@ export interface PaymentsTestContext {
   usersService: UsersService;
   ledgerService: LedgerService;
   paymentsService: PaymentsService;
+  kycService: KycService;
   dataSource: DataSource;
   userRepo: Repository<User>;
   accountRepo: Repository<Account>;
@@ -98,6 +102,11 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
   await new EnforceLedgerEntriesAppendOnly1785491930164().up(queryRunner);
   await new CreateNotifications1786812506579().up(queryRunner);
   await new AddIsFrozenToUsers1787500000001().up(queryRunner);
+  await new CreateTierLimits1787600000001().up(queryRunner);
+  await new AddKycTierToUsers1787600000002().up(queryRunner);
+  await new AddKycLimitQueryIndexes1787600000005().up(queryRunner);
+  await new AddSuspenseAccountRole1787700000000().up(queryRunner);
+  await new AddHeldFundingStatusesAndRefundType1787700000001().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 
@@ -158,6 +167,7 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
     usersService: moduleRef.get(UsersService),
     ledgerService: moduleRef.get(LedgerService),
     paymentsService: moduleRef.get(PaymentsService),
+    kycService: moduleRef.get(KycService),
     dataSource,
     userRepo: dataSource.getRepository(User),
     accountRepo: dataSource.getRepository(Account),
@@ -168,52 +178,11 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
   };
 }
 
-// This context bootstraps PaymentsModule + NotificationsModule together,
-// which between them register 7 BullMQ queues/workers -- the only test
-// context in this suite that does. Plain app.close() relies on
-// @nestjs/bullmq's own shutdown hook, which closes every worker
-// *gracefully* (BullExplorer.onApplicationShutdown -> worker.close()).
-// Under Jest's default (non-`--runInBand`) child-process execution, one of
-// those graceful closes reliably never resolves once there are 5 of them in
-// play, hanging app.close() -- and with it the whole test process --
-// indefinitely. It doesn't reproduce under --runInBand or in the real app,
-// only in this specific multi-process-worker + 5-queue combination.
-// Force-closing every WorkerHost's underlying worker first (force: true
-// skips waiting on in-flight jobs, which is fine here -- nothing is
-// mid-delivery between test cases) sidesteps it entirely; the subsequent
-// app.close() then has nothing left to gracefully wait on.
-//
-// [v2] hosts below listed only 6 of the 7 -- NotificationRetentionProcessor
-// was missing, so its worker was still closing gracefully every run. Sat
-// under the 5-worker hang threshold's margin long enough not to trigger,
-// until Phase 5 added enough extra suites/runtime to this file's CI run to
-// tip it over -- root-caused via the one suite that never printed PASS/FAIL
-// in two consecutive hung CI runs (test/integration/
-// payments-reconciliation.integration-spec.ts, the only spec in this
-// context missing from a clean local run's output), not a new bug.
-async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
-  const hosts = [
-    NotificationEventsProcessor,
-    OtpNotificationProcessor,
-    ChannelDispatchProcessor,
-    FundingPollProcessor,
-    WithdrawalPollProcessor,
-    ReconciliationProcessor,
-    NotificationRetentionProcessor,
-  ];
-  await Promise.all(
-    hosts.map(async (hostClass) => {
-      const host = app.get(hostClass, { strict: false });
-      await host?.worker?.close(true);
-    }),
-  );
-}
-
 export async function destroyPaymentsTestContext(
   ctx: Partial<PaymentsTestContext>,
 ): Promise<void> {
   if (ctx.app) {
-    await forceCloseWorkers(ctx.app);
+    await closeBullmqWorkers(ctx.app);
   }
   await ctx.app?.close();
   await ctx.postgres?.stop();
@@ -226,7 +195,12 @@ export async function destroyPaymentsTestContext(
 // composed atomically (see auth.service.ts's own registration flow).
 export async function seedUserWithWallet(
   ctx: PaymentsTestContext,
-  overrides: { email: string; phone: string; username: string },
+  overrides: {
+    email: string;
+    phone: string;
+    username: string;
+    kycTier?: KycTier;
+  },
 ): Promise<{ userId: string; walletId: string }> {
   return ctx.dataSource.transaction(async (manager) => {
     const user = await ctx.usersService.createUser(manager, {
@@ -236,6 +210,11 @@ export async function seedUserWithWallet(
       firstName: 'Ada',
       lastName: 'Lovelace',
     });
+    await ctx.usersService.setKycTier(
+      manager,
+      user.id,
+      overrides.kycTier ?? 'tier3',
+    );
     const wallet = await ctx.ledgerService.createUserWallet(
       manager,
       user.id,

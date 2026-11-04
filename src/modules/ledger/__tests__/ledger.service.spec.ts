@@ -147,10 +147,12 @@ describe('LedgerService', () => {
       queryBuilder.set.mockReturnValue(queryBuilder);
       queryBuilder.where.mockReturnValue(queryBuilder);
       queryBuilder.setParameter.mockReturnValue(queryBuilder);
+      const getRepository = jest.fn((entity: unknown) =>
+        entity === Transaction ? transactionRepo : repo,
+      );
       const dataSource = {
-        getRepository: jest.fn((entity: unknown) =>
-          entity === Transaction ? transactionRepo : repo,
-        ),
+        getRepository,
+        manager: { getRepository },
         createQueryBuilder: jest.fn(() => queryBuilder),
       } as unknown as DataSource;
       service = new LedgerService(dataSource);

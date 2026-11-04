@@ -72,6 +72,29 @@ export interface FundingCompletedEventPayload {
   reference: string; // funding transaction reference — see notifications' FundingCompletedPayload
 }
 
+// A funding that would have taken the wallet over its balance cap, held in
+// suspense and being refunded.
+export const FUNDING_HELD_EVENT = 'funding_held';
+
+export interface FundingHeldEventPayload {
+  userId: string;
+  email: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  reference: string; // the funding transaction's reference
+  cap: string; // decimal display string, the tier's balance cap
+}
+
+export const FUNDING_REFUNDED_EVENT = 'funding_refunded';
+
+export interface FundingRefundedEventPayload {
+  userId: string;
+  email: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  reference: string; // the funding transaction's reference
+}
+
 export const TRANSFER_SENT_EVENT = 'transfer_sent';
 
 export interface TransferSentEventPayload {
@@ -192,7 +215,29 @@ export interface ReconciliationMismatchEventPayload {
   provider: string;
   currency: string;
   ledgerBalance: string; // decimal display string, ledger-derived float_<ccy> balance
+  suspenseBalance: string; // decimal display string, held money owed back to payers
+  inFlightRefunds: string; // decimal display string, refunds the provider already debited
   providerBalance: string; // decimal display string, provider-reported balance
-  delta: string; // decimal display string, ledgerBalance - providerBalance
+  delta: string; // decimal display string, ledgerBalance - inFlightRefunds - providerBalance
+  occurredAt: string; // ISO timestamp
+}
+
+export const REFUND_ATTENTION_REQUIRED_EVENT = 'refund_attention_required';
+
+export type RefundAttentionReason =
+  | 'retries_exhausted'
+  | 'held_too_long'
+  | 'late_success_after_refunded';
+
+export interface RefundAttentionRequiredEventPayload {
+  email: string;
+  reason: RefundAttentionReason;
+  fundingReference: string;
+  refundReference: string | null;
+  amount: string; // decimal display string
+  currency: string;
+  heldSince: string | null; // ISO timestamp
+  attempts: number | null;
+  lastFailure: string | null;
   occurredAt: string; // ISO timestamp
 }

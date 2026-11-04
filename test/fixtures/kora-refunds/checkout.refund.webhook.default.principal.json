@@ -1,0 +1,32 @@
+{
+  "label": "refund.webhook.default.principal",
+  "capturedAt": "2026-10-27T06:35:41.165Z",
+  "durationMs": 376,
+  "request": {
+    "method": "POST",
+    "path": "/refunds/initiate",
+    "body": {
+      "payment_reference": "cliqpay-66c-default-1793082854736",
+      "reference": "rfd-66c-default-1793082940789",
+      "amount": 1000,
+      "reason": "webhook capture"
+    }
+  },
+  "response": {
+    "status": 200,
+    "body": {
+      "status": true,
+      "message": "Refund successfully initiated",
+      "data": {
+        "refund_reference": "rfd-66c-default-1793082940789",
+        "refund_date": "2026-10-27T06:35:40.946Z",
+        "status": "processing",
+        "payment_reference": "cliqpay-66c-default-1793082854736",
+        "reason": "webhook capture",
+        "amount_returned": 1000,
+        "channel": "modal",
+        "currency": "NGN"
+      }
+    }
+  }
+}

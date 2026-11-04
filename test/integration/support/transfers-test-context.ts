@@ -37,6 +37,9 @@ import { AddTransactionPinLockoutToCredentials1785491931164 } from '../../../src
 import { CreateNotifications1786812506579 } from '../../../src/database/migrations/1786812506579-CreateNotifications';
 import { CreateMoneyRequests1786900000000 } from '../../../src/database/migrations/1786900000000-CreateMoneyRequests';
 import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
+import { CreateTierLimits1787600000001 } from '../../../src/database/migrations/1787600000001-CreateTierLimits';
+import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
+import { AddKycLimitQueryIndexes1787600000005 } from '../../../src/database/migrations/1787600000005-AddKycLimitQueryIndexes';
 import { AuthModule } from '../../../src/modules/auth/auth.module';
 import { AuthService } from '../../../src/modules/auth/auth.service';
 import { Credential } from '../../../src/modules/auth/entities/credential.entity';
@@ -47,7 +50,10 @@ import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
 import { User } from '../../../src/modules/users/entities/user.entity';
 import { UsersModule } from '../../../src/modules/users/users.module';
-import { UsersService } from '../../../src/modules/users/users.service';
+import {
+  KycTier,
+  UsersService,
+} from '../../../src/modules/users/users.service';
 import { TransfersModule } from '../../../src/modules/transfers/transfers.module';
 import { TransfersService } from '../../../src/modules/transfers/transfers.service';
 import { MoneyRequestsService } from '../../../src/modules/transfers/money-requests.service';
@@ -59,12 +65,10 @@ import { EMAIL_SENDER } from '../../../src/modules/notifications/channels/email/
 import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/email/fake-email.adapter';
 import { PUSH_SENDER } from '../../../src/modules/notifications/channels/push/push-sender.interface';
 import { FakePushAdapter } from '../../../src/modules/notifications/channels/push/fake-push.adapter';
-import { NotificationEventsProcessor } from '../../../src/modules/notifications/internal/notification-events.processor';
-import { OtpNotificationProcessor } from '../../../src/modules/notifications/internal/otp.processor';
-import { ChannelDispatchProcessor } from '../../../src/modules/notifications/internal/channel-dispatch.processor';
 import { hashTransactionPin } from '../../../src/modules/auth/internal/pin.util';
 import { Money } from '../../../src/shared/primitives/money';
 
+import { closeBullmqWorkers } from './bullmq-teardown';
 export interface TransfersTestContext {
   postgres: StartedPostgreSqlContainer;
   redis: StartedTestContainer;
@@ -132,6 +136,9 @@ export async function createTransfersTestContext(
   await new CreateNotifications1786812506579().up(queryRunner);
   await new CreateMoneyRequests1786900000000().up(queryRunner);
   await new AddIsFrozenToUsers1787500000001().up(queryRunner);
+  await new CreateTierLimits1787600000001().up(queryRunner);
+  await new AddKycTierToUsers1787600000002().up(queryRunner);
+  await new AddKycLimitQueryIndexes1787600000005().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 
@@ -143,7 +150,6 @@ export async function createTransfersTestContext(
     transfers: {
       platformFee,
       minAmount: 10_000,
-      maxAmount: 100_000_000,
     },
   });
 
@@ -199,27 +205,11 @@ export async function createTransfersTestContext(
   };
 }
 
-// Same BullMQ multi-worker shutdown hazard as payments-test-context.ts's
-// forceCloseWorkers — see that file's comment for the full explanation.
-async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
-  const hosts = [
-    NotificationEventsProcessor,
-    OtpNotificationProcessor,
-    ChannelDispatchProcessor,
-  ];
-  await Promise.all(
-    hosts.map(async (hostClass) => {
-      const host = app.get(hostClass, { strict: false });
-      await host?.worker?.close(true);
-    }),
-  );
-}
-
 export async function destroyTransfersTestContext(
   ctx: Partial<TransfersTestContext>,
 ): Promise<void> {
   if (ctx.app) {
-    await forceCloseWorkers(ctx.app);
+    await closeBullmqWorkers(ctx.app);
   }
   await ctx.app?.close();
   await ctx.postgres?.stop();
@@ -238,6 +228,7 @@ export async function seedTransferUser(
     username: string;
     pin?: string;
     emailVerified?: boolean;
+    kycTier?: KycTier;
   },
 ): Promise<{ userId: string; walletId: string }> {
   const pin = overrides.pin ?? '1234';
@@ -254,6 +245,11 @@ export async function seedTransferUser(
         .getRepository(User)
         .update({ id: user.id }, { emailVerifiedAt: new Date() });
     }
+    await ctx.usersService.setKycTier(
+      manager,
+      user.id,
+      overrides.kycTier ?? 'tier3',
+    );
     const wallet = await ctx.ledgerService.createUserWallet(
       manager,
       user.id,

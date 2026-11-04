@@ -17,6 +17,7 @@ import {
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
 import { isUniqueViolation } from '../../database/postgres-errors.util';
+import { runInTransaction } from '../../database/transaction.util';
 import { Dispute } from './entities/dispute.entity';
 import { RecordChargebackDto } from './dto/record-chargeback.dto';
 import {
@@ -161,7 +162,7 @@ export class DisputesService {
     currency: string,
   ): Promise<ChargebackPosting> {
     try {
-      return await this.dataSource.transaction(async (manager) => {
+      return await runInTransaction(this.dataSource, async (manager) => {
         const posted = await this.ledgerService.postChargebackWithinTransaction(
           manager,
           {
@@ -312,7 +313,7 @@ export class DisputesService {
   async resolveDispute(
     dto: ResolveDisputeDto,
   ): Promise<ResolveDisputeResponseDto> {
-    return this.dataSource.transaction(async (manager) => {
+    return runInTransaction(this.dataSource, async (manager) => {
       const disputeRepo = manager.getRepository(Dispute);
       const dispute = await disputeRepo
         .createQueryBuilder('dispute')

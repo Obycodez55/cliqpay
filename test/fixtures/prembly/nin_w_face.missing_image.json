@@ -1,0 +1,43 @@
+{
+  "request": {
+    "method": "POST",
+    "path": "/verification/nin_w_face",
+    "body": {
+      "number": "12345678909",
+      "face_confidence_threshold": 90
+    },
+    "headers": {
+      "content-type": "application/json",
+      "x-api-key": "<secret key; omitted unless the scenario is auth.no_key>"
+    }
+  },
+  "httpStatus": 400,
+  "responseHeaders": {
+    "content-type": "application/json",
+    "x-request-id": "e03d566a"
+  },
+  "responseBody": {
+    "status": false,
+    "response_code": "05",
+    "message": "Invalid request data",
+    "detail": "Invalid request data",
+    "data": {},
+    "meta": {},
+    "billing_info": {
+      "was_charged": false,
+      "amount": 0,
+      "currency": ""
+    },
+    "verification": {
+      "status": "NOT-VERIFIED",
+      "reference": "013b9986-9449-451a-9ed7-a78f4792e63b",
+      "verification_id": "9552aa36-f30a-4438-861e-d8d05e2c3129"
+    },
+    "errors": {
+      "image": [
+        "This field is required"
+      ]
+    },
+    "metadata": {}
+  }
+}

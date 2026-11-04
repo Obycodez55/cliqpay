@@ -4,6 +4,7 @@ import { APP_CONFIG, AppConfig } from '../../config';
 import { EventBusModule } from '../../shared/events/event-bus.module';
 import { LedgerModule } from '../ledger/ledger.module';
 import { UsersModule } from '../users/users.module';
+import { KycModule } from '../kyc/kyc.module';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
 import {
@@ -20,6 +21,10 @@ import {
   WITHDRAWAL_POLL_QUEUE,
   WithdrawalPollProcessor,
 } from './internal/withdrawal-poll.processor';
+import {
+  REFUND_POLL_QUEUE,
+  RefundPollProcessor,
+} from './internal/refund-poll.processor';
 import {
   RECONCILIATION_QUEUE,
   ReconciliationProcessor,
@@ -40,6 +45,7 @@ const PAYMENT_ADAPTERS = {
   imports: [
     LedgerModule,
     UsersModule,
+    KycModule,
     EventBusModule,
     BullModule.registerQueue({
       name: FUNDING_POLL_QUEUE,
@@ -52,6 +58,15 @@ const PAYMENT_ADAPTERS = {
     }),
     BullModule.registerQueue({
       name: WITHDRAWAL_POLL_QUEUE,
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5_000 },
+        removeOnComplete: { age: 3_600, count: 100 },
+        removeOnFail: { age: 86_400, count: 500 },
+      },
+    }),
+    BullModule.registerQueue({
+      name: REFUND_POLL_QUEUE,
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: 'exponential', delay: 5_000 },
@@ -74,6 +89,7 @@ const PAYMENT_ADAPTERS = {
     PaymentsService,
     FundingPollProcessor,
     WithdrawalPollProcessor,
+    RefundPollProcessor,
     ReconciliationProcessor,
     {
       provide: PAYMENT_PROVIDER_ADAPTER,

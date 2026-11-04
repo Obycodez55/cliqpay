@@ -28,6 +28,8 @@ import { CreateNotifications1786812506579 } from '../../../src/database/migratio
 import { CreateDisputes1787500000000 } from '../../../src/database/migrations/1787500000000-CreateDisputes';
 import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
 import { AddChargebackReversalTransactionType1787500000002 } from '../../../src/database/migrations/1787500000002-AddChargebackReversalTransactionType';
+import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
+import { AddKycLimitQueryIndexes1787600000005 } from '../../../src/database/migrations/1787600000005-AddKycLimitQueryIndexes';
 import { Account } from '../../../src/modules/ledger/entities/account.entity';
 import { Transaction } from '../../../src/modules/ledger/entities/transaction.entity';
 import { LedgerEntry } from '../../../src/modules/ledger/entities/ledger-entry.entity';
@@ -43,10 +45,8 @@ import { NotificationsModule } from '../../../src/modules/notifications/notifica
 import { Notification } from '../../../src/modules/notifications/entities/notification.entity';
 import { EMAIL_SENDER } from '../../../src/modules/notifications/channels/email/email-sender.interface';
 import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/email/fake-email.adapter';
-import { NotificationEventsProcessor } from '../../../src/modules/notifications/internal/notification-events.processor';
-import { OtpNotificationProcessor } from '../../../src/modules/notifications/internal/otp.processor';
-import { ChannelDispatchProcessor } from '../../../src/modules/notifications/internal/channel-dispatch.processor';
 import { Money } from '../../../src/shared/primitives/money';
+import { closeBullmqWorkers } from './bullmq-teardown';
 
 export interface DisputesTestContext {
   postgres: StartedPostgreSqlContainer;
@@ -103,6 +103,8 @@ export async function createDisputesTestContext(): Promise<DisputesTestContext> 
   await new CreateDisputes1787500000000().up(queryRunner);
   await new AddIsFrozenToUsers1787500000001().up(queryRunner);
   await new AddChargebackReversalTransactionType1787500000002().up(queryRunner);
+  await new AddKycTierToUsers1787600000002().up(queryRunner);
+  await new AddKycLimitQueryIndexes1787600000005().up(queryRunner);
   await queryRunner.release();
   await setupDataSource.destroy();
 
@@ -159,28 +161,11 @@ export async function createDisputesTestContext(): Promise<DisputesTestContext> 
   };
 }
 
-// Same BullMQ multi-worker shutdown hazard as the other test-context files
-// — see payments-test-context.ts's forceCloseWorkers for the full
-// explanation.
-async function forceCloseWorkers(app: INestApplication<App>): Promise<void> {
-  const hosts = [
-    NotificationEventsProcessor,
-    OtpNotificationProcessor,
-    ChannelDispatchProcessor,
-  ];
-  await Promise.all(
-    hosts.map(async (hostClass) => {
-      const host = app.get(hostClass, { strict: false });
-      await host?.worker?.close(true);
-    }),
-  );
-}
-
 export async function destroyDisputesTestContext(
   ctx: Partial<DisputesTestContext>,
 ): Promise<void> {
   if (ctx.app) {
-    await forceCloseWorkers(ctx.app);
+    await closeBullmqWorkers(ctx.app);
   }
   await ctx.app?.close();
   await ctx.postgres?.stop();

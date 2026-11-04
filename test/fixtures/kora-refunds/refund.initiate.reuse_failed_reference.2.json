@@ -1,0 +1,25 @@
+{
+  "label": "refund.initiate.reuse_failed_reference",
+  "capturedAt": "2026-10-23T07:43:43.113Z",
+  "durationMs": 394,
+  "request": {
+    "method": "POST",
+    "path": "/refunds/initiate",
+    "body": {
+      "payment_reference": "cliqpay-spike-bt-1792741121266-c3",
+      "reference": "RFD-c3-f1"
+    }
+  },
+  "response": {
+    "status": 409,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": false,
+      "code": "AA021",
+      "message": "Refund already exists with reference RFD-c3-f1",
+      "data": null
+    }
+  }
+}

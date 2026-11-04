@@ -1,5 +1,13 @@
 import * as request from 'supertest';
 import {
+  TEST_ENCRYPTION_KEY,
+  TEST_IDENTIFIER_HASH_KEY,
+} from './support/test-app-config';
+import {
+  encryptionKeyFromHex,
+  hmacHex,
+} from '../../src/shared/crypto/secrets.util';
+import {
   WithdrawalsTestContext,
   createWithdrawalsTestContext,
   destroyWithdrawalsTestContext,
@@ -80,6 +88,12 @@ describe('withdrawals bank accounts', () => {
     });
     expect(saved.accountName).toBe('Test Account 0000000000');
     expect(saved.provider).toBe('kora');
+    expect(saved.accountNumberHash).toBe(
+      hmacHex('0000000000', encryptionKeyFromHex(TEST_IDENTIFIER_HASH_KEY)),
+    );
+    expect(saved.accountNumberHash).not.toBe(
+      hmacHex('0000000000', encryptionKeyFromHex(TEST_ENCRYPTION_KEY)),
+    );
   });
 
   it('rejects saving without a valid step-up challenge, persisting nothing', async () => {

@@ -1,0 +1,49 @@
+{
+  "label": "charge.verify.c4.after_partial_refund",
+  "capturedAt": "2026-10-23T07:44:18.394Z",
+  "durationMs": 348,
+  "request": {
+    "method": "GET",
+    "path": "/charges/cliqpay-spike-bt-1792741121266-c4",
+    "body": null
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    },
+    "body": {
+      "status": true,
+      "message": "Charge retrieved successfully",
+      "data": {
+        "reference": "cliqpay-spike-bt-1792741121266-c4",
+        "status": "success",
+        "amount": "1000.00",
+        "amount_paid": "1053.75",
+        "amount_accepted": "1000.00",
+        "fee": 53.75,
+        "currency": "NGN",
+        "description": "Payment on <merchant>",
+        "transaction_date": "2026-10-23T07:39:13.000Z",
+        "customer": {
+          "name": "Spike Tester",
+          "email": "spike@example.com"
+        },
+        "bank_transfer": {
+          "payer_bank_account": {
+            "account_number": "1006371829",
+            "account_name": "Kora Sandbox",
+            "bank_name": "Kora Sandbox Bank",
+            "bank_code": "000"
+          }
+        },
+        "payer_bank_account": {
+          "account_number": "1006371829",
+          "account_name": "Kora Sandbox",
+          "bank_name": "Kora Sandbox Bank",
+          "bank_code": "000"
+        }
+      }
+    }
+  }
+}

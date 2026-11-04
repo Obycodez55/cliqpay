@@ -10,6 +10,7 @@ import { HttpException, HttpStatus } from '@nestjs/common';
  */
 export abstract class DomainException extends HttpException {
   abstract readonly code: string;
+  readonly details?: unknown;
 
   protected constructor(message: string, status: HttpStatus) {
     super(message, status);
