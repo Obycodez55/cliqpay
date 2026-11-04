@@ -1,17 +1,24 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
   Index,
   PrimaryGeneratedColumn,
+  Unique,
   UpdateDateColumn,
 } from 'typeorm';
+import { inList } from '../../../database/check.util';
 
-export type MfaMethodType = 'email' | 'totp';
-export type MfaMethodStatus = 'pending' | 'active';
+export const MFA_METHOD_TYPES = ['email', 'totp'] as const;
+export type MfaMethodType = (typeof MFA_METHOD_TYPES)[number];
+export const MFA_METHOD_STATUSES = ['pending', 'active'] as const;
+export type MfaMethodStatus = (typeof MFA_METHOD_STATUSES)[number];
 
 @Entity('mfa_methods')
-@Index(['userId', 'type'], { unique: true })
+@Check('CHK_mfa_methods_type', inList('type', MFA_METHOD_TYPES))
+@Check('CHK_mfa_methods_status', inList('status', MFA_METHOD_STATUSES))
+@Unique('UQ_mfa_methods_user_id_type', ['userId', 'type'])
 export class MfaMethod {
   @PrimaryGeneratedColumn('uuid')
   id: string;

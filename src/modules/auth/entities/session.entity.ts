@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
@@ -7,12 +8,15 @@ import {
   ManyToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+import { inList } from '../../../database/check.util';
 import { DeviceMetadata } from '../internal/device-metadata.util';
 import { TrustedDevice } from './trusted-device.entity';
 
-export type SessionStatus = 'active' | 'revoked';
+export const SESSION_STATUSES = ['active', 'revoked'] as const;
+export type SessionStatus = (typeof SESSION_STATUSES)[number];
 
 @Entity('sessions')
+@Check('CHK_sessions_status', inList('status', SESSION_STATUSES))
 export class Session {
   @PrimaryGeneratedColumn('uuid')
   id: string;

@@ -2,7 +2,9 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   PrimaryGeneratedColumn,
+  Unique,
   UpdateDateColumn,
 } from 'typeorm';
 import { KycAddress } from '../providers/kyc-provider.interface';
@@ -23,6 +25,15 @@ export interface KycIdentities {
 }
 
 @Entity('kyc_verifications')
+@Unique('UQ_kyc_verifications_user_id', ['userId'])
+@Index('UQ_kyc_verifications_bvn_hash_partial', ['bvnHash'], {
+  unique: true,
+  where: `"bvn_hash" IS NOT NULL`,
+})
+@Index('UQ_kyc_verifications_nin_hash_partial', ['ninHash'], {
+  unique: true,
+  where: `"nin_hash" IS NOT NULL`,
+})
 export class KycVerification {
   @PrimaryGeneratedColumn('uuid')
   id: string;

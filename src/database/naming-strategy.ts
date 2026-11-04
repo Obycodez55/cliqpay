@@ -63,7 +63,26 @@ export class CliqpayNamingStrategy
     return buildIdentifier([
       'IDX',
       this.getTableName(tableOrName),
-      ...[...columnNames].sort(),
+      ...columnNames,
+    ]);
+  }
+
+  uniqueConstraintName(
+    tableOrName: Table | string,
+    columnNames: string[],
+  ): string {
+    return buildIdentifier([
+      'UQ',
+      this.getTableName(tableOrName),
+      ...columnNames,
+    ]);
+  }
+
+  foreignKeyName(tableOrName: Table | string, columnNames: string[]): string {
+    return buildIdentifier([
+      'FK',
+      this.getTableName(tableOrName),
+      ...columnNames,
     ]);
   }
 }

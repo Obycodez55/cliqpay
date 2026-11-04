@@ -21,6 +21,16 @@ A production-grade peer-to-peer wallet platform for Africa (Nigeria first) — N
 - **Domain events**: already the working pattern in `src/shared/events/domain-events.ts` — payload types accumulate as modules need to publish them, not as a pre-built catalog.
 - **The tell**: if the reason for adding something is "the architecture doc mentions it eventually" rather than "the thing I'm building right now needs it," stop and check whether it actually belongs in this change.
 
+## Migrations — entities are the source of truth ([ADR-0022](docs/adr/0022-entities-as-schema-source-of-truth.md))
+
+Step-by-step: [docs/migrations.md](docs/migrations.md).
+
+- Everything TypeORM can express lives on the entity: columns, defaults, `@Index` (with `where`), `@Unique`, `@Check`, same-module relations. Change the entity first, then **generate** the migration (`pnpm migration:generate`), read the SQL, add any hand-written parts, run it, and run `pnpm migration:check`. Never run a generated migration unread; never auto-run one in any environment.
+- **Renames are hand-written** (`RENAME`), never accepted as the generated drop + add.
+- Hand-written migrations remain only for what an entity can't express: triggers/functions, seed rows, data backfills, `NULLS NOT DISTINCT`, descending index columns.
+- Changing the allowed values of an existing CHECK, or an index's `where` or column order, needs a hand-written migration *and* the entity edit in the same change — the drift check can't see those edits and won't notice.
+- CI fails when entities and migrations disagree. Each migration still maps to one real, current need (see above).
+
 ## Non-negotiable engineering rules (from docs/architecture.md)
 
 - **Money is always integer minor units** (`bigint`) — kobo, cents, etc. Never `decimal`, never floating point. All money math goes through a single `Money` helper, never scattered arithmetic.

@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
@@ -8,43 +9,48 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { inList } from '../../../database/check.util';
 import { Account } from './account.entity';
 
 export type TransactionProvider = 'kora';
-export type TransactionType =
-  | 'funding'
+export const TRANSACTION_TYPES = [
+  'funding',
   // One refund attempt of a held funding: `reversesTransactionId`
   // points at the funding row; only a completed attempt has ledger entries.
-  | 'funding_refund'
-  | 'p2p_transfer'
-  | 'withdrawal'
+  'funding_refund',
+  'p2p_transfer',
+  'withdrawal',
   // The compensating transaction for a withdrawal whose payout didn't go
   // through — its own row, `reversesTransactionId` pointing at the original
   // withdrawal, same shape as `chargeback` reversing a funding transaction
   // (docs/architecture.md §4.2, §7). Reused by both this issue's synchronous
   // rejection path and #29's async webhook-failure path.
-  | 'withdrawal_reversal'
-  | 'chargeback'
+  'withdrawal_reversal',
+  'chargeback',
   // The second compensating transaction for a dispute resolved in
   // Cliqpay's favor — its own row, `reverses_transaction_id` pointing at
   // the `chargeback` row it reverses (not the original funding
   // transaction), same "own row, own reversesTransactionId" shape as
   // `withdrawal_reversal` above (docs/architecture.md §4.2, ADR-0016,
   // issue #36).
-  | 'chargeback_reversal'
-  | 'profit_withdrawal'
-  | 'bill_split'
-  | 'scheduled';
-export type TransactionStatus =
-  | 'pending'
-  | 'completed'
-  | 'failed'
-  | 'reversed'
-  | 'disputed'
+  'chargeback_reversal',
+  'profit_withdrawal',
+  'bill_split',
+  'scheduled',
+] as const;
+export type TransactionType = (typeof TRANSACTION_TYPES)[number];
+export const TRANSACTION_STATUSES = [
+  'pending',
+  'completed',
+  'failed',
+  'reversed',
+  'disputed',
   // Funding rows only: held = the money is in suspense awaiting a refund,
   // refunded = a refund attempt completed.
-  | 'held'
-  | 'refunded';
+  'held',
+  'refunded',
+] as const;
+export type TransactionStatus = (typeof TRANSACTION_STATUSES)[number];
 
 const bigintTransformer = {
   to: (v: bigint) => v,
@@ -145,6 +151,9 @@ export type TransactionMetadata =
  * `AddFundingQueryIndexes1785488695081` for the real definition.
  */
 @Entity('transactions')
+@Check('CHK_transactions_provider', `"provider" = 'kora'`)
+@Check('CHK_transactions_status', inList('status', TRANSACTION_STATUSES))
+@Check('CHK_transactions_type', inList('type', TRANSACTION_TYPES))
 @Index('IDX_transactions_stale_funding_poll', [
   'status',
   'provider',

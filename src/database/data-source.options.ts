@@ -23,5 +23,6 @@ export function buildDataSourceOptions(
     namingStrategy: new CliqpayNamingStrategy(),
     // Migrations only, always — see docs/architecture.md §7 Data Integrity.
     synchronize: false,
+    uuidExtension: 'pgcrypto',
   };
 }

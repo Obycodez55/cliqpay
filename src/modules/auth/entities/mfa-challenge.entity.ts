@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
@@ -7,11 +8,18 @@ import {
   ManyToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+import { inList } from '../../../database/check.util';
 import { MfaMethod } from './mfa-method.entity';
 
-export type MfaChallengeStatus = 'pending' | 'verified' | 'failed';
+export const MFA_CHALLENGE_STATUSES = [
+  'pending',
+  'verified',
+  'failed',
+] as const;
+export type MfaChallengeStatus = (typeof MFA_CHALLENGE_STATUSES)[number];
 
 @Entity('mfa_challenges')
+@Check('CHK_mfa_challenges_status', inList('status', MFA_CHALLENGE_STATUSES))
 export class MfaChallenge {
   @PrimaryGeneratedColumn('uuid')
   id: string;

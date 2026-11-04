@@ -27,6 +27,7 @@
     "typeorm": "typeorm-ts-node-commonjs",
     "migration:generate": "pnpm typeorm migration:generate -d data-source.ts",
     "migration:create": "pnpm typeorm migration:create",
+    "migration:check": "pnpm typeorm migration:generate -d data-source.ts --check src/database/migrations/SchemaDrift || { echo; echo 'Entities and migrations disagree. Entities are the schema source of truth: update the entity or generate and review a migration (pnpm migration:generate). See docs/adr/0022-entities-as-schema-source-of-truth.md'; exit 1; }",
     "migration:run": "pnpm typeorm migration:run -d data-source.ts",
     "migration:revert": "pnpm typeorm migration:revert -d data-source.ts",
     "db:rekey-identifier-hashes": "ts-node src/database/rekey-identifier-hashes.cli.ts",

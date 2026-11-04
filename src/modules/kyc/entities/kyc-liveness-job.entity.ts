@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
@@ -8,15 +9,34 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { inList } from '../../../database/check.util';
 import {
+  KYC_IDENTITY_TYPES,
   KycIdentityType,
   KycVerificationAttempt,
 } from './kyc-verification-attempt.entity';
 
-export type KycLivenessJobStatus = 'pending' | 'passed' | 'failed';
+export const KYC_LIVENESS_JOB_STATUSES = [
+  'pending',
+  'passed',
+  'failed',
+] as const;
+export type KycLivenessJobStatus = (typeof KYC_LIVENESS_JOB_STATUSES)[number];
 
 @Entity('kyc_liveness_jobs')
+@Check(
+  'CHK_kyc_liveness_jobs_identity_type',
+  inList('identity_type', KYC_IDENTITY_TYPES),
+)
+@Check(
+  'CHK_kyc_liveness_jobs_status',
+  inList('status', KYC_LIVENESS_JOB_STATUSES),
+)
 @Index('IDX_kyc_liveness_jobs_provider_job_id', ['providerJobId'])
+@Index('UQ_kyc_liveness_jobs_user_pending', ['userId'], {
+  unique: true,
+  where: `"status" = 'pending'`,
+})
 export class KycLivenessJob {
   @PrimaryGeneratedColumn('uuid')
   id: string;

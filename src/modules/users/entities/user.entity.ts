@@ -1,17 +1,21 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { inList } from '../../../database/check.util';
 
-export type KycTier = 'tier0' | 'tier1' | 'tier2' | 'tier3';
+export const KYC_TIERS = ['tier0', 'tier1', 'tier2', 'tier3'] as const;
+export type KycTier = (typeof KYC_TIERS)[number];
 
 // Identity only — no credential fields. Those live on auth's `Credential`
 // (1:1 via a plain `userId` column, no FK — see ADR-0005) since `auth` and
 // `users` are separate core modules.
 @Entity('users')
+@Check('CHK_users_kyc_tier', inList('kyc_tier', KYC_TIERS))
 export class User {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -55,7 +59,7 @@ export class User {
   @Column({ type: 'varchar', nullable: true })
   pendingPhone: string | null;
 
-  @Column('varchar')
+  @Column({ type: 'varchar', default: 'tier0' })
   kycTier: KycTier;
 
   @CreateDateColumn({ type: 'timestamptz' })

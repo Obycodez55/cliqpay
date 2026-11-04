@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
@@ -7,10 +8,12 @@ import {
   ManyToOne,
   PrimaryGeneratedColumn,
 } from 'typeorm';
+import { inList } from '../../../database/check.util';
 import { Account } from './account.entity';
 import { Transaction } from './transaction.entity';
 
-export type LedgerEntryDirection = 'debit' | 'credit';
+export const LEDGER_ENTRY_DIRECTIONS = ['debit', 'credit'] as const;
+export type LedgerEntryDirection = (typeof LEDGER_ENTRY_DIRECTIONS)[number];
 
 /**
  * Append-only — see docs/architecture.md §5, §7 Data Integrity. No
@@ -31,6 +34,10 @@ export type LedgerEntryDirection = 'debit' | 'credit';
  * decorator-can't-express-it gap as `UQ_accounts_system` in account.entity.ts.
  */
 @Entity('ledger_entries')
+@Check(
+  'CHK_ledger_entries_direction',
+  inList('direction', LEDGER_ENTRY_DIRECTIONS),
+)
 @Index('IDX_ledger_entries_account_id_created_at_id', [
   'accountId',
   'createdAt',

@@ -19,6 +19,7 @@ import {
 } from './dto/recipient-lookup-response.dto';
 
 export type { KycTier };
+export { KYC_TIERS } from './entities/user.entity';
 
 const USERNAME_CHANGE_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 

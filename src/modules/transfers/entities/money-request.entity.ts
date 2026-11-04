@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
@@ -6,8 +7,15 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { inList } from '../../../database/check.util';
 
-export type MoneyRequestStatus = 'pending' | 'paid' | 'declined' | 'cancelled';
+export const MONEY_REQUEST_STATUSES = [
+  'pending',
+  'paid',
+  'declined',
+  'cancelled',
+] as const;
+export type MoneyRequestStatus = (typeof MONEY_REQUEST_STATUSES)[number];
 
 const bigintTransformer = {
   to: (v: bigint) => v,
@@ -19,6 +27,7 @@ const bigintTransformer = {
 // transactions respectively) — plain columns, no relation decorators, per
 // ADR-0002.
 @Entity('money_requests')
+@Check('CHK_money_requests_status', inList('status', MONEY_REQUEST_STATUSES))
 @Index('IDX_money_requests_payer_user_id_created_at', [
   'payerUserId',
   'createdAt',
