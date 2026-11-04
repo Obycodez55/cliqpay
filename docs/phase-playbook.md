@@ -56,7 +56,7 @@ Two categories of debt tend to accumulate silently across a many-issue phase and
 
 Verify a split preserves every test (run the full suite before and after, compare counts — don't just count `it()` blocks in the diff) before merging it.
 
-**Take note of:** splitting a Testcontainers-backed suite into more files means more container startups, which is a real (if usually small) increase in flakiness surface from Docker VM resource contention — not a logic regression. If post-split flakiness shows up, isolate the failing files and re-run them alone before assuming the split introduced a bug; don't "fix" it by serializing the whole suite (`maxWorkers: 1`) without first confirming that actually helps — it can make things worse under sustained multi-container load.
+**Take note of:** Postgres is one shared container per integration run with a database cloned per spec file (ADR-0023), so a split adds a cheap database clone, not a container. Redis is still one container per context, so a split that adds contexts still adds a small, real flakiness surface from Docker VM resource contention — not a logic regression. If post-split flakiness shows up, isolate the failing files and re-run them alone before assuming the split introduced a bug; don't "fix" it by serializing the whole suite (`maxWorkers: 1`) without first confirming that actually helps — it can make things worse under sustained multi-container load.
 
 ## 8. Run `/e2e-test-local` against a genuinely fresh environment
 

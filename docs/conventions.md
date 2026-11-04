@@ -51,3 +51,7 @@ Convention:
 ## CORS
 
 Configured via `CORS_ALLOWED_ORIGINS` (comma-separated). Empty in dev reflects that no browser client exists yet — set it before the admin panel or any browser-based client is wired up (see architecture.md §9). `credentials: true` is on by default since cookie-based refresh-token handling is the likely direction once a web client exists; revisit if that changes.
+
+## Integration-test database
+
+Integration specs never start Postgres or run migrations themselves. Jest's `globalSetup` starts one container per run, applies every migration once through the real migration runner, and keeps the result as a template database; each spec file's context clones it for an isolated database and drops it on destroy (see [ADR-0023](adr/0023-shared-integration-test-database.md)). A new migration needs no change under `test/integration/support/`. Contexts hold only module wiring and seed helpers. Redis is still one container per context.
