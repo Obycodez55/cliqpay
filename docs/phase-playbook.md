@@ -23,6 +23,7 @@ Once a task reports back, review the diff rigorously — read the actual code, n
 **Take note of:**
 - Never commit without the user reviewing the diff first, every time — not just once per session (see `CLAUDE.md`). If you find yourself running `git add` in anticipation of a commit that hasn't been explicitly greenlit yet, stop and unstage.
 - A session's own summary of its changes is not verification. Read the diff.
+- A schema change starts from the entity, not from hand-written SQL: change the entity, run `pnpm migration:generate`, read the generated SQL (reject any drop + add that is really a rename and write it by hand), add seeds/triggers/backfills yourself, run `pnpm migration:run`, then `pnpm migration:check` must pass. Full steps in [docs/migrations.md](migrations.md); decision in [ADR-0022](adr/0022-entities-as-schema-source-of-truth.md).
 - Closing the issue is not the same as committing — it's tracked-work bookkeeping, not a code change, and follows once the user has actually approved the review (don't close preemptively while fixes are still pending).
 
 ## 4. Watch for architectural smells mid-phase — don't push through them

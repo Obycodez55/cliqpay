@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
@@ -6,8 +7,10 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
+import { inList } from '../../../database/check.util';
 
-export type DisputeStatus = 'open' | 'resolved' | 'upheld';
+export const DISPUTE_STATUSES = ['open', 'resolved', 'upheld'] as const;
+export type DisputeStatus = (typeof DISPUTE_STATUSES)[number];
 
 const bigintTransformer = {
   to: (v: bigint) => v,
@@ -23,6 +26,7 @@ const bigintTransformer = {
  * denormalized-not-authoritative on `transactions` itself.
  */
 @Entity('disputes')
+@Check('CHK_disputes_status', inList('status', DISPUTE_STATUSES))
 @Index('IDX_disputes_chargeback_transaction_id', ['chargebackTransactionId'])
 export class Dispute {
   @PrimaryGeneratedColumn('uuid')

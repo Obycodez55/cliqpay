@@ -1,4 +1,5 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
@@ -16,6 +17,7 @@ import {
 // HMAC of the plaintext — carries the uniqueness check instead. It's a
 // one-way lookup value only, never decrypted or decryptable.
 @Entity('bank_accounts')
+@Check('CHK_bank_accounts_provider', `"provider" = 'kora'`)
 @Unique('UQ_bank_accounts_user_provider_bank_account_hash', [
   'userId',
   'provider',

@@ -4,9 +4,15 @@ import {
   Entity,
   Index,
   PrimaryGeneratedColumn,
+  Unique,
 } from 'typeorm';
 
 @Entity('notifications')
+@Unique('UQ_notifications_user_id_type_dedupe_key', [
+  'userId',
+  'type',
+  'dedupeKey',
+])
 @Index('IDX_notifications_user_id_created_at', ['userId', 'createdAt'])
 @Index('IDX_notifications_user_id_unread', ['userId'], {
   where: 'read_at IS NULL',

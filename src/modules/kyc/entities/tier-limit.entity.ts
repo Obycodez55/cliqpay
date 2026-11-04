@@ -1,11 +1,14 @@
 import {
+  Check,
   Column,
   CreateDateColumn,
   Entity,
   PrimaryGeneratedColumn,
+  Unique,
   UpdateDateColumn,
 } from 'typeorm';
-import { KycTier } from '../../users/users.service';
+import { inList } from '../../../database/check.util';
+import { KYC_TIERS, KycTier } from '../../users/users.service';
 
 const bigintTransformer = {
   to: (v: bigint) => v,
@@ -19,6 +22,16 @@ const nullableBigintTransformer = {
 };
 
 @Entity('tier_limits')
+@Check('CHK_tier_limits_tier', inList('tier', KYC_TIERS))
+@Check(
+  'CHK_tier_limits_daily_debit_limit_non_negative',
+  `"daily_debit_limit_minor" >= 0`,
+)
+@Check(
+  'CHK_tier_limits_balance_cap_non_negative',
+  `"balance_cap_minor" IS NULL OR "balance_cap_minor" >= 0`,
+)
+@Unique('UQ_tier_limits_tier_currency', ['tier', 'currency'])
 export class TierLimit {
   @PrimaryGeneratedColumn('uuid')
   id: string;
