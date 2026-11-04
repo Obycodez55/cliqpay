@@ -546,6 +546,7 @@ describe('KoraAdapter', () => {
       );
       expect(JSON.parse(requestInit.body as string)).toEqual({
         reference: 'cliqpay-payout-2',
+        notification_url: 'https://api.cliqpay.test/wallet/webhook/kora',
         destination: {
           type: 'bank_account',
           amount: '1000.00',

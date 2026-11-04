@@ -263,6 +263,7 @@ export class KoraAdapter implements PaymentProviderAdapter {
         '/transactions/disburse',
         {
           reference: params.reference,
+          notification_url: this.webhookUrl,
           destination: {
             type: 'bank_account',
             amount: params.amount.toDecimalString(),
