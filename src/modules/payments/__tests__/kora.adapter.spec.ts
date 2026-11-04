@@ -793,7 +793,7 @@ describe('KoraAdapter', () => {
       reason: 'Wallet balance limit exceeded',
     };
 
-    it('sends the principal as a major-unit decimal, with no webhook_url or completion_status, to the refunds endpoint', async () => {
+    it('sends the principal as a major-unit decimal, with our webhook_url and no completion_status, to the refunds endpoint', async () => {
       fetchMock.mockResolvedValue(
         respondWith('refund.initiate.full_no_completion_status'),
       );
@@ -811,6 +811,7 @@ describe('KoraAdapter', () => {
         reference: params.reference,
         amount: '1000.00',
         reason: 'Wallet balance limit exceeded',
+        webhook_url: 'https://api.cliqpay.test/wallet/webhook/kora',
       });
     });
 

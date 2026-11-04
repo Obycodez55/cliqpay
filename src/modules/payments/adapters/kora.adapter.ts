@@ -328,9 +328,10 @@ export class KoraAdapter implements PaymentProviderAdapter {
     return { status: 'pending' };
   }
 
-  // No `webhook_url`: the dashboard URL already reaches the one verified
-  // endpoint, and `amount` is always sent so Kora refunds exactly the
-  // credited principal rather than the payer's gross.
+  // `webhook_url` is sent because a refund carries no other callback address,
+  // so without it Kora uses whatever URL the dashboard happens to hold.
+  // `amount` is always sent so Kora refunds exactly the credited principal
+  // rather than the payer's gross.
   async initiateRefund(
     params: InitiateRefundParams,
   ): Promise<InitiateRefundResult> {
@@ -344,6 +345,7 @@ export class KoraAdapter implements PaymentProviderAdapter {
           reference: params.reference,
           amount: params.amount.toDecimalString(),
           reason: params.reason,
+          webhook_url: this.webhookUrl,
         },
       );
     } catch (error) {

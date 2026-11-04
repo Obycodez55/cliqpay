@@ -838,6 +838,7 @@ export class KycService {
 
     return {
       tier: user.kycTier,
+      verifiedLegalName: record?.verifiedLegalName ?? null,
       bvnVerified: !!record?.bvnHash,
       ninVerified: !!record?.ninHash,
       livenessVerified: record?.livenessVerified ?? false,

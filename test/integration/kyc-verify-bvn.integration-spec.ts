@@ -86,6 +86,7 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
     expect(statusRes.status).toBe(200);
     expect(statusRes.body).toEqual({
       tier: 'tier1',
+      verifiedLegalName: 'Ada Obi Lovelace',
       bvnVerified: true,
       ninVerified: false,
       livenessVerified: false,
@@ -129,6 +130,7 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual({
       tier: 'tier0',
+      verifiedLegalName: null,
       bvnVerified: false,
       ninVerified: false,
       livenessVerified: false,

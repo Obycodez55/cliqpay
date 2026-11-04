@@ -8,6 +8,14 @@ export class KycStatusResponseDto {
   @ApiProperty({ enum: ['tier0', 'tier1', 'tier2', 'tier3'] })
   tier: KycTier;
 
+  @ApiProperty({
+    nullable: true,
+    example: 'Ada Obi Lovelace',
+    description:
+      'The name on the verified BVN, or on the NIN when no BVN is verified yet. Null until an identity is verified.',
+  })
+  verifiedLegalName: string | null;
+
   @ApiProperty()
   bvnVerified: boolean;
 

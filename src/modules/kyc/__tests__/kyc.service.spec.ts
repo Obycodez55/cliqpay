@@ -1090,6 +1090,7 @@ describe('KycService', () => {
 
       expect(result).toEqual({
         tier: 'tier0',
+        verifiedLegalName: null,
         bvnVerified: false,
         ninVerified: false,
         livenessVerified: false,
@@ -1127,12 +1128,14 @@ describe('KycService', () => {
         bvnHash: 'hash',
         ninHash: null,
         livenessVerified: false,
+        verifiedLegalName: 'Ada Obi Lovelace',
       } as KycVerification);
 
       const result = await service.getStatus('user-1');
 
       expect(result).toEqual({
         tier: 'tier1',
+        verifiedLegalName: 'Ada Obi Lovelace',
         bvnVerified: true,
         ninVerified: false,
         livenessVerified: false,

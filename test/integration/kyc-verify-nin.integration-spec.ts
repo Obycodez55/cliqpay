@@ -118,6 +118,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
     const statusRes = await getStatus(token);
     expect(statusRes.body).toEqual({
       tier: 'tier1',
+      verifiedLegalName: 'Lovelace Ada',
       bvnVerified: false,
       ninVerified: true,
       livenessVerified: false,
@@ -165,6 +166,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
     const statusRes = await getStatus(token);
     expect(statusRes.body).toMatchObject({
       tier: 'tier2',
+      verifiedLegalName: 'Ada Obi Lovelace',
       bvnVerified: true,
       ninVerified: true,
     });
