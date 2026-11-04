@@ -1,11 +1,8 @@
 import { randomUUID } from 'crypto';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
-import {
-  PostgreSqlContainer,
-  StartedPostgreSqlContainer,
-} from '@testcontainers/postgresql';
 import { DataSource } from 'typeorm';
+import { buildDataSourceOptions } from '../../src/database/data-source.options';
 import {
   RekeyAbortedError,
   RekeyReport,
@@ -17,9 +14,11 @@ import {
   encryptionKeyFromHex,
   hmacHex,
 } from '../../src/shared/crypto/secrets.util';
-import { CreateBankAccounts1787200000000 } from '../../src/database/migrations/1787200000000-CreateBankAccounts';
-import { EncryptBankAccountNumbers1787400000000 } from '../../src/database/migrations/1787400000000-EncryptBankAccountNumbers';
-import { CreateKycVerifications1787600000000 } from '../../src/database/migrations/1787600000000-CreateKycVerifications';
+import {
+  TestDatabase,
+  createTestDatabase,
+  dropTestDatabase,
+} from './support/test-database';
 
 jest.setTimeout(180_000);
 
@@ -34,26 +33,20 @@ const BVN_B = '22222222202';
 const ACCOUNT = '0123456789';
 
 describe('rekey-identifier-hashes', () => {
-  let postgres: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   let dataSource: DataSource;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer('postgres:16-alpine').start();
-    dataSource = new DataSource({
-      type: 'postgres',
-      url: postgres.getConnectionUri(),
-    });
+    database = await createTestDatabase();
+    dataSource = new DataSource(
+      buildDataSourceOptions({ database: { url: database.url } }),
+    );
     await dataSource.initialize();
-    const queryRunner = dataSource.createQueryRunner();
-    await new CreateBankAccounts1787200000000().up(queryRunner);
-    await new EncryptBankAccountNumbers1787400000000().up(queryRunner);
-    await new CreateKycVerifications1787600000000().up(queryRunner);
-    await queryRunner.release();
   });
 
   afterAll(async () => {
     await dataSource?.destroy();
-    await postgres?.stop();
+    await dropTestDatabase(database);
   });
 
   beforeEach(async () => {
@@ -328,7 +321,7 @@ describe('rekey-identifier-hashes', () => {
     }
 
     const fullEnv = () => ({
-      DATABASE_URL: postgres.getConnectionUri(),
+      DATABASE_URL: database.url,
       ENCRYPTION_KEY,
       IDENTIFIER_HASH_KEY: NEW_KEY,
     });

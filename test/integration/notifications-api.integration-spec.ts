@@ -1,7 +1,3 @@
-import {
-  PostgreSqlContainer,
-  StartedPostgreSqlContainer,
-} from '@testcontainers/postgresql';
 import { GenericContainer, StartedTestContainer } from 'testcontainers';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
@@ -9,7 +5,7 @@ import { TypeOrmModule, getRepositoryToken } from '@nestjs/typeorm';
 import { JwtService } from '@nestjs/jwt';
 import { App } from 'supertest/types';
 import * as request from 'supertest';
-import { DataSource, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../src/config';
 import { buildDataSourceOptions } from '../../src/database/data-source.options';
 import {
@@ -25,10 +21,12 @@ import { Notification } from '../../src/modules/notifications/entities/notificat
 import { NotificationItemDto } from '../../src/modules/notifications/dto/notification-item.dto';
 import { UnreadCountResponseDto } from '../../src/modules/notifications/dto/unread-count-response.dto';
 import { PaginatedResult } from '../../src/common/interfaces/paginated-result.interface';
-import { CreatePushTokens1784616220824 } from '../../src/database/migrations/1784616220824-CreatePushTokens';
-import { ConvertPushTokensTimestamps1784707276059 } from '../../src/database/migrations/1784707276059-ConvertPushTokensTimestamps';
-import { CreateNotifications1786812506579 } from '../../src/database/migrations/1786812506579-CreateNotifications';
 import { closeBullmqWorkers } from './support/bullmq-teardown';
+import {
+  TestDatabase,
+  createTestDatabase,
+  dropTestDatabase,
+} from './support/test-database';
 
 jest.setTimeout(120_000);
 
@@ -53,7 +51,7 @@ async function waitFor(
 // JwtAuthGuard and the actual BullMQ dispatch path (publish -> per-channel
 // job -> in-app write), not a service called directly.
 describe('Notifications API — list/unread-count/mark-read', () => {
-  let postgres: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   let redis: StartedTestContainer;
   let app: INestApplication<App>;
   let eventBus: EventBusService;
@@ -62,26 +60,13 @@ describe('Notifications API — list/unread-count/mark-read', () => {
   let jwtService: JwtService;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer('postgres:16-alpine').start();
+    database = await createTestDatabase();
     redis = await new GenericContainer('redis:7-alpine')
       .withExposedPorts(6379)
       .start();
 
-    const setupDataSource = new DataSource({
-      type: 'postgres',
-      url: postgres.getConnectionUri(),
-      synchronize: false,
-    });
-    await setupDataSource.initialize();
-    const queryRunner = setupDataSource.createQueryRunner();
-    await new CreatePushTokens1784616220824().up(queryRunner);
-    await new ConvertPushTokensTimestamps1784707276059().up(queryRunner);
-    await new CreateNotifications1786812506579().up(queryRunner);
-    await queryRunner.release();
-    await setupDataSource.destroy();
-
     const config: AppConfig = buildTestAppConfig({
-      database: { url: postgres.getConnectionUri() },
+      database: { url: database.url },
       redis: {
         url: `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`,
       },
@@ -121,7 +106,7 @@ describe('Notifications API — list/unread-count/mark-read', () => {
       await closeBullmqWorkers(app);
     }
     await app?.close();
-    await postgres?.stop();
+    await dropTestDatabase(database);
     await redis?.stop();
   });
 

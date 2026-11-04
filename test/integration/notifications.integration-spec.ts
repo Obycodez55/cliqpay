@@ -1,12 +1,8 @@
-import {
-  PostgreSqlContainer,
-  StartedPostgreSqlContainer,
-} from '@testcontainers/postgresql';
 import { GenericContainer, StartedTestContainer } from 'testcontainers';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule, getRepositoryToken } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { Repository } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../src/config';
 import { buildDataSourceOptions } from '../../src/database/data-source.options';
 import {
@@ -23,10 +19,12 @@ import { PUSH_SENDER } from '../../src/modules/notifications/channels/push/push-
 import { FakeEmailAdapter } from '../../src/modules/notifications/channels/email/fake-email.adapter';
 import { FakePushAdapter } from '../../src/modules/notifications/channels/push/fake-push.adapter';
 import { PushToken } from '../../src/modules/notifications/entities/push-token.entity';
-import { CreatePushTokens1784616220824 } from '../../src/database/migrations/1784616220824-CreatePushTokens';
-import { ConvertPushTokensTimestamps1784707276059 } from '../../src/database/migrations/1784707276059-ConvertPushTokensTimestamps';
-import { CreateNotifications1786812506579 } from '../../src/database/migrations/1786812506579-CreateNotifications';
 import { closeBullmqWorkers } from './support/bullmq-teardown';
+import {
+  TestDatabase,
+  createTestDatabase,
+  dropTestDatabase,
+} from './support/test-database';
 
 jest.setTimeout(120_000);
 
@@ -58,7 +56,7 @@ async function waitFor(
 // awaited OTP path) work through the actual BullMQ queues, not just through
 // NotificationService called directly (that's unit-tested separately).
 describe('Notifications module — end-to-end dispatch', () => {
-  let postgres: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   let redis: StartedTestContainer;
   let app: INestApplication;
   let notificationService: NotificationService;
@@ -68,26 +66,13 @@ describe('Notifications module — end-to-end dispatch', () => {
   let pushTokens: Repository<PushToken>;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer('postgres:16-alpine').start();
+    database = await createTestDatabase();
     redis = await new GenericContainer('redis:7-alpine')
       .withExposedPorts(6379)
       .start();
 
-    const setupDataSource = new DataSource({
-      type: 'postgres',
-      url: postgres.getConnectionUri(),
-      synchronize: false,
-    });
-    await setupDataSource.initialize();
-    const queryRunner = setupDataSource.createQueryRunner();
-    await new CreatePushTokens1784616220824().up(queryRunner);
-    await new ConvertPushTokensTimestamps1784707276059().up(queryRunner);
-    await new CreateNotifications1786812506579().up(queryRunner);
-    await queryRunner.release();
-    await setupDataSource.destroy();
-
     const config: AppConfig = buildTestAppConfig({
-      database: { url: postgres.getConnectionUri() },
+      database: { url: database.url },
       redis: {
         url: `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`,
       },
@@ -121,7 +106,7 @@ describe('Notifications module — end-to-end dispatch', () => {
       await closeBullmqWorkers(app);
     }
     await app?.close();
-    await postgres?.stop();
+    await dropTestDatabase(database);
     await redis?.stop();
   });
 

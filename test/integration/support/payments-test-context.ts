@@ -1,7 +1,3 @@
-import {
-  PostgreSqlContainer,
-  StartedPostgreSqlContainer,
-} from '@testcontainers/postgresql';
 import { GenericContainer, StartedTestContainer } from 'testcontainers';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
@@ -16,22 +12,11 @@ import {
   buildTestConfigModule,
   buildTestJwtModule,
 } from './test-app-config';
-import { CreateUsersAndAccounts1784628665852 } from '../../../src/database/migrations/1784628665852-CreateUsersAndAccounts';
-import { ConvertUsersAndAccountsTimestamps1784707276057 } from '../../../src/database/migrations/1784707276057-ConvertUsersAndAccountsTimestamps';
-import { AddUsernameChangedAtToUsers1784707276061 } from '../../../src/database/migrations/1784707276061-AddUsernameChangedAtToUsers';
-import { AddPendingEmailToUsers1784707276064 } from '../../../src/database/migrations/1784707276064-AddPendingEmailToUsers';
-import { AddPendingPhoneToUsers1784707276065 } from '../../../src/database/migrations/1784707276065-AddPendingPhoneToUsers';
-import { CreateTransactionsAndLedgerEntries1784707276066 } from '../../../src/database/migrations/1784707276066-CreateTransactionsAndLedgerEntries';
-import { AddFundingQueryIndexes1785488695081 } from '../../../src/database/migrations/1785488695081-AddFundingQueryIndexes';
-import { EnforceLedgerEntriesAppendOnly1785491930164 } from '../../../src/database/migrations/1785491930164-EnforceLedgerEntriesAppendOnly';
-import { CreateCredentials1784707276062 } from '../../../src/database/migrations/1784707276062-CreateCredentials';
-import { CreateNotifications1786812506579 } from '../../../src/database/migrations/1786812506579-CreateNotifications';
-import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
-import { CreateTierLimits1787600000001 } from '../../../src/database/migrations/1787600000001-CreateTierLimits';
-import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
-import { AddSuspenseAccountRole1787700000000 } from '../../../src/database/migrations/1787700000000-AddSuspenseAccountRole';
-import { AddHeldFundingStatusesAndRefundType1787700000001 } from '../../../src/database/migrations/1787700000001-AddHeldFundingStatusesAndRefundType';
-import { AddKycLimitQueryIndexes1787600000005 } from '../../../src/database/migrations/1787600000005-AddKycLimitQueryIndexes';
+import {
+  TestDatabase,
+  createTestDatabase,
+  dropTestDatabase,
+} from './test-database';
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
 import { Account } from '../../../src/modules/ledger/entities/account.entity';
@@ -54,7 +39,7 @@ import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/em
 
 import { closeBullmqWorkers } from './bullmq-teardown';
 export interface PaymentsTestContext {
-  postgres: StartedPostgreSqlContainer;
+  database: TestDatabase;
   redis: StartedTestContainer;
   app: INestApplication<App>;
   usersService: UsersService;
@@ -79,39 +64,13 @@ export interface PaymentsTestContext {
 // flow, since exercising registration itself isn't what these tests are
 // about.
 export async function createPaymentsTestContext(): Promise<PaymentsTestContext> {
-  const postgres = await new PostgreSqlContainer('postgres:16-alpine').start();
+  const database = await createTestDatabase();
   const redis = await new GenericContainer('redis:7-alpine')
     .withExposedPorts(6379)
     .start();
 
-  const setupDataSource = new DataSource({
-    type: 'postgres',
-    url: postgres.getConnectionUri(),
-    synchronize: false,
-  });
-  await setupDataSource.initialize();
-  const queryRunner = setupDataSource.createQueryRunner();
-  await new CreateUsersAndAccounts1784628665852().up(queryRunner);
-  await new ConvertUsersAndAccountsTimestamps1784707276057().up(queryRunner);
-  await new AddUsernameChangedAtToUsers1784707276061().up(queryRunner);
-  await new CreateCredentials1784707276062().up(queryRunner);
-  await new AddPendingEmailToUsers1784707276064().up(queryRunner);
-  await new AddPendingPhoneToUsers1784707276065().up(queryRunner);
-  await new CreateTransactionsAndLedgerEntries1784707276066().up(queryRunner);
-  await new AddFundingQueryIndexes1785488695081().up(queryRunner);
-  await new EnforceLedgerEntriesAppendOnly1785491930164().up(queryRunner);
-  await new CreateNotifications1786812506579().up(queryRunner);
-  await new AddIsFrozenToUsers1787500000001().up(queryRunner);
-  await new CreateTierLimits1787600000001().up(queryRunner);
-  await new AddKycTierToUsers1787600000002().up(queryRunner);
-  await new AddKycLimitQueryIndexes1787600000005().up(queryRunner);
-  await new AddSuspenseAccountRole1787700000000().up(queryRunner);
-  await new AddHeldFundingStatusesAndRefundType1787700000001().up(queryRunner);
-  await queryRunner.release();
-  await setupDataSource.destroy();
-
   const config: AppConfig = buildTestAppConfig({
-    database: { url: postgres.getConnectionUri() },
+    database: { url: database.url },
     redis: {
       url: `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`,
     },
@@ -161,7 +120,7 @@ export async function createPaymentsTestContext(): Promise<PaymentsTestContext> 
   const dataSource = moduleRef.get(DataSource);
 
   return {
-    postgres,
+    database,
     redis,
     app,
     usersService: moduleRef.get(UsersService),
@@ -185,7 +144,7 @@ export async function destroyPaymentsTestContext(
     await closeBullmqWorkers(ctx.app);
   }
   await ctx.app?.close();
-  await ctx.postgres?.stop();
+  await dropTestDatabase(ctx.database);
   await ctx.redis?.stop();
 }
 

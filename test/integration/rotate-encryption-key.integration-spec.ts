@@ -1,10 +1,6 @@
 import { randomUUID } from 'crypto';
 import { spawnSync } from 'child_process';
 import { join } from 'path';
-import {
-  PostgreSqlContainer,
-  StartedPostgreSqlContainer,
-} from '@testcontainers/postgresql';
 import { DataSource } from 'typeorm';
 import { buildDataSourceOptions } from '../../src/database/data-source.options';
 import {
@@ -18,6 +14,11 @@ import {
   encryptionKeyFromHex,
   hmacHex,
 } from '../../src/shared/crypto/secrets.util';
+import {
+  TestDatabase,
+  createTestDatabase,
+  dropTestDatabase,
+} from './support/test-database';
 
 jest.setTimeout(180_000);
 
@@ -43,23 +44,22 @@ const COLUMNS = [
 ] as const;
 
 describe('rotate-encryption-key', () => {
-  let postgres: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   let dataSource: DataSource;
 
   beforeAll(async () => {
-    postgres = await new PostgreSqlContainer('postgres:16-alpine').start();
+    database = await createTestDatabase();
     dataSource = new DataSource(
       buildDataSourceOptions({
-        database: { url: postgres.getConnectionUri() },
+        database: { url: database.url },
       }),
     );
     await dataSource.initialize();
-    await dataSource.runMigrations();
   });
 
   afterAll(async () => {
     await dataSource?.destroy();
-    await postgres?.stop();
+    await dropTestDatabase(database);
   });
 
   beforeEach(async () => {
@@ -368,7 +368,7 @@ describe('rotate-encryption-key', () => {
     }
 
     const fullEnv = (): Record<string, string> => ({
-      DATABASE_URL: postgres.getConnectionUri(),
+      DATABASE_URL: database.url,
       OLD_ENCRYPTION_KEY: OLD_KEY,
       NEW_ENCRYPTION_KEY: NEW_KEY,
     });
