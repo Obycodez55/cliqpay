@@ -1,22 +1,23 @@
-import {
-  PostgreSqlContainer,
-  StartedPostgreSqlContainer,
-} from '@testcontainers/postgresql';
 import { DataSource } from 'typeorm';
+import {
+  TestDatabase,
+  createTestDatabase,
+  dropTestDatabase,
+} from './support/test-database';
 
 // Proves the integration layer itself works — a real Postgres in a real
 // container, not a mock — per docs/architecture.md §10. Feature modules add
 // their own integration specs here once they exist; this one has nothing to
 // do with any module, it exists only to prove the harness is wired up.
 describe('Testcontainers Postgres harness', () => {
-  let container: StartedPostgreSqlContainer;
+  let database: TestDatabase;
   let dataSource: DataSource;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer('postgres:16-alpine').start();
+    database = await createTestDatabase();
     dataSource = new DataSource({
       type: 'postgres',
-      url: container.getConnectionUri(),
+      url: database.url,
       synchronize: false,
     });
     await dataSource.initialize();
@@ -24,7 +25,7 @@ describe('Testcontainers Postgres harness', () => {
 
   afterAll(async () => {
     await dataSource?.destroy();
-    await container?.stop();
+    await dropTestDatabase(database);
   });
 
   it('connects to a real Postgres instance and runs a query', async () => {

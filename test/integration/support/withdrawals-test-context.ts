@@ -1,7 +1,3 @@
-import {
-  PostgreSqlContainer,
-  StartedPostgreSqlContainer,
-} from '@testcontainers/postgresql';
 import { GenericContainer, StartedTestContainer } from 'testcontainers';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
@@ -20,36 +16,15 @@ import {
   TEST_PIN_PEPPER,
 } from './test-app-config';
 import {
+  TestDatabase,
+  createTestDatabase,
+  dropTestDatabase,
+} from './test-database';
+import {
   encryptSecret,
   encryptionKeyFromHex,
   hmacHex,
 } from '../../../src/shared/crypto/secrets.util';
-import { CreateUsersAndAccounts1784628665852 } from '../../../src/database/migrations/1784628665852-CreateUsersAndAccounts';
-import { CreateSessions1784642459395 } from '../../../src/database/migrations/1784642459395-CreateSessions';
-import { CreatePushTokens1784616220824 } from '../../../src/database/migrations/1784616220824-CreatePushTokens';
-import { CreateMfaAndTrustedDevices1784652789887 } from '../../../src/database/migrations/1784652789887-CreateMfaAndTrustedDevices';
-import { CreateVerificationCodes1784672011426 } from '../../../src/database/migrations/1784672011426-CreateVerificationCodes';
-import { ConvertUsersAndAccountsTimestamps1784707276057 } from '../../../src/database/migrations/1784707276057-ConvertUsersAndAccountsTimestamps';
-import { ConvertSessionsTimestamps1784707276058 } from '../../../src/database/migrations/1784707276058-ConvertSessionsTimestamps';
-import { ConvertPushTokensTimestamps1784707276059 } from '../../../src/database/migrations/1784707276059-ConvertPushTokensTimestamps';
-import { ConvertMfaAndTrustedDevicesTimestamps1784707276060 } from '../../../src/database/migrations/1784707276060-ConvertMfaAndTrustedDevicesTimestamps';
-import { AddUsernameChangedAtToUsers1784707276061 } from '../../../src/database/migrations/1784707276061-AddUsernameChangedAtToUsers';
-import { CreateCredentials1784707276062 } from '../../../src/database/migrations/1784707276062-CreateCredentials';
-import { DropUserForeignKeys1784707276063 } from '../../../src/database/migrations/1784707276063-DropUserForeignKeys';
-import { AddPendingEmailToUsers1784707276064 } from '../../../src/database/migrations/1784707276064-AddPendingEmailToUsers';
-import { AddPendingPhoneToUsers1784707276065 } from '../../../src/database/migrations/1784707276065-AddPendingPhoneToUsers';
-import { AddTransactionPinLockoutToCredentials1785491931164 } from '../../../src/database/migrations/1785491931164-AddTransactionPinLockoutToCredentials';
-import { CreateNotifications1786812506579 } from '../../../src/database/migrations/1786812506579-CreateNotifications';
-import { CreateBankAccounts1787200000000 } from '../../../src/database/migrations/1787200000000-CreateBankAccounts';
-import { AddWithdrawalReversalTransactionType1787300000000 } from '../../../src/database/migrations/1787300000000-AddWithdrawalReversalTransactionType';
-import { EncryptBankAccountNumbers1787400000000 } from '../../../src/database/migrations/1787400000000-EncryptBankAccountNumbers';
-import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
-import { CreateTierLimits1787600000001 } from '../../../src/database/migrations/1787600000001-CreateTierLimits';
-import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
-import { CreateTransactionsAndLedgerEntries1784707276066 } from '../../../src/database/migrations/1784707276066-CreateTransactionsAndLedgerEntries';
-import { AddFundingQueryIndexes1785488695081 } from '../../../src/database/migrations/1785488695081-AddFundingQueryIndexes';
-import { EnforceLedgerEntriesAppendOnly1785491930164 } from '../../../src/database/migrations/1785491930164-EnforceLedgerEntriesAppendOnly';
-import { AddKycLimitQueryIndexes1787600000005 } from '../../../src/database/migrations/1787600000005-AddKycLimitQueryIndexes';
 import { AuthModule } from '../../../src/modules/auth/auth.module';
 import { AuthService } from '../../../src/modules/auth/auth.service';
 import { MfaService } from '../../../src/modules/auth/mfa.service';
@@ -95,7 +70,7 @@ import { closeBullmqWorkers } from './bullmq-teardown';
 // auth-test-helpers.ts's createAuthTestHelpers — register()/login() aren't
 // this module's own concern to re-implement.
 export interface WithdrawalsTestContext {
-  postgres: StartedPostgreSqlContainer;
+  database: TestDatabase;
   redis: StartedTestContainer;
   app: INestApplication<App>;
   authService: AuthService;
@@ -138,53 +113,13 @@ export async function createWithdrawalsTestContext(
     providerFee?: number;
   } = {},
 ): Promise<WithdrawalsTestContext> {
-  const postgres = await new PostgreSqlContainer('postgres:16-alpine').start();
+  const database = await createTestDatabase();
   const redis = await new GenericContainer('redis:7-alpine')
     .withExposedPorts(6379)
     .start();
 
-  const setupDataSource = new DataSource({
-    type: 'postgres',
-    url: postgres.getConnectionUri(),
-    synchronize: false,
-  });
-  await setupDataSource.initialize();
-  const queryRunner = setupDataSource.createQueryRunner();
-  await new CreateUsersAndAccounts1784628665852().up(queryRunner);
-  await new CreateSessions1784642459395().up(queryRunner);
-  await new CreatePushTokens1784616220824().up(queryRunner);
-  await new CreateMfaAndTrustedDevices1784652789887().up(queryRunner);
-  await new CreateVerificationCodes1784672011426().up(queryRunner);
-  await new ConvertUsersAndAccountsTimestamps1784707276057().up(queryRunner);
-  await new ConvertSessionsTimestamps1784707276058().up(queryRunner);
-  await new ConvertPushTokensTimestamps1784707276059().up(queryRunner);
-  await new ConvertMfaAndTrustedDevicesTimestamps1784707276060().up(
-    queryRunner,
-  );
-  await new AddUsernameChangedAtToUsers1784707276061().up(queryRunner);
-  await new CreateCredentials1784707276062().up(queryRunner);
-  await new DropUserForeignKeys1784707276063().up(queryRunner);
-  await new AddPendingEmailToUsers1784707276064().up(queryRunner);
-  await new AddPendingPhoneToUsers1784707276065().up(queryRunner);
-  await new CreateTransactionsAndLedgerEntries1784707276066().up(queryRunner);
-  await new AddFundingQueryIndexes1785488695081().up(queryRunner);
-  await new EnforceLedgerEntriesAppendOnly1785491930164().up(queryRunner);
-  await new AddTransactionPinLockoutToCredentials1785491931164().up(
-    queryRunner,
-  );
-  await new CreateNotifications1786812506579().up(queryRunner);
-  await new CreateBankAccounts1787200000000().up(queryRunner);
-  await new AddWithdrawalReversalTransactionType1787300000000().up(queryRunner);
-  await new EncryptBankAccountNumbers1787400000000().up(queryRunner);
-  await new AddIsFrozenToUsers1787500000001().up(queryRunner);
-  await new CreateTierLimits1787600000001().up(queryRunner);
-  await new AddKycTierToUsers1787600000002().up(queryRunner);
-  await new AddKycLimitQueryIndexes1787600000005().up(queryRunner);
-  await queryRunner.release();
-  await setupDataSource.destroy();
-
   const config: AppConfig = buildTestAppConfig({
-    database: { url: postgres.getConnectionUri() },
+    database: { url: database.url },
     redis: {
       url: `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`,
     },
@@ -245,7 +180,7 @@ export async function createWithdrawalsTestContext(
   const dataSource = moduleRef.get(DataSource);
 
   return {
-    postgres,
+    database,
     redis,
     app,
     authService: moduleRef.get(AuthService),
@@ -283,7 +218,7 @@ export async function destroyWithdrawalsTestContext(
     await closeBullmqWorkers(ctx.app);
   }
   await ctx.app?.close();
-  await ctx.postgres?.stop();
+  await dropTestDatabase(ctx.database);
   await ctx.redis?.stop();
 }
 

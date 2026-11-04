@@ -1,7 +1,3 @@
-import {
-  PostgreSqlContainer,
-  StartedPostgreSqlContainer,
-} from '@testcontainers/postgresql';
 import { GenericContainer, StartedTestContainer } from 'testcontainers';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
@@ -15,21 +11,11 @@ import {
   buildTestConfigModule,
   buildTestJwtModule,
 } from './test-app-config';
-import { CreateUsersAndAccounts1784628665852 } from '../../../src/database/migrations/1784628665852-CreateUsersAndAccounts';
-import { ConvertUsersAndAccountsTimestamps1784707276057 } from '../../../src/database/migrations/1784707276057-ConvertUsersAndAccountsTimestamps';
-import { AddUsernameChangedAtToUsers1784707276061 } from '../../../src/database/migrations/1784707276061-AddUsernameChangedAtToUsers';
-import { CreateCredentials1784707276062 } from '../../../src/database/migrations/1784707276062-CreateCredentials';
-import { AddPendingEmailToUsers1784707276064 } from '../../../src/database/migrations/1784707276064-AddPendingEmailToUsers';
-import { AddPendingPhoneToUsers1784707276065 } from '../../../src/database/migrations/1784707276065-AddPendingPhoneToUsers';
-import { CreateTransactionsAndLedgerEntries1784707276066 } from '../../../src/database/migrations/1784707276066-CreateTransactionsAndLedgerEntries';
-import { AddFundingQueryIndexes1785488695081 } from '../../../src/database/migrations/1785488695081-AddFundingQueryIndexes';
-import { EnforceLedgerEntriesAppendOnly1785491930164 } from '../../../src/database/migrations/1785491930164-EnforceLedgerEntriesAppendOnly';
-import { CreateNotifications1786812506579 } from '../../../src/database/migrations/1786812506579-CreateNotifications';
-import { CreateDisputes1787500000000 } from '../../../src/database/migrations/1787500000000-CreateDisputes';
-import { AddIsFrozenToUsers1787500000001 } from '../../../src/database/migrations/1787500000001-AddIsFrozenToUsers';
-import { AddChargebackReversalTransactionType1787500000002 } from '../../../src/database/migrations/1787500000002-AddChargebackReversalTransactionType';
-import { AddKycTierToUsers1787600000002 } from '../../../src/database/migrations/1787600000002-AddKycTierToUsers';
-import { AddKycLimitQueryIndexes1787600000005 } from '../../../src/database/migrations/1787600000005-AddKycLimitQueryIndexes';
+import {
+  TestDatabase,
+  createTestDatabase,
+  dropTestDatabase,
+} from './test-database';
 import { Account } from '../../../src/modules/ledger/entities/account.entity';
 import { Transaction } from '../../../src/modules/ledger/entities/transaction.entity';
 import { LedgerEntry } from '../../../src/modules/ledger/entities/ledger-entry.entity';
@@ -49,7 +35,7 @@ import { Money } from '../../../src/shared/primitives/money';
 import { closeBullmqWorkers } from './bullmq-teardown';
 
 export interface DisputesTestContext {
-  postgres: StartedPostgreSqlContainer;
+  database: TestDatabase;
   redis: StartedTestContainer;
   app: INestApplication<App>;
   usersService: UsersService;
@@ -78,38 +64,13 @@ export interface DisputesTestContext {
 // `credentials` — it's what drops the now-auth-owned columns (password_hash
 // etc.) off `users`, which `UsersService.createUser` never sets.
 export async function createDisputesTestContext(): Promise<DisputesTestContext> {
-  const postgres = await new PostgreSqlContainer('postgres:16-alpine').start();
+  const database = await createTestDatabase();
   const redis = await new GenericContainer('redis:7-alpine')
     .withExposedPorts(6379)
     .start();
 
-  const setupDataSource = new DataSource({
-    type: 'postgres',
-    url: postgres.getConnectionUri(),
-    synchronize: false,
-  });
-  await setupDataSource.initialize();
-  const queryRunner = setupDataSource.createQueryRunner();
-  await new CreateUsersAndAccounts1784628665852().up(queryRunner);
-  await new ConvertUsersAndAccountsTimestamps1784707276057().up(queryRunner);
-  await new AddUsernameChangedAtToUsers1784707276061().up(queryRunner);
-  await new CreateCredentials1784707276062().up(queryRunner);
-  await new AddPendingEmailToUsers1784707276064().up(queryRunner);
-  await new AddPendingPhoneToUsers1784707276065().up(queryRunner);
-  await new CreateTransactionsAndLedgerEntries1784707276066().up(queryRunner);
-  await new AddFundingQueryIndexes1785488695081().up(queryRunner);
-  await new EnforceLedgerEntriesAppendOnly1785491930164().up(queryRunner);
-  await new CreateNotifications1786812506579().up(queryRunner);
-  await new CreateDisputes1787500000000().up(queryRunner);
-  await new AddIsFrozenToUsers1787500000001().up(queryRunner);
-  await new AddChargebackReversalTransactionType1787500000002().up(queryRunner);
-  await new AddKycTierToUsers1787600000002().up(queryRunner);
-  await new AddKycLimitQueryIndexes1787600000005().up(queryRunner);
-  await queryRunner.release();
-  await setupDataSource.destroy();
-
   const config: AppConfig = buildTestAppConfig({
-    database: { url: postgres.getConnectionUri() },
+    database: { url: database.url },
     redis: {
       url: `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`,
     },
@@ -143,7 +104,7 @@ export async function createDisputesTestContext(): Promise<DisputesTestContext> 
   const dataSource = moduleRef.get(DataSource);
 
   return {
-    postgres,
+    database,
     redis,
     app,
     usersService: moduleRef.get(UsersService),
@@ -168,7 +129,7 @@ export async function destroyDisputesTestContext(
     await closeBullmqWorkers(ctx.app);
   }
   await ctx.app?.close();
-  await ctx.postgres?.stop();
+  await dropTestDatabase(ctx.database);
   await ctx.redis?.stop();
 }
 
