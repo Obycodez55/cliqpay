@@ -9,6 +9,7 @@ import {
   fundWallet,
   seedTransferUser,
 } from './support/transfers-test-context';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(180_000);
 
@@ -103,7 +104,7 @@ describe('POST /money-requests/:id/pay', () => {
       .set('Authorization', `Bearer ${tokenFor(requesterId)}`)
       .send({ payerUserId: payerId, amount, note })
       .expect(201);
-    return res.body as MoneyRequestBody;
+    return dataOf<MoneyRequestBody>(res);
   }
 
   function pay(token: string, id: string, body: Record<string, unknown>) {
@@ -192,7 +193,7 @@ describe('POST /money-requests/:id/pay', () => {
       pin: '1234',
     }).expect(201);
 
-    expect(res.body).toMatchObject({
+    expect(dataOf(res)).toMatchObject({
       id: created.id,
       status: 'paid',
       amount: { amount: '500000', currency: 'NGN' },
@@ -521,7 +522,7 @@ describe('POST /money-requests/:id/pay', () => {
         pin: '1234',
       }).expect(201);
 
-      expect(second.body).toEqual(first.body);
+      expect(dataOf(second)).toEqual(dataOf(first));
       const payerAccount = await ctx.accountRepo.findOneByOrFail({
         id: payer.walletId,
       });

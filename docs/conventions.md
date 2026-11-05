@@ -59,3 +59,5 @@ On SIGTERM/SIGINT the app closes gracefully, with a 10 s in-process force-exit t
 ## Integration-test database
 
 Integration specs never start Postgres or run migrations themselves. Jest's `globalSetup` starts one container per run, applies every migration once through the real migration runner, and keeps the result as a template database; each spec file's context clones it for an isolated database and drops it on destroy (see [ADR-0023](adr/0023-shared-integration-test-database.md)). A new migration needs no change under `test/integration/support/`. Contexts hold only module wiring and seed helpers. Redis is still one container per context.
+
+Contexts also register the real exception filter and response interceptor (`buildTestPipelineModules()`), so specs see the same envelope as clients: read success bodies with `dataOf<T>(res)` and error bodies with `errorOf(res)` from `test/integration/support/api-response.ts`, never `res.body` directly. A new domain error gets an HTTP-level test asserting its `error.code` (and `error.details` if it has any).

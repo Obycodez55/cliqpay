@@ -11,6 +11,7 @@ import {
   seedBankAccount,
   seedWithdrawalUser,
 } from './support/withdrawals-test-context';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(180_000);
 
@@ -115,7 +116,7 @@ describe('GET /withdrawals', () => {
       .set('Authorization', `Bearer ${tokenFor(sender.userId)}`)
       .expect(200);
 
-    const body = res.body as HistoryResponse;
+    const body = dataOf<HistoryResponse>(res);
     expect(body.items).toHaveLength(3);
     expect(body.nextCursor).toBeNull();
     expect(body.items.map((i) => i.amount.amount)).toEqual([
@@ -167,7 +168,7 @@ describe('GET /withdrawals', () => {
         .query(cursor ? { limit, cursor } : { limit })
         .set('Authorization', `Bearer ${tokenFor(sender.userId)}`)
         .expect(200);
-      const body = res.body as HistoryResponse;
+      const body = dataOf<HistoryResponse>(res);
 
       expect(body.items.length).toBeLessThanOrEqual(limit);
       seenReferences.push(...body.items.map((i) => i.reference));
@@ -228,7 +229,7 @@ describe('GET /withdrawals', () => {
         .query(cursor ? { limit, cursor } : { limit })
         .set('Authorization', `Bearer ${tokenFor(sender.userId)}`)
         .expect(200);
-      const body = res.body as HistoryResponse;
+      const body = dataOf<HistoryResponse>(res);
 
       seenReferences.push(...body.items.map((i) => i.reference));
       cursor = body.nextCursor ?? undefined;
@@ -283,7 +284,7 @@ describe('GET /withdrawals', () => {
       .set('Authorization', `Bearer ${tokenFor(sender.userId)}`)
       .expect(200);
 
-    const body = res.body as HistoryResponse;
+    const body = dataOf<HistoryResponse>(res);
     const byReference = new Map(body.items.map((i) => [i.reference, i]));
     expect(byReference.get(pendingReference)?.status).toBe('pending');
     expect(byReference.get(completedReference)?.status).toBe('completed');

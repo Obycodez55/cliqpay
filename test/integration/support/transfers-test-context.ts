@@ -10,6 +10,7 @@ import {
   buildTestAppConfig,
   buildTestConfigModule,
   buildTestJwtModule,
+  buildTestPipelineModules,
   TEST_PIN_PEPPER,
 } from './test-app-config';
 import {
@@ -97,6 +98,7 @@ export async function createTransfersTestContext(
     imports: [
       buildTestConfigModule(config),
       buildTestJwtModule(),
+      ...buildTestPipelineModules(),
       TypeOrmModule.forRootAsync({
         inject: [APP_CONFIG],
         useFactory: (cfg: AppConfig) => buildDataSourceOptions(cfg),

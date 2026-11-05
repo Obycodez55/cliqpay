@@ -6,6 +6,7 @@ import {
   destroyTransfersTestContext,
   seedTransferUser,
 } from './support/transfers-test-context';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(180_000);
 
@@ -76,7 +77,7 @@ describe('POST /money-requests/:id/cancel and /decline', () => {
       .set('Authorization', `Bearer ${token}`)
       .send(body)
       .expect(expectStatus);
-    return res.body as MoneyRequestBody;
+    return dataOf<MoneyRequestBody>(res);
   }
 
   async function cancel(
@@ -89,7 +90,7 @@ describe('POST /money-requests/:id/cancel and /decline', () => {
       .set('Authorization', `Bearer ${token}`)
       .send()
       .expect(expectStatus);
-    return res.body as MoneyRequestBody;
+    return dataOf<MoneyRequestBody>(res);
   }
 
   async function decline(
@@ -102,7 +103,7 @@ describe('POST /money-requests/:id/cancel and /decline', () => {
       .set('Authorization', `Bearer ${token}`)
       .send()
       .expect(expectStatus);
-    return res.body as MoneyRequestBody;
+    return dataOf<MoneyRequestBody>(res);
   }
 
   describe('cancel', () => {

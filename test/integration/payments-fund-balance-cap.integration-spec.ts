@@ -13,6 +13,7 @@ import {
 } from './support/payments-test-context';
 
 import { holdUserLock, trackSettled, waitBriefly } from './support/user-lock';
+import { dataOf, errorOf } from './support/api-response';
 
 jest.setTimeout(180_000);
 
@@ -185,6 +186,25 @@ describe('Balance cap at funding initiation', () => {
     ).toHaveLength(0);
   });
 
+  it('reports BALANCE_CAP_EXCEEDED with the cap and remaining headroom as details', async () => {
+    const user = await seedUser();
+
+    const res = await fund(
+      user.userId,
+      TIER1_CAP + 1,
+      'cliqpay-cap-envelope-1',
+    );
+
+    expect(res.status).toBe(422);
+    expect(errorOf(res)).toMatchObject({
+      code: 'BALANCE_CAP_EXCEEDED',
+      details: {
+        balanceCap: { amount: String(TIER1_CAP), currency: 'NGN' },
+        remaining: { amount: String(TIER1_CAP), currency: 'NGN' },
+      },
+    });
+  });
+
   it('holds a funding initiation back while another transaction holds the user lock', async () => {
     const user = await seedUser();
     const held = await holdUserLock(ctx.dataSource, user.userId);
@@ -273,7 +293,7 @@ describe('Balance cap at funding initiation', () => {
 
     expect(first.status).toBe(201);
     expect(replay.status).toBe(201);
-    expect(replay.body).toEqual(first.body);
+    expect(dataOf(replay)).toEqual(dataOf(first));
     expect(ctx.fakeAdapter.initiated).toHaveLength(initiatedBefore + 1);
     expect((await exposure(user.userId)).pending).toEqual(
       Money.of(TIER1_CAP, 'NGN'),

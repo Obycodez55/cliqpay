@@ -17,6 +17,7 @@ import {
   extractSixDigitCode,
   SIGN_IN_CODE_SUBJECT,
 } from './support/auth-test-helpers';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(120_000);
 
@@ -41,7 +42,7 @@ describe('withdrawals bank accounts', () => {
       .set('Authorization', `Bearer ${accessToken}`)
       .send({})
       .expect(200);
-    const challengeId = (res.body as { challengeId: string }).challengeId;
+    const challengeId = dataOf<{ challengeId: string }>(res).challengeId;
     const code = extractSixDigitCode(
       helpers.latestEmailWithSubject(SIGN_IN_CODE_SUBJECT).text,
     );
@@ -76,7 +77,7 @@ describe('withdrawals bank accounts', () => {
       })
       .expect(201);
 
-    expect(res.body).toMatchObject({
+    expect(dataOf(res)).toMatchObject({
       bankCode: '033',
       bankName: 'Test Bank 033',
       accountNumber: '0000000000',
@@ -250,11 +251,13 @@ describe('withdrawals bank accounts', () => {
       .set('Authorization', `Bearer ${tokens.accessToken}`)
       .expect(200);
 
-    expect(res.body).toHaveLength(2);
+    expect(dataOf(res)).toHaveLength(2);
     expect(
-      (res.body as { bankCode: string }[]).map((b) => b.bankCode).sort(),
+      dataOf<{ bankCode: string }[]>(res)
+        .map((b) => b.bankCode)
+        .sort(),
     ).toEqual(['033', '058']);
-    expect((res.body as { accountName?: string }[])[0]).not.toHaveProperty(
+    expect(dataOf<{ accountName?: string }[]>(res)[0]).not.toHaveProperty(
       'default',
     );
 
@@ -293,7 +296,7 @@ describe('withdrawals bank accounts', () => {
       .set('Authorization', `Bearer ${tokensB.accessToken}`)
       .expect(200);
 
-    expect(res.body).toEqual([]);
+    expect(dataOf(res)).toEqual([]);
   });
 
   it('rejects an unauthenticated step-up request', async () => {

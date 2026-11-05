@@ -7,6 +7,7 @@ import {
   destroyAuthTestContext,
 } from './support/auth-test-context';
 import { createAuthTestHelpers } from './support/auth-test-helpers';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(120_000);
 
@@ -50,7 +51,7 @@ describe('Recipient lookup endpoint', () => {
       .set('Authorization', `Bearer ${senderTokens.accessToken}`)
       .expect(200);
 
-    const body = res.body as RecipientLookupResponseDto;
+    const body = dataOf<RecipientLookupResponseDto>(res);
     expect(Object.keys(body).sort()).toEqual(
       ['firstName', 'lastName', 'userId', 'username'].sort(),
     );
@@ -78,7 +79,7 @@ describe('Recipient lookup endpoint', () => {
       .set('Authorization', `Bearer ${senderTokens.accessToken}`)
       .expect(200);
 
-    const body = res.body as RecipientLookupResponseDto;
+    const body = dataOf<RecipientLookupResponseDto>(res);
     expect(Object.keys(body).sort()).toEqual(
       ['firstName', 'lastName', 'userId', 'username'].sort(),
     );
@@ -120,7 +121,7 @@ describe('Recipient lookup endpoint', () => {
       .set('Authorization', `Bearer ${tokens.accessToken}`)
       .expect(200);
 
-    const body = res.body as RecipientLookupResponseDto;
+    const body = dataOf<RecipientLookupResponseDto>(res);
     expect(body.userId).toBe(user.id);
     expect(body.username).toBe('lookup_self_user');
   });

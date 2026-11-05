@@ -7,6 +7,7 @@ import {
   seedDisputesUser,
 } from './support/disputes-test-context';
 import { TEST_INTERNAL_API_SECRET } from './support/test-app-config';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(180_000);
 
@@ -124,7 +125,7 @@ describe('POST /disputes/chargebacks', () => {
       );
 
       expect(res.status).toBe(201);
-      expect(res.body).toMatchObject({
+      expect(dataOf(res)).toMatchObject({
         disputeReference,
         status: 'open',
         amount: { amount: '200000', currency: 'NGN' },
@@ -183,7 +184,7 @@ describe('POST /disputes/chargebacks', () => {
       );
 
       expect(res.status).toBe(201);
-      const body = res.body as { accountFrozen: boolean };
+      const body = dataOf<{ accountFrozen: boolean }>(res);
       expect(body.accountFrozen).toBe(true);
 
       const user = await ctx.userRepo.findOneByOrFail({ id: userId });
@@ -208,7 +209,7 @@ describe('POST /disputes/chargebacks', () => {
       );
 
       expect(res.status).toBe(201);
-      const body = res.body as { accountFrozen: boolean };
+      const body = dataOf<{ accountFrozen: boolean }>(res);
       expect(body.accountFrozen).toBe(false);
 
       const user = await ctx.userRepo.findOneByOrFail({ id: userId });

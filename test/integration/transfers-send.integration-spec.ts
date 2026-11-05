@@ -7,6 +7,8 @@ import {
   fundWallet,
   seedTransferUser,
 } from './support/transfers-test-context';
+import { dataOf, errorOf } from './support/api-response';
+import { KycTier } from '../../src/modules/users/users.service';
 
 jest.setTimeout(180_000);
 
@@ -65,6 +67,7 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
       pin?: string;
       emailVerified?: boolean;
       balanceMinor?: bigint;
+      kycTier?: KycTier;
     } = {},
   ) {
     const identity = nextIdentity('sender');
@@ -72,6 +75,7 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
       ...identity,
       pin: overrides.pin,
       emailVerified: overrides.emailVerified,
+      kycTier: overrides.kycTier,
     });
     await fundWallet(ctx, {
       reference: `cliqpay-fund-${userId}`,
@@ -93,6 +97,76 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
       .send(body);
   }
 
+  describe('sender limit error codes', () => {
+    it('reports KYC_VERIFICATION_REQUIRED for an unverified sender', async () => {
+      const sender = await seedFundedSender({ kycTier: 'tier0' });
+      const recipient = await seedRecipient();
+
+      const res = await send(tokenFor(sender.userId), {
+        recipientUserId: recipient.userId,
+        amount: 10_000,
+        reference: `cliqpay-xfer-kyc-${sender.userId}`,
+        pin: '1234',
+      });
+
+      expect(res.status).toBe(422);
+      expect(errorOf(res)).toMatchObject({
+        code: 'KYC_VERIFICATION_REQUIRED',
+      });
+    });
+
+    it('reports DAILY_LIMIT_EXCEEDED with the limit and what is left as details', async () => {
+      const sender = await seedFundedSender({
+        kycTier: 'tier1',
+        balanceMinor: 20_000_000n,
+      });
+      const recipient = await seedRecipient();
+
+      const res = await send(tokenFor(sender.userId), {
+        recipientUserId: recipient.userId,
+        amount: 5_000_001,
+        reference: `cliqpay-xfer-limit-${sender.userId}`,
+        pin: '1234',
+      });
+
+      expect(res.status).toBe(422);
+      expect(errorOf(res)).toMatchObject({
+        code: 'DAILY_LIMIT_EXCEEDED',
+        details: {
+          dailyLimit: { amount: '5000000', currency: 'NGN' },
+          remaining: { amount: '5000000', currency: 'NGN' },
+        },
+      });
+    });
+
+    it('reports TIER_LIMIT_NOT_CONFIGURED as a 500 when the tier has no limit row', async () => {
+      const sender = await seedFundedSender({ kycTier: 'tier2' });
+      const recipient = await seedRecipient();
+      await ctx.dataSource.query(
+        `DELETE FROM tier_limits WHERE tier = 'tier2'`,
+      );
+
+      try {
+        const res = await send(tokenFor(sender.userId), {
+          recipientUserId: recipient.userId,
+          amount: 10_000,
+          reference: `cliqpay-xfer-norow-${sender.userId}`,
+          pin: '1234',
+        });
+
+        expect(res.status).toBe(500);
+        expect(errorOf(res)).toMatchObject({
+          code: 'TIER_LIMIT_NOT_CONFIGURED',
+        });
+      } finally {
+        await ctx.dataSource.query(
+          `INSERT INTO tier_limits (tier, currency, daily_debit_limit_minor, balance_cap_minor)
+           VALUES ('tier2', 'NGN', 20000000, 50000000)`,
+        );
+      }
+    });
+  });
+
   it('rejects an unauthenticated request', async () => {
     await request(ctx.app.getHttpServer())
       .post('/transfers')
@@ -111,7 +185,7 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
       pin: '1234',
     }).expect(201);
 
-    expect(res.body).toMatchObject({
+    expect(dataOf(res)).toMatchObject({
       reference: `cliqpay-xfer-happy-${sender.userId}`,
       amount: { amount: '500000', currency: 'NGN' },
       fee: { amount: '0', currency: 'NGN' },
@@ -131,9 +205,9 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
       .get('/wallet/transactions')
       .set('Authorization', `Bearer ${tokenFor(sender.userId)}`)
       .expect(200);
-    const senderTransferLeg = (
-      senderHistory.body as { items: { type: string; direction: string }[] }
-    ).items.find((i) => i.type === 'p2p_transfer');
+    const senderTransferLeg = dataOf<{
+      items: { type: string; direction: string }[];
+    }>(senderHistory).items.find((i) => i.type === 'p2p_transfer');
     expect(senderTransferLeg).toMatchObject({
       type: 'p2p_transfer',
       direction: 'debit',
@@ -144,9 +218,9 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
       .get('/wallet/transactions')
       .set('Authorization', `Bearer ${tokenFor(recipient.userId)}`)
       .expect(200);
-    const recipientTransferLeg = (
-      recipientHistory.body as { items: { type: string; direction: string }[] }
-    ).items.find((i) => i.type === 'p2p_transfer');
+    const recipientTransferLeg = dataOf<{
+      items: { type: string; direction: string }[];
+    }>(recipientHistory).items.find((i) => i.type === 'p2p_transfer');
     expect(recipientTransferLeg).toMatchObject({
       type: 'p2p_transfer',
       direction: 'credit',
@@ -312,7 +386,7 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
       const first = await send(tokenFor(sender.userId), body).expect(201);
       const second = await send(tokenFor(sender.userId), body).expect(201);
 
-      expect(second.body).toEqual(first.body);
+      expect(dataOf(second)).toEqual(dataOf(first));
       const senderAccount = await ctx.accountRepo.findOneByOrFail({
         id: sender.walletId,
       });
@@ -336,7 +410,7 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
       ]);
 
       expect([a.status, b.status]).toEqual([201, 201]);
-      expect(b.body).toEqual(a.body);
+      expect(dataOf(b)).toEqual(dataOf(a));
       await waitFor(() => ctx.emailAdapter.sent.length >= emailCountBefore + 2);
       await new Promise((resolve) => setTimeout(resolve, 1_500));
       expect(ctx.emailAdapter.sent.length - emailCountBefore).toBe(2);
@@ -502,7 +576,7 @@ describe('POST /transfers — non-zero platform fee', () => {
       })
       .expect(201);
 
-    expect(res.body).toMatchObject({
+    expect(dataOf(res)).toMatchObject({
       amount: { amount: '500000', currency: 'NGN' },
       fee: { amount: '5000', currency: 'NGN' },
     });

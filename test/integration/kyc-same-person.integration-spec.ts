@@ -7,6 +7,7 @@ import {
   seedKycUser,
 } from './support/kyc-test-context';
 import { TEST_JWT_SECRET } from './support/test-app-config';
+import { dataOf, errorOf } from './support/api-response';
 
 jest.setTimeout(180_000);
 
@@ -120,13 +121,23 @@ describe('BVN and NIN must belong to the same person', () => {
       const res = await verify(token, second, id(SAME));
 
       expect(res.status).toBe(201);
-      expect(res.body).toMatchObject({ tier: 'tier2' });
+      expect(dataOf(res)).toMatchObject({ tier: 'tier2' });
       expect(await userTier(userId)).toBe('tier2');
       const record = await ctx.kycVerificationRepo.findOneByOrFail({ userId });
       expect(record.verifiedLegalName).toBe('Ada Obi Lovelace');
       expect(Object.keys(record.identity ?? {}).sort()).toEqual(['bvn', 'nin']);
     },
   );
+
+  it('reports IDENTITY_MISMATCH for a NIN of a different person than the verified BVN', async () => {
+    const { token } = await seedUser();
+    await verify(token, 'bvn', id(SAME)).expect(201);
+
+    const res = await verify(token, 'nin', id(OTHER_PERSON));
+
+    expect(res.status).toBe(422);
+    expect(errorOf(res)).toMatchObject({ code: 'IDENTITY_MISMATCH' });
+  });
 
   it('rejects matching names with a different date of birth', async () => {
     const { token } = await seedUser();
@@ -155,7 +166,7 @@ describe('BVN and NIN must belong to the same person', () => {
 
     const res = await verify(token, 'nin', id(SAME), capture());
 
-    expect(res.body).toMatchObject({
+    expect(dataOf(res)).toMatchObject({
       tier: 'tier3',
       livenessVerified: true,
       livenessResult: 'passed',

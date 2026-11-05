@@ -15,6 +15,7 @@ import {
   encryptionKeyFromHex,
   hmacHex,
 } from '../../src/shared/crypto/secrets.util';
+import { dataOf, errorOf } from './support/api-response';
 
 jest.setTimeout(180_000);
 
@@ -87,7 +88,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
     const res = await verifyNin(token, '12345678901');
 
     expect(res.status).toBe(201);
-    expect(res.body).toEqual({
+    expect(dataOf(res)).toEqual({
       tier: 'tier1',
       bvnVerified: false,
       ninVerified: true,
@@ -116,7 +117,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
     });
 
     const statusRes = await getStatus(token);
-    expect(statusRes.body).toEqual({
+    expect(dataOf(statusRes)).toEqual({
       tier: 'tier1',
       verifiedLegalName: 'Lovelace Ada',
       bvnVerified: false,
@@ -136,7 +137,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
     const res = await verifyBvn(token, '30000000002');
 
     expect(res.status).toBe(201);
-    expect(res.body).toEqual({
+    expect(dataOf(res)).toEqual({
       tier: 'tier2',
       bvnVerified: true,
       ninVerified: true,
@@ -158,13 +159,13 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
     const res = await verifyNin(token, '31000000002');
 
     expect(res.status).toBe(201);
-    expect(res.body).toMatchObject({
+    expect(dataOf(res)).toMatchObject({
       tier: 'tier2',
       bvnVerified: true,
       ninVerified: true,
     });
     const statusRes = await getStatus(token);
-    expect(statusRes.body).toMatchObject({
+    expect(dataOf(statusRes)).toMatchObject({
       tier: 'tier2',
       verifiedLegalName: 'Ada Obi Lovelace',
       bvnVerified: true,
@@ -215,9 +216,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
     const res = await verifyNin(tokenFor(secondUserId), '50000000001');
 
     expect(res.status).toBe(409);
-    expect((res.body as { message: string }).message).toContain(
-      'NIN is already linked',
-    );
+    expect(errorOf(res).message).toContain('NIN is already linked');
     const secondUser = await ctx.userRepo.findOneByOrFail({ id: secondUserId });
     expect(secondUser.kycTier).toBe('tier0');
     expect(
@@ -254,7 +253,7 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
 
     const same = await verifyNin(token, '73000000001');
     expect(same.status).toBe(201);
-    expect(same.body).toEqual({
+    expect(dataOf(same)).toEqual({
       tier: 'tier1',
       bvnVerified: false,
       ninVerified: true,
@@ -288,6 +287,34 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
     );
   });
 
+  describe('error codes', () => {
+    it('reports NIN_VERIFICATION_FAILED for a NIN the provider cannot verify', async () => {
+      const res = await verifyNin(tokenFor(await seedUser()), '00000000001');
+
+      expect(res.status).toBe(422);
+      expect(errorOf(res)).toMatchObject({ code: 'NIN_VERIFICATION_FAILED' });
+    });
+
+    it('reports NIN_ALREADY_LINKED for a NIN another user has verified', async () => {
+      await verifyNin(tokenFor(await seedUser()), '76000000001').expect(201);
+
+      const res = await verifyNin(tokenFor(await seedUser()), '76000000001');
+
+      expect(res.status).toBe(409);
+      expect(errorOf(res)).toMatchObject({ code: 'NIN_ALREADY_LINKED' });
+    });
+
+    it('reports NIN_ALREADY_VERIFIED when a different NIN follows a verified one', async () => {
+      const token = tokenFor(await seedUser());
+      await verifyNin(token, '76000000002').expect(201);
+
+      const res = await verifyNin(token, '76000000003');
+
+      expect(res.status).toBe(409);
+      expect(errorOf(res)).toMatchObject({ code: 'NIN_ALREADY_VERIFIED' });
+    });
+  });
+
   it('does not let a verified BVN block a first NIN', async () => {
     const userId = await seedUser();
     const token = tokenFor(userId);
@@ -296,6 +323,6 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
     const res = await verifyNin(token, '75000000002');
 
     expect(res.status).toBe(201);
-    expect(res.body).toMatchObject({ tier: 'tier2' });
+    expect(dataOf(res)).toMatchObject({ tier: 'tier2' });
   });
 });

@@ -8,6 +8,11 @@ import {
   seedKycUser,
 } from './support/kyc-test-context';
 import { TEST_JWT_SECRET } from './support/test-app-config';
+import { dataOf, errorOf } from './support/api-response';
+import {
+  KYC_PROVIDER,
+  KycProvider,
+} from '../../src/modules/kyc/providers/kyc-provider.interface';
 
 jest.setTimeout(180_000);
 
@@ -94,7 +99,7 @@ describe('KYC liveness (Tier 3)', () => {
 
       const first = await verify(token, 'bvn', id(PASS), capture());
       expect(first.status).toBe(201);
-      expect(first.body).toEqual({
+      expect(dataOf(first)).toEqual({
         tier: 'tier1',
         bvnVerified: true,
         ninVerified: false,
@@ -103,7 +108,7 @@ describe('KYC liveness (Tier 3)', () => {
       });
 
       const second = await verify(token, 'nin', id(PASS));
-      expect(second.body).toMatchObject({
+      expect(dataOf(second)).toMatchObject({
         tier: 'tier3',
         livenessVerified: true,
         livenessResult: 'not_requested',
@@ -117,7 +122,7 @@ describe('KYC liveness (Tier 3)', () => {
       await verify(token, 'nin', id(PASS));
       const res = await verify(token, 'bvn', id(PASS), capture());
 
-      expect(res.body).toMatchObject({
+      expect(dataOf(res)).toMatchObject({
         tier: 'tier3',
         livenessResult: 'passed',
       });
@@ -130,7 +135,10 @@ describe('KYC liveness (Tier 3)', () => {
       await verify(token, 'nin', id(PASS), capture());
       const res = await verify(token, 'bvn', id(PASS));
 
-      expect(res.body).toMatchObject({ tier: 'tier3', livenessVerified: true });
+      expect(dataOf(res)).toMatchObject({
+        tier: 'tier3',
+        livenessVerified: true,
+      });
       expect(await userTier(userId)).toBe('tier3');
     });
 
@@ -144,7 +152,7 @@ describe('KYC liveness (Tier 3)', () => {
 
       const res = await verify(token, 'bvn', bvn, capture());
 
-      expect(res.body).toMatchObject({
+      expect(dataOf(res)).toMatchObject({
         tier: 'tier3',
         livenessVerified: true,
         livenessResult: 'passed',
@@ -165,7 +173,7 @@ describe('KYC liveness (Tier 3)', () => {
       const res = await verify(token, 'bvn', id(FAIL), capture());
 
       expect(res.status).toBe(201);
-      expect(res.body).toEqual({
+      expect(dataOf(res)).toEqual({
         tier: 'tier1',
         bvnVerified: true,
         ninVerified: false,
@@ -173,7 +181,7 @@ describe('KYC liveness (Tier 3)', () => {
         livenessResult: 'failed',
       });
       expect(await userTier(userId)).toBe('tier1');
-      expect((await status(token)).body).toMatchObject({
+      expect(dataOf(await status(token))).toMatchObject({
         bvnVerified: true,
         livenessVerified: false,
         livenessPending: false,
@@ -203,7 +211,7 @@ describe('KYC liveness (Tier 3)', () => {
 
       const res = await verify(token, 'nin', id(PASS), capture());
 
-      expect(res.body).toMatchObject({
+      expect(dataOf(res)).toMatchObject({
         tier: 'tier3',
         livenessVerified: true,
         livenessResult: 'passed',
@@ -224,7 +232,7 @@ describe('KYC liveness (Tier 3)', () => {
       const res = await verify(token, 'bvn', bvn, capture());
 
       expect(res.status).toBe(201);
-      expect(res.body).toMatchObject({
+      expect(dataOf(res)).toMatchObject({
         livenessVerified: true,
         livenessResult: 'passed',
       });
@@ -319,13 +327,13 @@ describe('KYC liveness (Tier 3)', () => {
       const bvn = id(ASYNC_PASS);
 
       const res = await verify(token, 'bvn', bvn, capture());
-      expect(res.body).toMatchObject({
+      expect(dataOf(res)).toMatchObject({
         tier: 'tier1',
         livenessVerified: false,
         livenessResult: 'pending',
       });
       const pendingStatus = await status(token);
-      expect(pendingStatus.body).toMatchObject({ livenessPending: true });
+      expect(dataOf(pendingStatus)).toMatchObject({ livenessPending: true });
 
       const again = await verify(token, 'bvn', bvn, capture());
       expect(again.status).toBe(409);
@@ -333,7 +341,7 @@ describe('KYC liveness (Tier 3)', () => {
       await ctx.kycService.pollPendingLivenessJobs();
 
       const settled = await status(token);
-      expect(settled.body).toMatchObject({
+      expect(dataOf(settled)).toMatchObject({
         livenessVerified: true,
         livenessPending: false,
       });
@@ -341,7 +349,18 @@ describe('KYC liveness (Tier 3)', () => {
       expect(attempts.map((a) => a.succeeded)).toEqual([true]);
 
       const nin = await verify(token, 'nin', id(PASS));
-      expect(nin.body).toMatchObject({ tier: 'tier3' });
+      expect(dataOf(nin)).toMatchObject({ tier: 'tier3' });
+    });
+
+    it('reports LIVENESS_IN_PROGRESS for a second submission while one is pending', async () => {
+      const { token } = await seedUser();
+      const bvn = id(ASYNC_PASS);
+      await verify(token, 'bvn', bvn, capture()).expect(201);
+
+      const res = await verify(token, 'bvn', bvn, capture());
+
+      expect(res.status).toBe(409);
+      expect(errorOf(res)).toMatchObject({ code: 'LIVENESS_IN_PROGRESS' });
     });
 
     it('settles a pending job from a webhook that names it, ignoring the body', async () => {
@@ -354,7 +373,7 @@ describe('KYC liveness (Tier 3)', () => {
         .send({ jobId: job.providerJobId, status: 'block' });
 
       expect(webhook.status).toBe(200);
-      expect((await status(token)).body).toMatchObject({
+      expect(dataOf(await status(token))).toMatchObject({
         livenessVerified: true,
       });
     });
@@ -365,7 +384,7 @@ describe('KYC liveness (Tier 3)', () => {
 
       await ctx.kycService.pollPendingLivenessJobs();
 
-      expect((await status(token)).body).toMatchObject({
+      expect(dataOf(await status(token))).toMatchObject({
         bvnVerified: true,
         livenessVerified: false,
         livenessPending: false,
@@ -385,13 +404,13 @@ describe('KYC liveness (Tier 3)', () => {
 
       await ctx.kycService.pollPendingLivenessJobs();
 
-      expect((await status(token)).body).toMatchObject({
+      expect(dataOf(await status(token))).toMatchObject({
         livenessPending: false,
         livenessVerified: false,
       });
       const retry = await verify(token, 'bvn', bvn, capture());
       expect(retry.status).toBe(201);
-      expect(retry.body).toMatchObject({ livenessResult: 'pending' });
+      expect(dataOf(retry)).toMatchObject({ livenessResult: 'pending' });
     });
 
     it('ignores a webhook for an unknown job', async () => {
@@ -427,6 +446,25 @@ describe('KYC liveness (Tier 3)', () => {
     });
   });
 
+  describe('provider without liveness support', () => {
+    it('reports LIVENESS_UNAVAILABLE when a selfie is submitted', async () => {
+      const provider = ctx.app.get<KycProvider>(KYC_PROVIDER, {
+        strict: false,
+      });
+      const { token } = await seedUser();
+      Object.defineProperty(provider, 'supportsLiveness', { value: false });
+
+      try {
+        const res = await verify(token, 'bvn', id(PASS), capture());
+
+        expect(res.status).toBe(503);
+        expect(errorOf(res)).toMatchObject({ code: 'LIVENESS_UNAVAILABLE' });
+      } finally {
+        Object.defineProperty(provider, 'supportsLiveness', { value: true });
+      }
+    });
+  });
+
   describe('provider errors', () => {
     it('releases the attempt and the job slot but keeps the persisted identity', async () => {
       const { userId, token } = await seedUser();
@@ -436,7 +474,7 @@ describe('KYC liveness (Tier 3)', () => {
       expect(res.status).toBe(500);
       expect(await ctx.kycVerificationAttemptRepo.countBy({ userId })).toBe(0);
       expect(await ctx.kycLivenessJobRepo.countBy({ userId })).toBe(0);
-      expect((await status(token)).body).toMatchObject({ bvnVerified: true });
+      expect(dataOf(await status(token))).toMatchObject({ bvnVerified: true });
     });
   });
 
@@ -452,7 +490,7 @@ describe('KYC liveness (Tier 3)', () => {
 
         expect([bvn.status, nin.status]).toEqual([201, 201]);
         expect(await userTier(userId)).toBe('tier3');
-        expect((await status(token)).body).toMatchObject({
+        expect(dataOf(await status(token))).toMatchObject({
           bvnVerified: true,
           ninVerified: true,
           livenessVerified: true,

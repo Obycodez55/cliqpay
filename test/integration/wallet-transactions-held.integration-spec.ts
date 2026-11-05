@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { TransactionHistoryItemDto } from '../../src/modules/wallet/dto/transaction-history-item.dto';
 import { PaginatedResult } from '../../src/common/interfaces/paginated-result.interface';
 import { Money } from '../../src/shared/primitives/money';
+import { dataOf } from './support/api-response';
 import {
   LedgerTestContext,
   createLedgerTestContext,
@@ -36,13 +37,13 @@ describe('GET /wallet/transactions with held and refunded fundings', () => {
     jwtService.sign({ sub: userId, sid: 'test-session' });
 
   const history = async (userId: string, query: Record<string, unknown> = {}) =>
-    (
+    dataOf<HistoryResponse>(
       await request(ctx.app.getHttpServer())
         .get('/wallet/transactions')
         .query({ limit: 20, ...query })
         .set('Authorization', `Bearer ${tokenFor(userId)}`)
-        .expect(200)
-    ).body as HistoryResponse;
+        .expect(200),
+    );
 
   async function seedUser() {
     seq += 1;
@@ -140,7 +141,7 @@ describe('GET /wallet/transactions with held and refunded fundings', () => {
       .set('Authorization', `Bearer ${tokenFor(userId)}`)
       .expect(200);
 
-    expect((res.body as { balance: { amount: string } }).balance.amount).toBe(
+    expect(dataOf<{ balance: { amount: string } }>(res).balance.amount).toBe(
       '500000',
     );
   });

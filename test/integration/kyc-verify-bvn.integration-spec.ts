@@ -8,6 +8,7 @@ import {
   seedKycUser,
 } from './support/kyc-test-context';
 import { TEST_JWT_SECRET } from './support/test-app-config';
+import { dataOf, errorOf } from './support/api-response';
 
 jest.setTimeout(180_000);
 
@@ -71,7 +72,7 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
     const res = await verifyBvn(token, '12345678901');
 
     expect(res.status).toBe(201);
-    expect(res.body).toEqual({
+    expect(dataOf(res)).toEqual({
       tier: 'tier1',
       bvnVerified: true,
       ninVerified: false,
@@ -84,7 +85,7 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
 
     const statusRes = await getStatus(token);
     expect(statusRes.status).toBe(200);
-    expect(statusRes.body).toEqual({
+    expect(dataOf(statusRes)).toEqual({
       tier: 'tier1',
       verifiedLegalName: 'Ada Obi Lovelace',
       bvnVerified: true,
@@ -128,7 +129,7 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
     const res = await getStatus(tokenFor(userId));
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({
+    expect(dataOf(res)).toEqual({
       tier: 'tier0',
       verifiedLegalName: null,
       bvnVerified: false,
@@ -186,6 +187,48 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
     expect(attempts).toBe(5);
   });
 
+  describe('error codes', () => {
+    it('reports BVN_VERIFICATION_FAILED for a BVN the provider cannot verify', async () => {
+      const res = await verifyBvn(tokenFor(await seedUser()), '00000000001');
+
+      expect(res.status).toBe(422);
+      expect(errorOf(res)).toMatchObject({ code: 'BVN_VERIFICATION_FAILED' });
+    });
+
+    it('reports BVN_ALREADY_LINKED for a BVN another user has verified', async () => {
+      await verifyBvn(tokenFor(await seedUser()), '73000000001').expect(201);
+
+      const res = await verifyBvn(tokenFor(await seedUser()), '73000000001');
+
+      expect(res.status).toBe(409);
+      expect(errorOf(res)).toMatchObject({ code: 'BVN_ALREADY_LINKED' });
+    });
+
+    it('reports BVN_ALREADY_VERIFIED when a different BVN follows a verified one', async () => {
+      const token = tokenFor(await seedUser());
+      await verifyBvn(token, '73000000002').expect(201);
+
+      const res = await verifyBvn(token, '73000000003');
+
+      expect(res.status).toBe(409);
+      expect(errorOf(res)).toMatchObject({ code: 'BVN_ALREADY_VERIFIED' });
+    });
+
+    it('reports TOO_MANY_VERIFICATION_ATTEMPTS after 5 failed attempts', async () => {
+      const token = tokenFor(await seedUser());
+      for (let i = 0; i < 5; i += 1) {
+        await verifyBvn(token, '00000000001').expect(422);
+      }
+
+      const res = await verifyBvn(token, '73000000004');
+
+      expect(res.status).toBe(429);
+      expect(errorOf(res)).toMatchObject({
+        code: 'TOO_MANY_VERIFICATION_ATTEMPTS',
+      });
+    });
+  });
+
   describe('verified BVN immutability', () => {
     it('treats resubmitting the same BVN as a free no-op and rejects a different one', async () => {
       const userId = await seedUser();
@@ -198,7 +241,7 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
 
       const same = await verifyBvn(token, '71000000001');
       expect(same.status).toBe(201);
-      expect(same.body).toEqual({
+      expect(dataOf(same)).toEqual({
         tier: 'tier1',
         bvnVerified: true,
         ninVerified: false,
