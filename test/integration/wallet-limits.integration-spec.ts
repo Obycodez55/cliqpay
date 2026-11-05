@@ -16,6 +16,7 @@ import {
   seedBankAccount,
   seedWithdrawalUser,
 } from './support/withdrawals-test-context';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(180_000);
 
@@ -75,7 +76,7 @@ describe('GET /wallet/limits', () => {
 
   async function limits(userId: string) {
     const res = await getLimits(userId).expect(200);
-    return res.body as WalletLimitsResponseDto;
+    return dataOf<WalletLimitsResponseDto>(res);
   }
 
   function transfer(senderId: string, recipientUserId: string, amount: number) {

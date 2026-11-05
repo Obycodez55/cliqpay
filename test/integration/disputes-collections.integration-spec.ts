@@ -7,6 +7,7 @@ import {
   seedDisputesUser,
 } from './support/disputes-test-context';
 import { TEST_INTERNAL_API_SECRET } from './support/test-app-config';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(180_000);
 
@@ -96,12 +97,12 @@ describe('GET /disputes/collections', () => {
       const res = await getCollections(TEST_INTERNAL_API_SECRET);
 
       expect(res.status).toBe(200);
-      const entry = (
-        res.body as Array<{
+      const entry = dataOf<
+        Array<{
           userId: string;
           chargebacks: Array<{ chargebackTransactionId: string }>;
         }>
-      ).find((e) => e.userId === userId);
+      >(res).find((e) => e.userId === userId);
       expect(entry).toMatchObject({
         userId,
         balance: { amount: '-80000', currency: 'NGN' },
@@ -128,7 +129,7 @@ describe('GET /disputes/collections', () => {
       const res = await getCollections(TEST_INTERNAL_API_SECRET);
 
       expect(res.status).toBe(200);
-      const entry = (res.body as Array<{ userId: string }>).find(
+      const entry = dataOf<Array<{ userId: string }>>(res).find(
         (e) => e.userId === userId,
       );
       expect(entry).toBeUndefined();
@@ -156,12 +157,12 @@ describe('GET /disputes/collections', () => {
 
       const res = await getCollections(TEST_INTERNAL_API_SECRET);
 
-      const entry = (
-        res.body as Array<{
+      const entry = dataOf<
+        Array<{
           userId: string;
           chargebacks: Array<{ disputeReference: string }>;
         }>
-      ).find((e) => e.userId === userId);
+      >(res).find((e) => e.userId === userId);
       expect(entry?.chargebacks.map((c) => c.disputeReference).sort()).toEqual(
         [firstReference, secondReference].sort(),
       );

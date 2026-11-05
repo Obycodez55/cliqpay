@@ -7,6 +7,7 @@ import {
   seedDisputesUser,
 } from './support/disputes-test-context';
 import { TEST_INTERNAL_API_SECRET } from './support/test-app-config';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(180_000);
 
@@ -128,7 +129,7 @@ describe('POST /disputes/resolve', () => {
       );
 
       expect(res.status).toBe(201);
-      expect(res.body).toMatchObject({
+      expect(dataOf(res)).toMatchObject({
         disputeReference,
         status: 'upheld',
         accountUnfrozen: false,
@@ -169,9 +170,9 @@ describe('POST /disputes/resolve', () => {
         disputeReference,
       });
       expect(chargeback.status).toBe(201);
-      expect(
-        (chargeback.body as { accountFrozen: boolean }).accountFrozen,
-      ).toBe(true);
+      expect(dataOf<{ accountFrozen: boolean }>(chargeback).accountFrozen).toBe(
+        true,
+      );
 
       const res = await postResolve(
         { disputeReference, outcome: 'upheld' },
@@ -209,7 +210,7 @@ describe('POST /disputes/resolve', () => {
       );
 
       expect(res.status).toBe(201);
-      expect(res.body).toMatchObject({
+      expect(dataOf(res)).toMatchObject({
         disputeReference,
         status: 'resolved',
         amount: { amount: '100000', currency: 'NGN' },
@@ -266,7 +267,7 @@ describe('POST /disputes/resolve', () => {
       );
 
       expect(res.status).toBe(201);
-      expect((res.body as { accountUnfrozen: boolean }).accountUnfrozen).toBe(
+      expect(dataOf<{ accountUnfrozen: boolean }>(res).accountUnfrozen).toBe(
         false,
       );
 
@@ -368,7 +369,7 @@ describe('POST /disputes/resolve', () => {
 
       expect(resolveA.status).toBe(201);
       expect(
-        (resolveA.body as { accountUnfrozen: boolean }).accountUnfrozen,
+        dataOf<{ accountUnfrozen: boolean }>(resolveA).accountUnfrozen,
       ).toBe(false);
 
       const userAfterResolveA = await ctx.userRepo.findOneByOrFail({

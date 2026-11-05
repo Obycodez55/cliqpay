@@ -9,6 +9,7 @@ import {
   fundWallet,
   seedTransferUser,
 } from './support/transfers-test-context';
+import { dataOf, errorOf } from './support/api-response';
 
 jest.setTimeout(180_000);
 
@@ -125,6 +126,20 @@ describe('Recipient balance cap on incoming P2P transfers', () => {
     await send(sender.userId, recipient.userId, MIN).expect(422);
   });
 
+  it('reports RECIPIENT_UNABLE_TO_RECEIVE with no details', async () => {
+    const sender = await seedUser('tier3', 100_000_000n, 'sender');
+    const recipient = await seedUser('tier0');
+
+    const res = await send(sender.userId, recipient.userId, MIN);
+
+    expect(res.status).toBe(422);
+    expect(errorOf(res)).toMatchObject({
+      code: 'RECIPIENT_UNABLE_TO_RECEIVE',
+      message: GENERIC_MESSAGE,
+    });
+    expect(errorOf(res).details).toBeUndefined();
+  });
+
   it('rejects any transfer to a tier-0 recipient with the same generic error', async () => {
     const sender = await seedUser('tier3', 100_000_000n, 'sender');
     const recipient = await seedUser('tier0');
@@ -158,7 +173,7 @@ describe('Recipient balance cap on incoming P2P transfers', () => {
     const replay = await send(sender.userId, recipient.userId, MIN, ref);
 
     expect(replay.status).toBe(201);
-    expect(replay.body).toEqual(first.body);
+    expect(dataOf(replay)).toEqual(dataOf(first));
   });
 
   it('rejects a money-request payment once the requester has since reached their cap, with the same generic error, leaving the request pending', async () => {
@@ -177,7 +192,7 @@ describe('Recipient balance cap on incoming P2P transfers', () => {
     const ref = reference();
 
     const res = await request(ctx.app.getHttpServer())
-      .post(`/money-requests/${(created.body as { id: string }).id}/pay`)
+      .post(`/money-requests/${dataOf<{ id: string }>(created).id}/pay`)
       .set('Authorization', `Bearer ${tokenFor(payer.userId)}`)
       .send({ reference: ref, pin: '1234' });
 
@@ -188,7 +203,7 @@ describe('Recipient balance cap on incoming P2P transfers', () => {
       expect(text).not.toContain(secret);
     }
     const moneyRequest = await ctx.moneyRequestRepo.findOneByOrFail({
-      id: (created.body as { id: string }).id,
+      id: dataOf<{ id: string }>(created).id,
     });
     expect(moneyRequest.status).toBe('pending');
     expect(await ctx.transactionRepo.findOneBy({ reference: ref })).toBeNull();

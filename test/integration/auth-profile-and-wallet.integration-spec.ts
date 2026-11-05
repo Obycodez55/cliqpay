@@ -7,6 +7,7 @@ import {
   destroyAuthTestContext,
 } from './support/auth-test-context';
 import { createAuthTestHelpers } from './support/auth-test-helpers';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(120_000);
 
@@ -39,7 +40,7 @@ describe('Profile and wallet endpoints', () => {
       .set('Authorization', `Bearer ${tokens.accessToken}`)
       .expect(200);
 
-    const body = res.body as ProfileResponseDto;
+    const body = dataOf<ProfileResponseDto>(res);
     expect(body.firstName).toBe('Ada');
     expect(body.lastName).toBe('Lovelace');
     expect(body.email).toBe('profile-read@example.com');
@@ -73,7 +74,7 @@ describe('Profile and wallet endpoints', () => {
       .send({ firstName: 'Grace', lastName: 'Hopper' })
       .expect(200);
 
-    const body = res.body as ProfileResponseDto;
+    const body = dataOf<ProfileResponseDto>(res);
     expect(body.firstName).toBe('Grace');
     expect(body.lastName).toBe('Hopper');
 
@@ -98,7 +99,7 @@ describe('Profile and wallet endpoints', () => {
       .send({ username: 'new_username_1' })
       .expect(200);
 
-    const body = res.body as ProfileResponseDto;
+    const body = dataOf<ProfileResponseDto>(res);
     expect(body.username).toBe('new_username_1');
 
     const updated = await ctx.userRepo.findOneByOrFail({ id: user.id });
@@ -171,7 +172,7 @@ describe('Profile and wallet endpoints', () => {
       .set('Authorization', `Bearer ${tokens.accessToken}`)
       .expect(200);
 
-    const body = res.body as WalletBalanceResponseDto;
+    const body = dataOf<WalletBalanceResponseDto>(res);
     expect(body.currency).toBe('NGN');
     expect(body.balance).toEqual({ amount: '0', currency: 'NGN' });
   });

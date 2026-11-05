@@ -10,6 +10,7 @@ import {
   SIGN_IN_CODE_SUBJECT,
   waitFor,
 } from './support/auth-test-helpers';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(120_000);
 
@@ -37,7 +38,7 @@ describe('transaction PIN — set, change, reset, lockout', () => {
       .set('Authorization', `Bearer ${accessToken}`)
       .send({})
       .expect(200);
-    const challengeId = (res.body as { challengeId: string }).challengeId;
+    const challengeId = dataOf<{ challengeId: string }>(res).challengeId;
     const code = extractSixDigitCode(
       helpers.latestEmailWithSubject(SIGN_IN_CODE_SUBJECT).text,
     );

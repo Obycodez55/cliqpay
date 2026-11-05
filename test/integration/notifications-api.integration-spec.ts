@@ -12,6 +12,7 @@ import {
   buildTestAppConfig,
   buildTestConfigModule,
   buildTestJwtModule,
+  buildTestPipelineModules,
 } from './support/test-app-config';
 import { EventBusModule } from '../../src/shared/events/event-bus.module';
 import { EventBusService } from '../../src/shared/events/event-bus.service';
@@ -27,6 +28,7 @@ import {
   createTestDatabase,
   dropTestDatabase,
 } from './support/test-database';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(120_000);
 
@@ -76,6 +78,7 @@ describe('Notifications API — list/unread-count/mark-read', () => {
       imports: [
         buildTestConfigModule(config),
         buildTestJwtModule(),
+        ...buildTestPipelineModules(),
         TypeOrmModule.forRootAsync({
           inject: [APP_CONFIG],
           useFactory: (cfg: AppConfig) => buildDataSourceOptions(cfg),
@@ -131,7 +134,7 @@ describe('Notifications API — list/unread-count/mark-read', () => {
       const res = await request(app.getHttpServer())
         .get('/notifications')
         .set('Authorization', `Bearer ${tokenFor(USER_A)}`);
-      const body = res.body as PaginatedResult<NotificationItemDto>;
+      const body = dataOf<PaginatedResult<NotificationItemDto>>(res);
       return body.items.some((item) => item.type === 'funding_completed');
     });
 
@@ -139,7 +142,7 @@ describe('Notifications API — list/unread-count/mark-read', () => {
       .get('/notifications')
       .set('Authorization', `Bearer ${tokenFor(USER_A)}`)
       .expect(200);
-    const body = res.body as PaginatedResult<NotificationItemDto>;
+    const body = dataOf<PaginatedResult<NotificationItemDto>>(res);
     expect(body.items[0]).toMatchObject({
       type: 'funding_completed',
       title: 'Wallet funded',
@@ -202,7 +205,7 @@ describe('Notifications API — list/unread-count/mark-read', () => {
       const res = await request(app.getHttpServer())
         .get('/notifications/unread-count')
         .set('Authorization', `Bearer ${tokenFor(userId)}`);
-      unreadCount = (res.body as UnreadCountResponseDto).count;
+      unreadCount = dataOf<UnreadCountResponseDto>(res).count;
       return unreadCount > 0;
     });
     expect(unreadCount).toBe(1);
@@ -217,7 +220,7 @@ describe('Notifications API — list/unread-count/mark-read', () => {
       .get('/notifications/unread-count')
       .set('Authorization', `Bearer ${tokenFor(userId)}`)
       .expect(200);
-    expect((after.body as UnreadCountResponseDto).count).toBe(0);
+    expect(dataOf<UnreadCountResponseDto>(after).count).toBe(0);
   });
 
   it('marking read is idempotent — a second call does not move read_at', async () => {

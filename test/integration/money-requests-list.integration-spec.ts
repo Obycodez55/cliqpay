@@ -6,6 +6,7 @@ import {
   destroyTransfersTestContext,
   seedTransferUser,
 } from './support/transfers-test-context';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(180_000);
 
@@ -68,7 +69,7 @@ describe('GET /money-requests/incoming and /outgoing', () => {
       .set('Authorization', `Bearer ${token}`)
       .send(body)
       .expect(expectStatus);
-    return res.body as MoneyRequestBody;
+    return dataOf<MoneyRequestBody>(res);
   }
 
   async function listIncoming(token: string): Promise<MoneyRequestListBody> {
@@ -76,7 +77,7 @@ describe('GET /money-requests/incoming and /outgoing', () => {
       .get('/money-requests/incoming')
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    return res.body as MoneyRequestListBody;
+    return dataOf<MoneyRequestListBody>(res);
   }
 
   async function listOutgoing(token: string): Promise<MoneyRequestListBody> {
@@ -84,7 +85,7 @@ describe('GET /money-requests/incoming and /outgoing', () => {
       .get('/money-requests/outgoing')
       .set('Authorization', `Bearer ${token}`)
       .expect(200);
-    return res.body as MoneyRequestListBody;
+    return dataOf<MoneyRequestListBody>(res);
   }
 
   it('scopes incoming/outgoing lists to the two actual parties', async () => {

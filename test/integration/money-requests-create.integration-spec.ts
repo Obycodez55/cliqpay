@@ -8,6 +8,7 @@ import {
   fundWallet,
   seedTransferUser,
 } from './support/transfers-test-context';
+import { dataOf, errorOf } from './support/api-response';
 
 jest.setTimeout(180_000);
 
@@ -78,7 +79,7 @@ describe('POST /money-requests — create', () => {
       .set('Authorization', `Bearer ${token}`)
       .send(body)
       .expect(expectStatus);
-    return res.body as MoneyRequestBody;
+    return dataOf<MoneyRequestBody>(res);
   }
 
   it('rejects an unauthenticated create', async () => {
@@ -249,9 +250,7 @@ describe('POST /money-requests — create', () => {
         .set('Authorization', `Bearer ${tokenFor(requester.userId)}`)
         .send({ payerUserId: payer.userId, amount: 10_000 })
         .expect(422);
-      expect((fourthRes.body as { message: string }).message).toMatch(
-        /outstanding requests/,
-      );
+      expect(errorOf(fourthRes).message).toMatch(/outstanding requests/);
 
       // Backdate all three so they're `pending` in the row but expired in
       // practice — nothing sweeps `status` (ADR-0012).

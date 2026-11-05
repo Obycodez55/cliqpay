@@ -8,6 +8,7 @@ import {
   seedBankAccount,
   seedWithdrawalUser,
 } from './support/withdrawals-test-context';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(180_000);
 
@@ -125,7 +126,7 @@ describe('POST /withdrawals', () => {
       pin: '1234',
     }).expect(201);
 
-    expect(res.body).toMatchObject({
+    expect(dataOf(res)).toMatchObject({
       reference,
       amount: { amount: '500000', currency: 'NGN' },
       platformFee: { amount: '0', currency: 'NGN' },
@@ -319,7 +320,7 @@ describe('POST /withdrawals', () => {
         pin: '1234',
       }).expect(201);
 
-      expect(res.body).toMatchObject({ status: 'pending' });
+      expect(dataOf(res)).toMatchObject({ status: 'pending' });
 
       const walletAccount = await ctx.accountRepo.findOneByOrFail({
         id: sender.walletId,
@@ -352,7 +353,7 @@ describe('POST /withdrawals', () => {
       const first = await initiate(tokenFor(sender.userId), body).expect(201);
       const second = await initiate(tokenFor(sender.userId), body).expect(201);
 
-      expect(second.body).toEqual(first.body);
+      expect(dataOf(second)).toEqual(dataOf(first));
       const walletAccount = await ctx.accountRepo.findOneByOrFail({
         id: sender.walletId,
       });

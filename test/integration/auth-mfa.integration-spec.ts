@@ -19,6 +19,7 @@ import {
   TEST_DEVICE,
   wrongCodeFor,
 } from './support/auth-test-helpers';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(120_000);
 
@@ -247,7 +248,7 @@ describe('MFA over HTTP — trusted-device cookie and the JWT guard', () => {
         password: 'a-strong-unique-passphrase',
       })
       .expect(200);
-    const loginBody = loginRes.body as LoginResponseDto;
+    const loginBody = dataOf<LoginResponseDto>(loginRes);
     expect(loginBody.mfaRequired).toBe(true);
     if (!loginBody.mfaRequired) {
       throw new Error('expected a challenge');
@@ -298,7 +299,7 @@ describe('MFA over HTTP — trusted-device cookie and the JWT guard', () => {
         password: 'a-strong-unique-passphrase',
       })
       .expect(200);
-    const secondLoginBody = secondLoginRes.body as LoginResponseDto;
+    const secondLoginBody = dataOf<LoginResponseDto>(secondLoginRes);
     expect(secondLoginBody.mfaRequired).toBe(false);
     if (secondLoginBody.mfaRequired) {
       throw new Error('expected the challenge to be skipped');
@@ -323,7 +324,7 @@ describe('MFA over HTTP — trusted-device cookie and the JWT guard', () => {
       .set('Authorization', `Bearer ${accessToken}`)
       .send({})
       .expect(200);
-    const challengeId = (res.body as { challengeId: string }).challengeId;
+    const challengeId = dataOf<{ challengeId: string }>(res).challengeId;
     const code = extractSixDigitCode(
       helpers.latestEmailWithSubject(SIGN_IN_CODE_SUBJECT).text,
     );
@@ -350,7 +351,7 @@ describe('MFA over HTTP — trusted-device cookie and the JWT guard', () => {
       .send({ challengeId, code })
       .expect(200);
 
-    const body = res.body as EnrollTotpResponseDto;
+    const body = dataOf<EnrollTotpResponseDto>(res);
     expect(body.secret).toBeDefined();
     expect(body.otpauthUrl).toContain('otpauth://totp/');
   });

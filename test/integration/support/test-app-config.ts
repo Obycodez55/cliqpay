@@ -1,5 +1,7 @@
-import { DynamicModule, Module } from '@nestjs/common';
+import { DynamicModule, Module, Type } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
+import { LoggerModule } from 'nestjs-pino';
+import { CommonModule } from '../../../src/common/common.module';
 import { APP_CONFIG, AppConfig } from '../../../src/config';
 
 export const TEST_JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
@@ -96,4 +98,14 @@ export function buildTestJwtModule(): DynamicModule {
     inject: [APP_CONFIG],
     useFactory: (config: AppConfig) => ({ secret: config.jwt.secret }),
   });
+}
+
+// The same global filter and interceptor AppModule gets from CommonModule, so
+// contexts return the real success and error envelopes. The logger is silent
+// because the filter logs every rejected request.
+export function buildTestPipelineModules(): (DynamicModule | Type)[] {
+  return [
+    LoggerModule.forRoot({ pinoHttp: { level: 'silent' } }),
+    CommonModule,
+  ];
 }

@@ -10,6 +10,7 @@ import {
   seedCompletedFunding,
   seedUserWithWallet,
 } from './support/ledger-test-context';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(120_000);
 
@@ -85,7 +86,7 @@ describe('GET /wallet/transactions', () => {
       .set('Authorization', `Bearer ${tokenFor(userId)}`)
       .expect(200);
 
-    const body = res.body as HistoryResponse;
+    const body = dataOf<HistoryResponse>(res);
     expect(body.items).toHaveLength(3);
     expect(body.nextCursor).toBeNull();
     expect(body.items.map((i) => i.amount.amount)).toEqual([
@@ -128,7 +129,7 @@ describe('GET /wallet/transactions', () => {
         .query(cursor ? { limit, cursor } : { limit })
         .set('Authorization', `Bearer ${tokenFor(userId)}`)
         .expect(200);
-      const body = res.body as HistoryResponse;
+      const body = dataOf<HistoryResponse>(res);
 
       expect(body.items.length).toBeLessThanOrEqual(limit);
       seenIds.push(...body.items.map((i) => i.id));
@@ -207,7 +208,7 @@ describe('GET /wallet/transactions', () => {
         .query(cursor ? { limit, cursor } : { limit })
         .set('Authorization', `Bearer ${tokenFor(userId)}`)
         .expect(200);
-      const body = res.body as HistoryResponse;
+      const body = dataOf<HistoryResponse>(res);
 
       seenIds.push(...body.items.map((i) => i.id));
       cursor = body.nextCursor ?? undefined;
@@ -248,7 +249,7 @@ describe('GET /wallet/transactions', () => {
       .query({ limit: 20 })
       .set('Authorization', `Bearer ${tokenFor(sender.userId)}`)
       .expect(200);
-    const senderBody = senderRes.body as HistoryResponse;
+    const senderBody = dataOf<HistoryResponse>(senderRes);
     const senderTransferRow = senderBody.items.find(
       (i) => i.type === 'p2p_transfer',
     );
@@ -271,7 +272,7 @@ describe('GET /wallet/transactions', () => {
       .query({ limit: 20 })
       .set('Authorization', `Bearer ${tokenFor(recipient.userId)}`)
       .expect(200);
-    const recipientBody = recipientRes.body as HistoryResponse;
+    const recipientBody = dataOf<HistoryResponse>(recipientRes);
     const recipientTransferRow = recipientBody.items.find(
       (i) => i.type === 'p2p_transfer',
     );
@@ -338,7 +339,7 @@ describe('GET /wallet/transactions', () => {
           .query(cursor ? { limit, cursor } : { limit })
           .set('Authorization', `Bearer ${tokenFor(userId)}`)
           .expect(200);
-        const body = res.body as HistoryResponse;
+        const body = dataOf<HistoryResponse>(res);
         seenIds.push(...body.items.map((i) => i.id));
         cursor = body.nextCursor ?? undefined;
         pages += 1;

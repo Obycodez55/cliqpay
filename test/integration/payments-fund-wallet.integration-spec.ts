@@ -8,6 +8,7 @@ import {
   destroyPaymentsTestContext,
   seedUserWithWallet,
 } from './support/payments-test-context';
+import { dataOf } from './support/api-response';
 
 jest.setTimeout(120_000);
 
@@ -43,7 +44,7 @@ describe('POST /wallet/fund', () => {
       .send({ amount: 500000, reference: 'cliqpay-fund-basic-1' })
       .expect(201);
 
-    const body = res.body as FundWalletResponseDto;
+    const body = dataOf<FundWalletResponseDto>(res);
     expect(body.checkoutUrl).toBe(
       'https://fake-checkout.cliqpay.test/cliqpay-fund-basic-1',
     );
@@ -105,7 +106,7 @@ describe('POST /wallet/fund', () => {
       .send({ amount: 250000, reference: 'cliqpay-fund-retry-1' })
       .expect(201);
 
-    expect(second.body).toEqual(first.body);
+    expect(dataOf(second)).toEqual(dataOf(first));
     expect(ctx.fakeAdapter.initiated).toHaveLength(initiatedBefore + 1);
 
     const transactions = await ctx.transactionRepo.findBy({
@@ -218,7 +219,7 @@ describe('POST /wallet/fund', () => {
       .set('Authorization', `Bearer ${tokenFor(userA)}`)
       .send({ amount: 500000, reference: 'cliqpay-fund-crossuser-1' })
       .expect(201);
-    const firstBody = first.body as FundWalletResponseDto;
+    const firstBody = dataOf<FundWalletResponseDto>(first);
 
     const second = await request(ctx.app.getHttpServer())
       .post('/wallet/fund')
