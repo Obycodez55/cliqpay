@@ -11,6 +11,7 @@ import { AppModule } from './app.module';
 import { APP_CONFIG, AppConfig } from './config';
 import { setupApiDocs } from './docs/setup-api-docs';
 import { setupBodyParsers } from './common/body-parsers';
+import { armShutdownWatchdog } from './common/shutdown-watchdog';
 
 const SHUTDOWN_SIGNALS: NodeJS.Signals[] = ['SIGTERM', 'SIGINT'];
 const FORCE_EXIT_TIMEOUT_MS = 10_000;
@@ -36,17 +37,20 @@ function setupGracefulShutdown(app: INestApplication, logger: Logger) {
         process.exit(1);
       }, FORCE_EXIT_TIMEOUT_MS);
       forceExitTimer.unref();
+      const cancelWatchdog = armShutdownWatchdog(FORCE_EXIT_TIMEOUT_MS);
 
       app
         .close()
         .then(() => {
           logger.log('Shutdown complete');
           clearTimeout(forceExitTimer);
+          cancelWatchdog();
           process.exit(0);
         })
         .catch((error: unknown) => {
           logger.error({ err: error }, 'Error during graceful shutdown');
           clearTimeout(forceExitTimer);
+          cancelWatchdog();
           process.exit(1);
         });
     });
