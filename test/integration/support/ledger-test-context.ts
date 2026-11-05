@@ -16,6 +16,7 @@ import {
   dropTestDatabase,
 } from './test-database';
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
+import { WalletModule } from '../../../src/modules/wallet/wallet.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
 import { Account } from '../../../src/modules/ledger/entities/account.entity';
 import { LedgerEntry } from '../../../src/modules/ledger/entities/ledger-entry.entity';
@@ -38,9 +39,9 @@ export interface LedgerTestContext {
 }
 
 // A lighter context than payments-test-context.ts — the transactions-history
-// endpoint (issue #16) lives entirely on ledger's WalletController and never
+// endpoint (issue #16) lives entirely on the wallet module's controller and never
 // touches a provider, Redis, or notifications, so this only wires up
-// UsersModule + LedgerModule against a real Postgres (Testcontainers).
+// UsersModule + LedgerModule + WalletModule against a real Postgres (Testcontainers).
 export async function createLedgerTestContext(): Promise<LedgerTestContext> {
   const database = await createTestDatabase();
 
@@ -58,6 +59,7 @@ export async function createLedgerTestContext(): Promise<LedgerTestContext> {
       }),
       UsersModule,
       LedgerModule,
+      WalletModule,
     ],
   }).compile();
 

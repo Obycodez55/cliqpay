@@ -16,7 +16,7 @@ catch it.
 Three symptoms made the missing definition visible:
 
 1. `/v1/wallet` ended up served by two controllers in two modules —
-   `WalletController` (`ledger`) for `GET /wallet/balance`, and a
+   `WalletController` (`ledger`, since moved to `wallet`, see the 2026-11-05 amendment) for `GET /wallet/balance`, and a
    `PaymentsController` (`payments`) for `POST /wallet/fund`.
 2. `PaymentsService` stores its checkout URL in `Transaction.metadata` (a
    `Record<string, unknown>` owned by `ledger`) and reads it back out as
@@ -187,3 +187,16 @@ ADR-0021 applies the same test to refunds: settling a refund (`DR suspense /
 CR float`) is a ledger posting rule; initiating a refund and reading its
 status is a `payments` concern, on the same seam: `payments` hands `ledger`
 provider facts.
+
+## Amendment (2026-11-05): `GET /wallet/balance` and `/wallet/transactions` move to a `wallet` module
+
+`WalletController` no longer lives in `ledger`. Decorating transaction history
+with counterparty identity needs `UsersService`, and `ledger` imports nothing
+from any other module (ADR-0011). The two routes are served by a
+controller-only `wallet` module that calls `LedgerService` and `UsersService`.
+This is the dedicated module the `GET /wallet/limits` amendment above said to
+consider once more non-rails routes appeared. The rule above becomes: `wallet`
+serves the provider-free reads, `payments` serves what needs a provider, and
+`/wallet/limits` stays on `payments` for the reason given in its amendment.
+`ledger` serves no HTTP routes. The URL namespace and the `Wallet` tag are
+unchanged.

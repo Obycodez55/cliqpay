@@ -1,0 +1,79 @@
+import { ApiProperty } from '@nestjs/swagger';
+import { MoneyDto } from '../../../common/dto/money-response.dto';
+import { IdentitySummaryDto } from '../../../common/dto/identity-summary.dto';
+import { TransactionHistoryEntry } from '../../ledger/ledger.service';
+
+export class TransactionHistoryItemDto {
+  @ApiProperty({ description: 'Ledger entry id' })
+  id: string;
+
+  @ApiProperty()
+  reference: string;
+
+  @ApiProperty({
+    enum: [
+      'funding',
+      'p2p_transfer',
+      'withdrawal',
+      'withdrawal_reversal',
+      'chargeback',
+      'profit_withdrawal',
+      'bill_split',
+      'scheduled',
+    ],
+  })
+  type: TransactionHistoryEntry['type'];
+
+  @ApiProperty({
+    enum: [
+      'pending',
+      'completed',
+      'failed',
+      'reversed',
+      'disputed',
+      'held',
+      'refunded',
+    ],
+  })
+  status: TransactionHistoryEntry['status'];
+
+  @ApiProperty({
+    enum: ['debit', 'credit'],
+    nullable: true,
+    description:
+      'The effect on the wallet, or null when the wallet was not touched: a funding held in suspense, or already refunded, because it would have taken the wallet over its balance limit.',
+  })
+  direction: TransactionHistoryEntry['direction'];
+
+  @ApiProperty({ type: MoneyDto })
+  amount: MoneyDto;
+
+  @ApiProperty({
+    type: IdentitySummaryDto,
+    nullable: true,
+    description:
+      'The other party to this transaction, or null for transaction types with no counterparty (e.g. funding)',
+  })
+  counterparty: IdentitySummaryDto | null;
+
+  @ApiProperty()
+  createdAt: string;
+}
+
+export function toTransactionHistoryItem(
+  entry: TransactionHistoryEntry,
+  identityByUserId: ReadonlyMap<string, IdentitySummaryDto>,
+): TransactionHistoryItemDto {
+  return {
+    id: entry.id,
+    reference: entry.reference,
+    type: entry.type,
+    status: entry.status,
+    direction: entry.direction,
+    amount: entry.amount.toJSON(),
+    counterparty: entry.counterpartyUserId
+      ? (identityByUserId.get(entry.counterpartyUserId) ?? null)
+      : null,
+    createdAt: entry.createdAt.toISOString(),
+  };
+}

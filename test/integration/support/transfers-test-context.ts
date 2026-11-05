@@ -24,6 +24,7 @@ import { Account } from '../../../src/modules/ledger/entities/account.entity';
 import { Transaction } from '../../../src/modules/ledger/entities/transaction.entity';
 import { LedgerEntry } from '../../../src/modules/ledger/entities/ledger-entry.entity';
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
+import { WalletModule } from '../../../src/modules/wallet/wallet.module';
 import { LedgerService } from '../../../src/modules/ledger/ledger.service';
 import { User } from '../../../src/modules/users/entities/user.entity';
 import { UsersModule } from '../../../src/modules/users/users.module';
@@ -102,6 +103,7 @@ export async function createTransfersTestContext(
       }),
       UsersModule,
       LedgerModule,
+      WalletModule,
       AuthModule,
       TransfersModule,
       NotificationsModule,

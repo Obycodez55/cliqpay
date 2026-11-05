@@ -1,6 +1,6 @@
 import * as request from 'supertest';
 import { ProfileResponseDto } from '../../src/modules/users/dto/profile-response.dto';
-import { WalletBalanceResponseDto } from '../../src/modules/ledger/dto/wallet-balance-response.dto';
+import { WalletBalanceResponseDto } from '../../src/modules/wallet/dto/wallet-balance-response.dto';
 import {
   AuthTestContext,
   createAuthTestContext,

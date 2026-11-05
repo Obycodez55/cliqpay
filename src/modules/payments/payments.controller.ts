@@ -27,7 +27,7 @@ import { FundWalletDto } from './dto/fund-wallet.dto';
 import { FundWalletResponseDto } from './dto/fund-wallet-response.dto';
 import { WalletLimitsResponseDto } from './dto/wallet-limits-response.dto';
 
-// Shares the `/wallet` namespace with ledger's WalletController by design
+// Shares the `/wallet` namespace with the wallet module's WalletController by design
 @ApiTags('Wallet')
 @Controller('wallet')
 export class PaymentsController {

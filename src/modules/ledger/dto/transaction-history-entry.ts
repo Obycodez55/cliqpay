@@ -1,6 +1,3 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { MoneyDto } from '../../../common/dto/money-response.dto';
-import { IdentitySummaryDto } from '../../../common/dto/identity-summary.dto';
 import { Money } from '../../../shared/primitives/money';
 import {
   LedgerEntry,
@@ -15,8 +12,7 @@ import {
 // Ledger's own view of a history row — `counterpartyUserId` is as far as
 // LedgerService goes (accounts is its own table, so resolving a wallet id to
 // a user id needs no cross-module import). Resolving that id to a display
-// name is WalletController's job, once UsersService is in scope (see
-// toTransactionHistoryItem below).
+// name is the caller's job.
 export interface TransactionHistoryEntry {
   id: string;
   reference: string;
@@ -28,63 +24,6 @@ export interface TransactionHistoryEntry {
   amount: Money;
   counterpartyUserId: string | null;
   createdAt: Date;
-}
-
-export class TransactionHistoryItemDto {
-  @ApiProperty({ description: 'Ledger entry id' })
-  id: string;
-
-  @ApiProperty()
-  reference: string;
-
-  @ApiProperty({
-    enum: [
-      'funding',
-      'p2p_transfer',
-      'withdrawal',
-      'withdrawal_reversal',
-      'chargeback',
-      'profit_withdrawal',
-      'bill_split',
-      'scheduled',
-    ],
-  })
-  type: TransactionType;
-
-  @ApiProperty({
-    enum: [
-      'pending',
-      'completed',
-      'failed',
-      'reversed',
-      'disputed',
-      'held',
-      'refunded',
-    ],
-  })
-  status: TransactionStatus;
-
-  @ApiProperty({
-    enum: ['debit', 'credit'],
-    nullable: true,
-    description:
-      'The effect on the wallet, or null when the wallet was not touched: a funding held in suspense, or already refunded, because it would have taken the wallet over its balance limit.',
-  })
-  direction: LedgerEntryDirection | null;
-
-  @ApiProperty({ type: MoneyDto })
-  amount: MoneyDto;
-
-  @ApiProperty({
-    type: IdentitySummaryDto,
-    nullable: true,
-    description:
-      'The other party to this transaction, or null for transaction types with no counterparty (e.g. funding)',
-  })
-  counterparty: IdentitySummaryDto | null;
-
-  @ApiProperty()
-  createdAt: string;
 }
 
 // `entry.transaction` must be loaded (see LedgerService.getTransactionHistory's
@@ -120,24 +59,6 @@ export function toTransactionHistoryEntry(
       ? (counterpartyUserIdByWalletId.get(counterpartyWalletId) ?? null)
       : null,
     createdAt: entry.createdAt,
-  };
-}
-
-export function toTransactionHistoryItem(
-  entry: TransactionHistoryEntry,
-  identityByUserId: ReadonlyMap<string, IdentitySummaryDto>,
-): TransactionHistoryItemDto {
-  return {
-    id: entry.id,
-    reference: entry.reference,
-    type: entry.type,
-    status: entry.status,
-    direction: entry.direction,
-    amount: entry.amount.toJSON(),
-    counterparty: entry.counterpartyUserId
-      ? (identityByUserId.get(entry.counterpartyUserId) ?? null)
-      : null,
-    createdAt: entry.createdAt.toISOString(),
   };
 }
 
