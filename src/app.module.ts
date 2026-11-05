@@ -13,6 +13,7 @@ import { RedisModule } from './redis/redis.module';
 import { EventBusModule } from './shared/events/event-bus.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { LedgerModule } from './modules/ledger/ledger.module';
+import { WalletModule } from './modules/wallet/wallet.module';
 import { UsersModule } from './modules/users/users.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { PaymentsModule } from './modules/payments/payments.module';
@@ -37,6 +38,7 @@ import { KycModule } from './modules/kyc/kyc.module';
     }),
     NotificationsModule,
     LedgerModule,
+    WalletModule,
     UsersModule,
     AuthModule,
     PaymentsModule,

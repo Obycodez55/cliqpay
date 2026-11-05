@@ -886,6 +886,7 @@ src/
         kora.adapter.ts
         fake.adapter.ts
     auth/
+    wallet/                      # controller-only: GET /wallet/balance, /wallet/transactions
     kyc/
       adapters/
         kyc-provider.interface.ts

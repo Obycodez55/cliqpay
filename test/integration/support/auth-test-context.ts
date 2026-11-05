@@ -33,6 +33,7 @@ import { MfaService } from '../../../src/modules/auth/mfa.service';
 import { SessionService } from '../../../src/modules/auth/session.service';
 import { Account } from '../../../src/modules/ledger/entities/account.entity';
 import { LedgerModule } from '../../../src/modules/ledger/ledger.module';
+import { WalletModule } from '../../../src/modules/wallet/wallet.module';
 import { User } from '../../../src/modules/users/entities/user.entity';
 import { UsersModule } from '../../../src/modules/users/users.module';
 import { NotificationsModule } from '../../../src/modules/notifications/notifications.module';
@@ -94,6 +95,7 @@ export async function createAuthTestContext(
       }),
       UsersModule,
       LedgerModule,
+      WalletModule,
       AuthModule,
       NotificationsModule,
       ...extraImports,

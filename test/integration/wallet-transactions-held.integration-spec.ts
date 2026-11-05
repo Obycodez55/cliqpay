@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import * as request from 'supertest';
 import { JwtService } from '@nestjs/jwt';
-import { TransactionHistoryItemDto } from '../../src/modules/ledger/dto/transaction-history-item.dto';
+import { TransactionHistoryItemDto } from '../../src/modules/wallet/dto/transaction-history-item.dto';
 import { PaginatedResult } from '../../src/common/interfaces/paginated-result.interface';
 import { Money } from '../../src/shared/primitives/money';
 import {

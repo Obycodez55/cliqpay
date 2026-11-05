@@ -12,7 +12,7 @@ import {
   TransactionHistoryEntry,
   toHeldFundingHistoryEntry,
   toTransactionHistoryEntry,
-} from './dto/transaction-history-item.dto';
+} from './dto/transaction-history-entry';
 import { Account } from './entities/account.entity';
 import { LedgerEntry } from './entities/ledger-entry.entity';
 import {
@@ -174,6 +174,8 @@ export interface StaleFundingTransaction {
 export interface StaleWithdrawalTransaction {
   reference: string;
 }
+
+export type { TransactionHistoryEntry };
 
 export interface TransactionHistoryPagination {
   cursor?: string;

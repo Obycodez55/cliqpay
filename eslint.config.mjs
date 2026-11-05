@@ -98,6 +98,10 @@ export default tseslint.config(
           pattern: 'src/modules/kyc/**',
         },
         {
+          type: 'wallet-module',
+          pattern: 'src/modules/wallet/**',
+        },
+        {
           type: 'peripheral-module',
           pattern:
             'src/modules/{fraud,social,billsplit,scheduling,notifications}',
@@ -198,6 +202,54 @@ export default tseslint.config(
               message: '`ledger` must never import from `kyc` — see docs/architecture.md §10.',
             },
             {
+              from: { element: { type: 'ledger-module' } },
+              disallow: { to: { element: { type: 'payments-module' } } },
+              message:
+                '`ledger` imports nothing from any other module, so it must never import from `payments` — see docs/adr/0011-transfers-module-boundary.md.',
+            },
+            {
+              from: { element: { type: 'ledger-module' } },
+              disallow: { to: { element: { type: 'auth-module' } } },
+              message:
+                '`ledger` imports nothing from any other module, so it must never import from `auth` — see docs/adr/0011-transfers-module-boundary.md.',
+            },
+            {
+              from: { element: { type: 'ledger-module' } },
+              disallow: { to: { element: { type: 'users-module' } } },
+              message:
+                '`ledger` imports nothing from any other module, so it must never import from `users` — see docs/adr/0011-transfers-module-boundary.md.',
+            },
+            {
+              from: { element: { type: 'ledger-module' } },
+              disallow: { to: { element: { type: 'transfers-module' } } },
+              message:
+                '`ledger` imports nothing from any other module, so it must never import from `transfers` — see docs/adr/0011-transfers-module-boundary.md.',
+            },
+            {
+              from: { element: { type: 'ledger-module' } },
+              disallow: { to: { element: { type: 'withdrawals-module' } } },
+              message:
+                '`ledger` imports nothing from any other module, so it must never import from `withdrawals` — see docs/adr/0011-transfers-module-boundary.md.',
+            },
+            {
+              from: { element: { type: 'ledger-module' } },
+              disallow: { to: { element: { type: 'disputes-module' } } },
+              message:
+                '`ledger` imports nothing from any other module, so it must never import from `disputes` — see docs/adr/0011-transfers-module-boundary.md.',
+            },
+            {
+              from: { element: { type: 'ledger-module' } },
+              disallow: { to: { element: { type: 'wallet-module' } } },
+              message:
+                '`ledger` imports nothing from any other module, so it must never import from `wallet` — see docs/adr/0011-transfers-module-boundary.md.',
+            },
+            {
+              from: { element: { type: 'wallet-module' } },
+              disallow: { to: { element: { type: 'peripheral-module' } } },
+              message:
+                'Core modules (ledger, payments, auth, users, wallet) must never import from peripheral modules (fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10.',
+            },
+            {
               from: { element: { type: 'auth-module' } },
               disallow: { to: { element: { type: 'kyc-module' } } },
               message: '`auth` must never import from `kyc` — see docs/architecture.md §10.',
@@ -271,6 +323,10 @@ export default tseslint.config(
             },
             {
               target: { type: 'kyc-module' },
+              allow: '*.(service|module).ts',
+            },
+            {
+              target: { type: 'wallet-module' },
               allow: '*.(service|module).ts',
             },
             // shared/primitives and shared/events are explicitly the one

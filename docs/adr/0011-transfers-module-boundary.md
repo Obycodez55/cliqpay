@@ -90,3 +90,26 @@ built so far.
   enforcing mechanically. `eslint-plugin-boundaries` is already configured;
   a rule pinning `ledger`'s allowed imports would catch a future violation
   that review might not.
+
+## Amendment (2026-11-05): the invariant is now true and lint-enforced
+
+The invariant above did not fully hold when written down. `LedgerModule`
+imported `UsersModule`, and `WalletController` lived inside `ledger` and
+injected `UsersService` to decorate `GET /wallet/transactions` with
+counterparty identity summaries. `LedgerService` itself was clean; the module
+wrapper and its controller were not.
+
+The `/wallet/balance` and `/wallet/transactions` controller now lives in a
+controller-only `wallet` module that composes `LedgerService` and
+`UsersService`, the same shape `disputes` uses for its collections view.
+`wallet` owns no tables and has no service, so `wallet.module.ts` is its only
+importable surface. The HTTP response DTOs moved with it; `ledger` keeps only
+its own `TransactionHistoryEntry` view, which `LedgerService` returns and
+re-exports. Routes, guards, the `Wallet` Swagger tag and response bodies are
+unchanged.
+
+`eslint.config.mjs` now forbids `ledger-module` from importing `payments`,
+`auth`, `users`, `transfers`, `withdrawals`, `disputes` and `wallet` (it
+already forbade `kyc` and peripheral modules), so every other module in the
+system is covered. Adding a module that `ledger` must not import means adding
+its rule alongside these.

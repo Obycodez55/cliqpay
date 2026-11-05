@@ -18,7 +18,7 @@ import {
   toIdentitySummary,
 } from '../../common/dto/identity-summary.dto';
 import { UsersService } from '../users/users.service';
-import { LedgerService } from './ledger.service';
+import { LedgerService } from '../ledger/ledger.service';
 import {
   WalletBalanceResponseDto,
   toWalletBalanceResponse,
@@ -71,10 +71,8 @@ export class WalletController {
       limit: query.limit,
     });
 
-    // Counterparty *names* are resolved here, not in LedgerService — ledger
-    // stays clear of the `users` module (ADR-0011); this controller already
-    // has UsersService in scope, so it batch-resolves the distinct
-    // counterparty ids from the whole page in one query instead of N.
+    // Names are resolved here, not in LedgerService, which stays clear of
+    // `users`; the distinct counterparty ids on the page go in one query.
     const counterpartyUserIds = [
       ...new Set(
         result.items
