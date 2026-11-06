@@ -411,6 +411,21 @@ export class SocialService {
     return blocks.map((block) => block.blockedUserId);
   }
 
+  async isFollowing(followerId: string, followeeId: string): Promise<boolean> {
+    return this.dataSource.getRepository(Follow).existsBy({
+      followerUserId: followerId,
+      followeeUserId: followeeId,
+    });
+  }
+
+  async getFollowedUserIds(followerId: string): Promise<string[]> {
+    const follows = await this.dataSource.getRepository(Follow).find({
+      where: { followerUserId: followerId },
+      select: { followeeUserId: true },
+    });
+    return follows.map((follow) => follow.followeeUserId);
+  }
+
   async getRelationship(
     viewerId: string,
     otherUserId: string,

@@ -271,6 +271,7 @@ describe('POST /money-requests — create', () => {
     it('notifies the payer on create, across email, push, and in-app', async () => {
       const requester = await seedUser('notifycreatereq');
       const payer = await seedUser('notifycreatepay');
+      await ctx.socialService.follow(payer.userId, requester.userId);
       await ctx.notificationService.registerPushToken(
         payer.userId,
         'android',

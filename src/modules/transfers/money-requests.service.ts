@@ -26,6 +26,7 @@ import { runInTransaction } from '../../database/transaction.util';
 import { MoneyRequest } from './entities/money-request.entity';
 import { CreateMoneyRequestDto } from './dto/create-money-request.dto';
 import { PayMoneyRequestDto } from './dto/pay-money-request.dto';
+import { IncomingBucket } from './dto/list-incoming-money-requests-query.dto';
 import {
   MoneyRequestResponseDto,
   toMoneyRequestResponse,
@@ -52,6 +53,11 @@ type CounterpartyUser = Awaited<ReturnType<UsersService['findById']>>;
 export interface MoneyRequestListPagination {
   cursor?: string;
   limit: number;
+}
+
+interface RequesterFilter {
+  hiddenPendingFrom: string[];
+  bucket?: { kind: IncomingBucket; followedIds: string[] };
 }
 
 // Applied to every query that treats a request as still actionable — a
@@ -179,9 +185,18 @@ export class MoneyRequestsService {
       expiresAt,
       transactionId: null,
     });
+    const fromFollowed = await this.socialService.isFollowing(
+      payer.id,
+      requester.id,
+    );
     await this.moneyRequests.save(moneyRequest);
 
-    await this.publishCreatedEvent(moneyRequest, requester, payer);
+    await this.publishCreatedEvent(
+      moneyRequest,
+      requester,
+      payer,
+      fromFollowed,
+    );
 
     return toMoneyRequestResponse(moneyRequest, toIdentitySummary(payer), now);
   }
@@ -189,13 +204,24 @@ export class MoneyRequestsService {
   async listIncoming(
     payerId: string,
     pagination: MoneyRequestListPagination,
+    bucket?: IncomingBucket,
   ): Promise<PaginatedResult<MoneyRequestResponseDto>> {
+    const [hiddenPendingFrom, followedIds] = await Promise.all([
+      this.socialService.getBlockedUserIds(payerId),
+      bucket ? this.socialService.getFollowedUserIds(payerId) : [],
+    ]);
+    if (bucket === 'following' && followedIds.length === 0) {
+      return { items: [], nextCursor: null };
+    }
     return this.list(
       'payerUserId',
       payerId,
       pagination,
       (mr) => mr.requesterUserId,
-      await this.socialService.getBlockedUserIds(payerId),
+      {
+        hiddenPendingFrom,
+        bucket: bucket ? { kind: bucket, followedIds } : undefined,
+      },
     );
   }
 
@@ -406,7 +432,7 @@ export class MoneyRequestsService {
     userId: string,
     pagination: MoneyRequestListPagination,
     counterpartyIdOf: (moneyRequest: MoneyRequest) => string,
-    hiddenPendingFrom: string[] = [],
+    { hiddenPendingFrom, bucket }: RequesterFilter = { hiddenPendingFrom: [] },
   ): Promise<PaginatedResult<MoneyRequestResponseDto>> {
     const cursor = pagination.cursor
       ? decodeCreatedAtIdCursor(pagination.cursor)
@@ -429,6 +455,16 @@ export class MoneyRequestsService {
         "NOT (moneyRequest.status = 'pending' AND moneyRequest.requesterUserId IN (:...hiddenPendingFrom))",
         { hiddenPendingFrom },
       );
+    }
+
+    if (bucket?.kind === 'following') {
+      query.andWhere('moneyRequest.requesterUserId IN (:...followedIds)', {
+        followedIds: bucket.followedIds,
+      });
+    } else if (bucket?.kind === 'others' && bucket.followedIds.length > 0) {
+      query.andWhere('moneyRequest.requesterUserId NOT IN (:...followedIds)', {
+        followedIds: bucket.followedIds,
+      });
     }
 
     if (cursor) {
@@ -480,6 +516,7 @@ export class MoneyRequestsService {
     moneyRequest: MoneyRequest,
     requester: CounterpartyUser,
     payer: CounterpartyUser,
+    fromFollowed: boolean,
   ): Promise<void> {
     try {
       await this.eventBus.publish<string, MoneyRequestCreatedEventPayload>({
@@ -495,6 +532,7 @@ export class MoneyRequestsService {
           currency: moneyRequest.currency,
           note: moneyRequest.note,
           moneyRequestId: moneyRequest.id,
+          fromFollowed,
         },
         occurredAt: new Date(),
       });

@@ -97,6 +97,9 @@ export interface MoneyRequestCreatedPayload {
   currency: string;
   note: string | null;
   moneyRequestId: string;
+  // Absent on events published before the field existed; those keep the
+  // full channel set.
+  fromFollowed?: boolean;
 }
 
 export interface MoneyRequestDeclinedPayload {
@@ -249,8 +252,15 @@ type AllowedChannels<K extends keyof NotificationPayloadMap> =
     ? readonly NotificationChannel[]
     : readonly Exclude<NotificationChannel, 'in_app'>[];
 
+// `narrowChannels` lets an entry route a particular event to fewer channels
+// than its default; returning undefined keeps the default.
 export type NotificationCatalogShape = {
-  [K in keyof NotificationPayloadMap]: { channels: AllowedChannels<K> };
+  [K in keyof NotificationPayloadMap]: {
+    channels: AllowedChannels<K>;
+    narrowChannels?: (
+      payload: NotificationPayloadMap[K],
+    ) => AllowedChannels<K> | undefined;
+  };
 };
 
 // Notification type -> channel(s). Dispatch mechanism (fire-and-forget vs
@@ -272,7 +282,11 @@ export const NOTIFICATION_CATALOG = {
   transfer_received: { channels: ['email', 'push', 'in_app'] },
   // Cancel is deliberately excluded from this catalog (issue #24) — only
   // create and decline notify.
-  money_request_created: { channels: ['email', 'push', 'in_app'] },
+  money_request_created: {
+    channels: ['email', 'push', 'in_app'],
+    narrowChannels: (payload) =>
+      payload.fromFollowed === false ? ['in_app'] : undefined,
+  },
   money_request_declined: { channels: ['email', 'push', 'in_app'] },
   money_request_paid: { channels: ['email', 'push', 'in_app'] },
   // Email only for this issue (#28) — push/in_app follow the same pattern
@@ -295,3 +309,11 @@ export const NOTIFICATION_CATALOG = {
 } as const satisfies NotificationCatalogShape;
 
 export type NotificationType = keyof typeof NOTIFICATION_CATALOG;
+
+export function channelsFor<T extends NotificationType>(
+  type: T,
+  payload: NotificationPayloadMap[T],
+): readonly NotificationChannel[] {
+  const entry: NotificationCatalogShape[T] = NOTIFICATION_CATALOG[type];
+  return entry.narrowChannels?.(payload) ?? entry.channels;
+}

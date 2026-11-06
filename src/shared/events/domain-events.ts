@@ -130,6 +130,8 @@ export interface MoneyRequestCreatedEventPayload {
   // The money request's own id — the in-app channel's dedupe_key, same
   // reasoning as TransferSentEventPayload's reference.
   moneyRequestId: string;
+  // Whether the payer followed the requester when the request was created.
+  fromFollowed: boolean;
 }
 
 export const MONEY_REQUEST_DECLINED_EVENT = 'money_request_declined';
