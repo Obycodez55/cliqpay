@@ -1,6 +1,8 @@
-# Cliqpay — Project Documentation (v15)
+# Cliqpay — Project Documentation (v16)
 
 > Cliqpay is a production-grade peer-to-peer payment platform. A Venmo-equivalent for Africa — built on NestJS, PostgreSQL, TypeORM, currently integrated with Kora.
+
+> **v16 changes:** Phase 8 design pass (bill splitting). A split is reimbursement, not escrow: participants pay the initiator back through ordinary exact-amount money requests, so the ledger doesn't change and the `bill_split` transaction type stays reserved and unused. `billsplit` is **peripheral** by §10's test and owns `bill_splits` and `bill_split_participants`; `transfers` never learns splits exist. Paid/unpaid is read live from the linked money requests rather than copied, with `completed_at`/`closed_at` stored for list filtering and repaired on read. Split requests obey the money-request rules unchanged (pair cap, shared expiry, blocks), creation is atomic and idempotent on a client `reference`, and one new notification, `bill_split_completed`, is added. Two shared changes come with it: the event bus fans out to one queue per subscriber, because a second consumer on `domain-events` would take half of every event, and money-request cancel/decline now lock the row, closing a race that could overwrite a paid request. See [ADR-0026](adr/0026-bill-splitting.md).
 
 > **v15 changes:** Phase 7 design pass (social layer). §10 gains a written core/peripheral criterion — a module is core if money stops moving correctly or safely without it — and `social` is reclassified as **core** by it, because blocking gates money requests and transfers synchronously. `social` owns the follow and block graph, `transaction_posts`, reactions and comments; `transfers` imports `SocialService` directly and writes a transfer's post inside the transfer's own DB transaction, since the post holds part of the request's own data (its visibility), not a reaction to it. Notes live on `transactions.metadata`, are immutable, and are snapshotted onto the post. Visibility is required on every transfer request with no server default, is two-flagged (the sender's choice plus a recipient veto), joins the idempotency fingerprint, and never exposes the amount. The feed is fan-out on read with a 5,000 follow cap. Blocking covers requests, transfers in both directions, follows, feed, reactions and comments. All social participation except blocking requires KYC Tier 1. Also: §4.2's P2P `is_public` metadata replaced by the `social`-owned post, five `social` tables in §5, and a per-user default visibility recorded as future work. See [ADR-0025](adr/0025-social-layer.md).
 
@@ -383,7 +385,7 @@ transactions
   reference             varchar unique     -- Cliqpay's own idempotency key (client-supplied for client-initiated ops)
   provider              varchar nullable   -- CHECK (provider IN ('kora')) — which provider processed this; null for purely internal transactions (p2p, profit withdrawal)
   provider_reference     varchar nullable  -- the provider's own reference for this operation; indexed, used to correlate webhooks
-  type                  enum (funding | funding_refund | p2p_transfer | withdrawal | withdrawal_reversal | chargeback | chargeback_reversal | profit_withdrawal | bill_split | scheduled)
+  type                  enum (funding | funding_refund | p2p_transfer | withdrawal | withdrawal_reversal | chargeback | chargeback_reversal | profit_withdrawal | bill_split | scheduled)   -- [v16] bill_split is reserved and unused: split payments are p2p_transfer (ADR-0026)
   status                enum (pending | completed | failed | reversed | disputed | held | refunded)   -- held/refunded: funding rows only ([v14])
   reverses_transaction_id uuid FK nullable  -- set on chargeback/reversal rows
   amount                bigint             -- minor units
@@ -512,7 +514,39 @@ post_comments
   deleted_by_user_id    uuid nullable       -- the author or either post participant
   created_at            timestamptz
 
+-- [v16] Phase 8 — owned by `billsplit` (see ADR-0026). User and money-request
+-- references are cross-module, so no FK; bill_split_id is a same-module FK.
+bill_splits
+  id                    uuid PK
+  initiator_user_id     uuid
+  reference             varchar             -- client-supplied idempotency key; UNIQUE (initiator_user_id, reference)
+  description           varchar(140)
+  mode                  enum (equal | custom)
+  total_amount          bigint              -- minor units
+  initiator_share       bigint              -- counted, never requested
+  currency              varchar
+  expires_at            timestamptz         -- the same value every request in the split carries
+  completed_at          timestamptz nullable   -- every request paid; set by the event handler or on read
+  closed_at             timestamptz nullable   -- nothing pending, some declined or cancelled; same
+  cancelled_at          timestamptz nullable   -- the initiator cancelled the split
+  created_at            timestamptz
+  updated_at            timestamptz
+
+  -- index (initiator_user_id, created_at DESC, id DESC)
+
+bill_split_participants
+  id                    uuid PK
+  bill_split_id         uuid FK -> bill_splits
+  user_id               uuid
+  amount                bigint              -- this participant's requested share
+  money_request_id      uuid unique         -- cross-module reference into transfers' money_requests, no FK
+  created_at            timestamptz
+
+  -- UNIQUE (bill_split_id, user_id); index (user_id, created_at DESC) for the participant list
+
 ```
+
+> **[v16] Note on** `bill_split_participants`**:** there is no `status` column. A participant's paid/unpaid state is their money request's status, read live in one batched read per split or page; copying it through events would go wrong for good on a lost event, since the bus has no outbox. See [ADR-0026](adr/0026-bill-splitting.md).
 
 > **[v15] Note on** `transaction_posts`**:** one row per completed P2P transfer (including a paid money request), private ones included, because a private post can be made public later. Written by `social` inside the transfer's own DB transaction, so a post exists if and only if its transfer committed. Transfers made before Phase 7 have no row. Deleting a comment is soft (`deleted_at`) so a harassment complaint keeps its evidence; a deleted comment is simply absent from reads. See [ADR-0025](adr/0025-social-layer.md).
 
@@ -751,15 +785,24 @@ Each phase exits with a working, production-quality slice of the system. No phas
 
 ### Phase 8 — Bill Splitting
 
-**Goal:** A user can split a bill with multiple people and track payment. Unchanged from v1.
+**Goal:** A user can split a bill with multiple people and track payment. See [ADR-0026](adr/0026-bill-splitting.md).
 
-- Create a split request — total amount, participants, description
-- System calculates each participant's share
-- Each participant receives a payment request
-- Track paid/unpaid status per participant
-- Initiator notified as each person pays
-- Auto-close split when all participants have paid
-- Expire uncompleted splits after a configurable window
+- **[v16]** Reimbursement, not escrow: the initiator has already paid the bill, and each participant pays them back through an ordinary money request, so every payment is a `p2p_transfer` with PIN, idempotency, limits and block checks unchanged. No ledger change. `billsplit` is **peripheral** by §10's test: if it disappeared, every split request would still be payable
+- Create a split request — total amount, participants, description — **[v16]**
+  - Requires a client `reference`, unique per initiator; a replay with the same contents returns the original split, different contents is a 409 (ADR-0010)
+  - 1–20 distinct participants (`BILL_SPLIT_MAX_PARTICIPANTS`), excluding the initiator. Description required, 1–140 characters, copied into each request's `note`
+  - The split and all its requests are written in one transaction, pair locks taken in ascending participant user id. Any participant failing a money-request rule — at the 3-pending pair cap, blocked, or below the minimum — fails the whole split
+  - The initiator's KYC receive check runs once against the sum of the requested shares; it's advisory, as for requests, and enforced again on each payment
+- System calculates each participant's share — **[v16]** two modes fixed at creation. `equal` divides the total with `Money.allocate`, leftover kobo going to the initiator. `custom` takes an amount per participant. The initiator always has a share that is counted but never requested (zero allowed in `custom`). Every requested share is at least `TRANSFER_MIN_AMOUNT`
+- Each participant receives a payment request — **[v16]** the existing `money_request_created` notification, landing in the "others" bucket when the participant doesn't follow the initiator
+- Track paid/unpaid status per participant — **[v16]** read live from the linked money requests in one batched read, never copied into billsplit's tables. The initiator and every participant see the whole split (each share and its status); anyone else gets 404
+- Initiator notified as each person pays — **[v16]** the existing `money_request_paid`, plus `money_request_declined` on a decline
+- Auto-close split when all participants have paid — **[v16]** split status is derived: `cancelled` → `completed` (all paid) → `closed` (nothing pending, some declined or cancelled) → `expired` → `open`. `completed_at`/`closed_at` are stored for list filtering, written by billsplit's event handler and repaired on read when the event was missed. `bill_split_completed` notifies the initiator by push and in-app, deduped on the split id
+- Expire uncompleted splits after a configurable window — **[v16]** one `expires_at` from `MONEY_REQUEST_EXPIRY_DAYS`, passed to every request in the split so they expire at the same moment; derived on read, no sweeper. Paid shares stay paid
+- **[v16]** A decline ends only that participant's share. The initiator can cancel the split, which cancels every still-pending request in one transaction; cancelling a single split request through `/money-requests/:id/cancel` is allowed and counts like a decline
+- **[v16]** API: `POST /bill-splits`, `GET /bill-splits?role=initiator|participant&status=…` (keyset pages on `(created_at, id)`, 20 default / 50 max), `GET /bill-splits/:id`, `POST /bill-splits/:id/cancel`. Paying and declining stay on `/money-requests`
+- **[v16]** Money-request cancel and decline lock the row and re-check it's pending before writing, as pay already did. Without the lock, a payment committing between their read and write was overwritten: the money moved and the request said `declined`
+- **[v16]** The event bus fans out per subscriber: each subscriber has its own queue and event list, and `publish` adds the event to each. A second consumer on the shared `domain-events` queue would take half of every event, because BullMQ queues share work out rather than broadcasting. `billsplit` subscribes to `money_request_paid`, `money_request_declined` and a new `money_request_cancelled`, which has no notification
 
 **Key concepts:** Group state management, distributed transaction logic, event tracking
 
@@ -979,8 +1022,8 @@ Rules that make this real rather than aspirational:
 
 - **A module's public surface is exactly one exported service.** TypeScript has no enforced "module-private" concept — nothing stops one module importing another's internals except tooling. `eslint-plugin-boundaries` (or `dependency-cruiser`) config enforces this in CI: a build fails if a module reaches past another module's exported service.
 - **Dependency direction is a rule, not just "modules shouldn't touch each other."** Core modules must never import from peripheral ones; peripheral modules may depend on core (Fraud reads balances via Ledger's service). Encode this in the same lint config as an explicit constraint, not a convention someone has to remember.
-- **[v15] What makes a module core.** Ask: *if this module disappeared, would money still move correctly and safely?* If not — it is on the money path, or a money-moving operation must consult it synchronously before committing — it is **core**. If it only reacts to money movement after commit, through events, and could be removed or extracted without the money path noticing, it is **peripheral**. Place every new module by this test, not by analogy. Today: `ledger`, `payments`, `auth`, `users`, `transfers`, `withdrawals`, `disputes`, `kyc` and `social` are core (`social` because blocking gates transfers and money requests, ADR-0025); `notifications` is peripheral. `fraud`, `billsplit` and `scheduling` are placed by this test when their phase is designed — a fraud rule that blocks a transfer before it commits, for one, would make `fraud` core. Being peripheral is only worth keeping if it buys removability — wrapping a synchronous dependency in a port to keep the label doesn't.
-- **Cross-module references are plain UUIDs, never a DB-level foreign key.** Same-module references (e.g. `ledger_entries.account_id`) keep real FK constraints. Cross-module references (e.g. `bill_split_participants.transactionId`, which points at something Ledger owns) don't — a real FK can't survive the day that table moves to its own database, and the discipline costs nothing to build in now. See [ADR-0002](adr/0002-cross-module-references-and-relation-decorators.md) for the entity-modeling consequence — TypeORM relation decorators follow the same split, additive only where a real FK backs them.
+- **[v15] What makes a module core.** Ask: *if this module disappeared, would money still move correctly and safely?* If not — it is on the money path, or a money-moving operation must consult it synchronously before committing — it is **core**. If it only reacts to money movement after commit, through events, and could be removed or extracted without the money path noticing, it is **peripheral**. Place every new module by this test, not by analogy. Today: `ledger`, `payments`, `auth`, `users`, `transfers`, `withdrawals`, `disputes`, `kyc` and `social` are core (`social` because blocking gates transfers and money requests, ADR-0025); `notifications` and **[v16]** `billsplit` are peripheral (`billsplit` only creates money requests through `TransfersService` and reacts to their events; every split request stays payable without it, ADR-0026). `fraud` and `scheduling` are placed by this test when their phase is designed — a fraud rule that blocks a transfer before it commits, for one, would make `fraud` core. Being peripheral is only worth keeping if it buys removability — wrapping a synchronous dependency in a port to keep the label doesn't.
+- **Cross-module references are plain UUIDs, never a DB-level foreign key.** Same-module references (e.g. `ledger_entries.account_id`) keep real FK constraints. Cross-module references (e.g. `bill_split_participants.money_request_id`, which points at something `transfers` owns) don't — a real FK can't survive the day that table moves to its own database, and the discipline costs nothing to build in now. See [ADR-0002](adr/0002-cross-module-references-and-relation-decorators.md) for the entity-modeling consequence — TypeORM relation decorators follow the same split, additive only where a real FK backs them.
 - **Cross-module side effects are async domain events, not direct synchronous calls.** A P2P transfer's ledger write is synchronous and atomic, inside the Ledger module (must be — it's the money). Everything downstream of it — feed updates, notifications, fraud-rule evaluation — reacts to a domain event published through the shared BullMQ-backed event bus. Critically, **the event publishes after the originating transaction commits, not during it** — publishing inside the transaction means a downstream reaction can fire for a transaction that then rolls back, which is a subtle, easy-to-introduce correctness bug. **[v15]** This rule governs *reactions* to a commit. Storing part of a request's own data in the core module that owns it is not a reaction: a transfer's `visibility` is written to `social`'s `transaction_posts` inside the transfer's transaction (`recordTransferPost(manager, …)`, the same shape as `kyc` calling `users.setKycTier(manager, …)`), because a lost post-commit event would silently drop the user's explicit choice (ADR-0025). This async seam is also exactly what becomes a real message broker (SQS/NATS/etc.) if a module is ever actually extracted into its own service — swapping the transport is small; retrofitting a synchronous call into an async boundary after the fact is not.
 - **Shared primitives are the one deliberate exception to isolation.** `Money`, `TransactionType`, `KycTier`, and similar shared domain vocabulary — some pure types, some (like `Money`) small value objects with real behavior — live in `shared/primitives/` and any module may import them. `primitives/`, not `types/`, because the folder isn't just type declarations — the isolation rule being carved out here is about behavior and state living in a *module*, not about whether the shared thing itself has logic.
 
