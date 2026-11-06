@@ -86,6 +86,7 @@ export interface TransferReceivedPayload {
   amount: string;
   currency: string;
   reference: string;
+  note?: string;
 }
 
 export interface MoneyRequestCreatedPayload {

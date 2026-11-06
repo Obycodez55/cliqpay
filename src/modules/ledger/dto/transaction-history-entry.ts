@@ -6,6 +6,7 @@ import {
 import {
   Transaction,
   TransactionStatus,
+  TransferTransactionMetadata,
   TransactionType,
 } from '../entities/transaction.entity';
 
@@ -23,6 +24,7 @@ export interface TransactionHistoryEntry {
   direction: LedgerEntryDirection | null;
   amount: Money;
   counterpartyUserId: string | null;
+  note: string | null;
   createdAt: Date;
 }
 
@@ -58,6 +60,11 @@ export function toTransactionHistoryEntry(
     counterpartyUserId: counterpartyWalletId
       ? (counterpartyUserIdByWalletId.get(counterpartyWalletId) ?? null)
       : null,
+    note:
+      entry.transaction.type === 'p2p_transfer'
+        ? ((entry.transaction.metadata as TransferTransactionMetadata).note ??
+          null)
+        : null,
     createdAt: entry.createdAt,
   };
 }
@@ -77,6 +84,7 @@ export function toHeldFundingHistoryEntry(
     direction: null,
     amount: Money.of(funding.amount, funding.currency),
     counterpartyUserId: null,
+    note: null,
     createdAt: heldAt,
   };
 }

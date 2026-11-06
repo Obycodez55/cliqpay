@@ -115,6 +115,7 @@ export interface TransferReceivedEventPayload {
   amount: string; // decimal display string (Money.toDecimalString())
   currency: string;
   reference: string;
+  note?: string;
 }
 
 export const MONEY_REQUEST_CREATED_EVENT = 'money_request_created';

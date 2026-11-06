@@ -227,6 +227,7 @@ export interface PostTransferParams {
   recipientWalletId: string;
   amount: Money;
   platformFee: Money;
+  note?: string | null;
 }
 
 export interface PostTransferResult {
@@ -1752,7 +1753,10 @@ export class LedgerService {
         currency: params.amount.currency,
         senderWalletId: params.senderWalletId,
         recipientWalletId: params.recipientWalletId,
-        metadata: { platformFee: params.platformFee.toJSON() },
+        metadata: {
+          platformFee: params.platformFee.toJSON(),
+          ...(params.note ? { note: params.note } : {}),
+        },
       }),
     );
 

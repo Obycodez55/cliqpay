@@ -32,6 +32,8 @@ interface SendTransferBody {
   amount: number;
   reference: string;
   pin: string;
+  note: string;
+  visibility: string;
 }
 
 describe('POST /transfers — zero platform fee (launch default)', () => {
@@ -94,7 +96,7 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
     return request(ctx.app.getHttpServer())
       .post('/transfers')
       .set('Authorization', `Bearer ${token}`)
-      .send(body);
+      .send({ visibility: 'private', ...body });
   }
 
   describe('sender limit error codes', () => {
@@ -573,6 +575,7 @@ describe('POST /transfers — non-zero platform fee', () => {
         amount: 500_000,
         reference: 'cliqpay-fee-xfer-1',
         pin: '1234',
+        visibility: 'private',
       })
       .expect(201);
 

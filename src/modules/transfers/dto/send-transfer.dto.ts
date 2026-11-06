@@ -1,5 +1,16 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsInt, IsPositive, IsUUID, Matches, MaxLength } from 'class-validator';
+import { Transform } from 'class-transformer';
+import {
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsPositive,
+  IsString,
+  IsUUID,
+  Matches,
+  MaxLength,
+} from 'class-validator';
+import { POST_VISIBILITIES, PostVisibility } from '../../social/social.service';
 
 export class SendTransferDto {
   @IsUUID()
@@ -15,6 +26,27 @@ export class SendTransferDto {
     description: 'Amount in minor units (kobo)',
   })
   amount: number;
+
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim() || undefined : value,
+  )
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  @ApiProperty({
+    required: false,
+    example: 'Thanks for lunch',
+    description: 'Optional note, immutable once the transfer is made',
+  })
+  note?: string;
+
+  @IsIn(POST_VISIBILITIES)
+  @ApiProperty({
+    enum: POST_VISIBILITIES,
+    description:
+      'Whether this transfer may appear in the activity feed. Required; there is no default.',
+  })
+  visibility: PostVisibility;
 
   // Same idempotency contract as FundWalletDto (docs/architecture.md §3.4,
   // ADR-0010) — a repeat with the same value and parameters returns the

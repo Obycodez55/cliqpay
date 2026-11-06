@@ -84,7 +84,6 @@ export interface FundingRefundTransactionMetadata {
   initiatedAt?: string;
 }
 
-// `note`/`is_public` belong to Phase 7 (social layer), not this one.
 // `platformFee` is recorded because it's needed to reconstruct an
 // idempotent replay response (TransfersService) without a second query
 // against ledger_entries — `amount`/ledger_entries only carry the
@@ -92,6 +91,8 @@ export interface FundingRefundTransactionMetadata {
 // grossAmount above.
 export interface TransferTransactionMetadata {
   platformFee: { amount: string; currency: string };
+  // Absent when the sender gave none. Never updated after posting.
+  note?: string;
 }
 
 // §4.2's Withdrawal posting example: `metadata: { bank_account, net_amount }`.

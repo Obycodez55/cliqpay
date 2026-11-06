@@ -102,9 +102,12 @@ export default tseslint.config(
           pattern: 'src/modules/wallet/**',
         },
         {
+          type: 'social-module',
+          pattern: 'src/modules/social/**',
+        },
+        {
           type: 'peripheral-module',
-          pattern:
-            'src/modules/{fraud,social,billsplit,scheduling,notifications}',
+          pattern: 'src/modules/{fraud,billsplit,scheduling,notifications}',
         },
         {
           type: 'shared',
@@ -264,6 +267,30 @@ export default tseslint.config(
               disallow: { to: { element: { type: 'kyc-module' } } },
               message: '`disputes` must never import from `kyc` — see docs/architecture.md §10.',
             },
+            {
+              from: { element: { type: 'social-module' } },
+              disallow: { to: { element: { type: 'peripheral-module' } } },
+              message:
+                '`social` is a core module and must never import from peripheral modules (fraud, billsplit, scheduling, notifications) — see docs/adr/0025-social-layer.md.',
+            },
+            {
+              from: { element: { type: 'social-module' } },
+              disallow: { to: { element: { type: 'transfers-module' } } },
+              message:
+                '`social` must never import from `transfers` — see docs/adr/0025-social-layer.md.',
+            },
+            {
+              from: { element: { type: 'social-module' } },
+              disallow: { to: { element: { type: 'withdrawals-module' } } },
+              message:
+                '`social` must never import from `withdrawals` — see docs/adr/0025-social-layer.md.',
+            },
+            {
+              from: { element: { type: 'social-module' } },
+              disallow: { to: { element: { type: 'disputes-module' } } },
+              message:
+                '`social` must never import from `disputes` — see docs/adr/0025-social-layer.md.',
+            },
           ],
         },
       ],
@@ -323,6 +350,10 @@ export default tseslint.config(
             },
             {
               target: { type: 'kyc-module' },
+              allow: '*.(service|module).ts',
+            },
+            {
+              target: { type: 'social-module' },
               allow: '*.(service|module).ts',
             },
             {

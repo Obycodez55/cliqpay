@@ -56,6 +56,13 @@ export class TransactionHistoryItemDto {
   })
   counterparty: IdentitySummaryDto | null;
 
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'The note attached to a P2P transfer, or null',
+  })
+  note: string | null;
+
   @ApiProperty()
   createdAt: string;
 }
@@ -74,6 +81,7 @@ export function toTransactionHistoryItem(
     counterparty: entry.counterpartyUserId
       ? (identityByUserId.get(entry.counterpartyUserId) ?? null)
       : null,
+    note: entry.note,
     createdAt: entry.createdAt.toISOString(),
   };
 }

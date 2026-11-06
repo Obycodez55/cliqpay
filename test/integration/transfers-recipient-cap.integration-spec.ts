@@ -70,7 +70,13 @@ describe('Recipient balance cap on incoming P2P transfers', () => {
     return request(ctx.app.getHttpServer())
       .post('/transfers')
       .set('Authorization', `Bearer ${tokenFor(senderId)}`)
-      .send({ recipientUserId, amount, reference: ref, pin: '1234' });
+      .send({
+        recipientUserId,
+        amount,
+        reference: ref,
+        pin: '1234',
+        visibility: 'private',
+      });
   }
 
   async function balance(walletId: string) {
@@ -194,7 +200,7 @@ describe('Recipient balance cap on incoming P2P transfers', () => {
     const res = await request(ctx.app.getHttpServer())
       .post(`/money-requests/${dataOf<{ id: string }>(created).id}/pay`)
       .set('Authorization', `Bearer ${tokenFor(payer.userId)}`)
-      .send({ reference: ref, pin: '1234' });
+      .send({ reference: ref, pin: '1234', visibility: 'private' });
 
     expect(res.status).toBe(422);
     const text = JSON.stringify(res.body);

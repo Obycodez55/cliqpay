@@ -85,6 +85,7 @@ describe('GET /wallet/limits', () => {
       amount,
       reference: `cliqpay-limits-xfer-${randomUUID()}`,
       pin: '1234',
+      visibility: 'private',
     });
   }
 

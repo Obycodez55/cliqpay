@@ -13,6 +13,7 @@ import {
 import { UsersService } from '../../users/users.service';
 import { KycService } from '../../kyc/kyc.service';
 import { AuthService } from '../../auth/auth.service';
+import { SocialService } from '../../social/social.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { Money } from '../../../shared/primitives/money';
 import {
@@ -77,6 +78,9 @@ describe('TransfersService.sendMoney', () => {
   let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
   let kycService: jest.Mocked<Pick<KycService, 'checkTransferLimits'>>;
   let authService: jest.Mocked<Pick<AuthService, 'verifyTransactionPin'>>;
+  let socialService: jest.Mocked<
+    Pick<SocialService, 'recordTransferPost' | 'getRequestedVisibility'>
+  >;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let service: TransfersService;
 
@@ -85,6 +89,7 @@ describe('TransfersService.sendMoney', () => {
     amount: 500_000,
     reference: 'cliqpay-xfer-1',
     pin: '1234',
+    visibility: 'private' as const,
   };
 
   const postTransferResult: PostTransferResult = {
@@ -108,17 +113,23 @@ describe('TransfersService.sendMoney', () => {
     usersService = { findById: jest.fn() };
     kycService = { checkTransferLimits: jest.fn() };
     authService = { verifyTransactionPin: jest.fn() };
+    socialService = {
+      recordTransferPost: jest.fn(),
+      getRequestedVisibility: jest.fn(),
+    };
     eventBus = { publish: jest.fn() };
     service = new TransfersService(
       dataSource,
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
       kycService as unknown as KycService,
+      socialService as unknown as SocialService,
       authService as unknown as AuthService,
       eventBus as unknown as EventBusService,
       testConfig,
     );
 
+    socialService.getRequestedVisibility.mockResolvedValue('private');
     usersService.findById.mockResolvedValue(user());
     ledgerService.getUserWallet.mockImplementation((userId: string) =>
       Promise.resolve(
@@ -267,6 +278,7 @@ describe('TransfersService.sendMoney', () => {
         recipientWalletId: 'wallet-recipient',
         amount: Money.of(500_000n, 'NGN'),
         platformFee: Money.zero('NGN'),
+        note: null,
       },
     );
     expect(result.reference).toBe('cliqpay-xfer-1');
@@ -292,6 +304,7 @@ describe('TransfersService.sendMoney', () => {
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
       kycService as unknown as KycService,
+      socialService as unknown as SocialService,
       authService as unknown as AuthService,
       eventBus as unknown as EventBusService,
       feeConfig,

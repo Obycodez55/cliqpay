@@ -299,6 +299,10 @@ export class MoneyRequestsService {
         throw new MoneyRequestNotFoundException();
       }
 
+      const details = {
+        note: moneyRequest.note || null,
+        visibility: dto.visibility,
+      };
       const prepared = await this.transfersService.prepareTransfer(
         payerId,
         moneyRequest.requesterUserId,
@@ -309,6 +313,7 @@ export class MoneyRequestsService {
         payerId,
         prepared,
         dto.reference,
+        details,
       );
       if (replayResult) {
         // checkTransferReplay's fingerprint (amount/currency/counterparty)
@@ -342,6 +347,7 @@ export class MoneyRequestsService {
         prepared,
         dto.reference,
         dto.pin,
+        details,
         manager,
       );
 

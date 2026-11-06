@@ -21,6 +21,7 @@ import { TransfersModule } from './modules/transfers/transfers.module';
 import { WithdrawalsModule } from './modules/withdrawals/withdrawals.module';
 import { DisputesModule } from './modules/disputes/disputes.module';
 import { KycModule } from './modules/kyc/kyc.module';
+import { SocialModule } from './modules/social/social.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { KycModule } from './modules/kyc/kyc.module';
     WithdrawalsModule,
     DisputesModule,
     KycModule,
+    SocialModule,
     TerminusModule,
   ],
   controllers: [AppController],

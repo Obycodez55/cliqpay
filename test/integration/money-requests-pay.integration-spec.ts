@@ -111,7 +111,7 @@ describe('POST /money-requests/:id/pay', () => {
     return request(ctx.app.getHttpServer())
       .post(`/money-requests/${id}/pay`)
       .set('Authorization', `Bearer ${token}`)
-      .send(body);
+      .send({ visibility: 'private', ...body });
   }
 
   it('asks an unverified (tier 0) payer to verify, leaving the request pending and posting nothing', async () => {

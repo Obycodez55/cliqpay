@@ -35,6 +35,7 @@ import {
 } from '../../../src/modules/users/users.service';
 import { TransfersModule } from '../../../src/modules/transfers/transfers.module';
 import { TransfersService } from '../../../src/modules/transfers/transfers.service';
+import { SocialService } from '../../../src/modules/social/social.service';
 import { MoneyRequestsService } from '../../../src/modules/transfers/money-requests.service';
 import { MoneyRequest } from '../../../src/modules/transfers/entities/money-request.entity';
 import { NotificationsModule } from '../../../src/modules/notifications/notifications.module';
@@ -57,6 +58,7 @@ export interface TransfersTestContext {
   ledgerService: LedgerService;
   transfersService: TransfersService;
   moneyRequestsService: MoneyRequestsService;
+  socialService: SocialService;
   notificationService: NotificationService;
   dataSource: DataSource;
   userRepo: Repository<User>;
@@ -133,6 +135,7 @@ export async function createTransfersTestContext(
     ledgerService: moduleRef.get(LedgerService),
     transfersService: moduleRef.get(TransfersService),
     moneyRequestsService: moduleRef.get(MoneyRequestsService),
+    socialService: moduleRef.get(SocialService),
     notificationService: moduleRef.get(NotificationService),
     dataSource,
     userRepo: dataSource.getRepository(User),

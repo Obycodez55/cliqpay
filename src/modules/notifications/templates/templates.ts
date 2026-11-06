@@ -215,6 +215,7 @@ export const inAppTemplates: {
       amount: payload.amount,
       currency: payload.currency,
       counterpartyUsername: payload.counterpartyUsername,
+      ...(payload.note ? { note: payload.note } : {}),
     },
     dedupeKey: payload.reference,
   }),
