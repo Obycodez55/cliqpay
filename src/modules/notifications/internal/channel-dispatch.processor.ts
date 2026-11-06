@@ -24,6 +24,11 @@ function blockCheckedPair(
         payload as NotificationPayloadMap['new_follower'];
       return [userId, followerUserId];
     }
+    case 'post_reaction': {
+      const { userId, reactorUserId } =
+        payload as NotificationPayloadMap['post_reaction'];
+      return [userId, reactorUserId];
+    }
     default:
       return null;
   }

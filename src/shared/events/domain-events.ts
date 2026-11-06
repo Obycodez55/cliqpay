@@ -250,3 +250,12 @@ export interface NewFollowerEventPayload {
   followerUserId: string;
   followerUsername: string;
 }
+
+export const POST_REACTION_EVENT = 'post_reaction';
+
+export interface PostReactionEventPayload {
+  userId: string; // the participant being notified
+  transactionId: string;
+  reactorUserId: string;
+  reactorUsername: string;
+}

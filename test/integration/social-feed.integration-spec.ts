@@ -168,6 +168,15 @@ describe('Social feed and post view', () => {
         },
         note: 'suya money',
         createdAt: expect.any(String) as string,
+        reactionCounts: {
+          heart: 0,
+          laugh: 0,
+          wow: 0,
+          fire: 0,
+          clap: 0,
+          pray: 0,
+        },
+        myReaction: null,
       });
       expect(JSON.stringify(res.body)).not.toMatch(/amount/i);
     });

@@ -32,6 +32,8 @@ import { BlockStateResponseDto } from './dto/block-state-response.dto';
 import { RelationshipResponseDto } from './dto/relationship-response.dto';
 import { SocialPageQueryDto } from './dto/social-page-query.dto';
 import { FeedPostResponseDto } from './dto/feed-post-response.dto';
+import { SetReactionDto } from './dto/set-reaction.dto';
+import { ReactionStateResponseDto } from './dto/reaction-state-response.dto';
 import { IdentitySummaryDto } from '../../common/dto/identity-summary.dto';
 import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
 
@@ -88,6 +90,32 @@ export class SocialController {
     @Param('transactionId', ParseUUIDPipe) transactionId: string,
   ): Promise<FeedPostResponseDto> {
     return this.socialService.getPost(req.user.userId, transactionId);
+  }
+
+  @Put('posts/:transactionId/reaction')
+  @ApiOperation({
+    summary: 'Set or replace your reaction on a post you can see',
+  })
+  async setReaction(
+    @Req() req: AuthenticatedRequest,
+    @Param('transactionId', ParseUUIDPipe) transactionId: string,
+    @Body() dto: SetReactionDto,
+  ): Promise<ReactionStateResponseDto> {
+    return this.socialService.setReaction(
+      req.user.userId,
+      transactionId,
+      dto.reaction,
+    );
+  }
+
+  @Delete('posts/:transactionId/reaction')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Remove your reaction from a post you can see' })
+  async removeReaction(
+    @Req() req: AuthenticatedRequest,
+    @Param('transactionId', ParseUUIDPipe) transactionId: string,
+  ): Promise<ReactionStateResponseDto> {
+    return this.socialService.removeReaction(req.user.userId, transactionId);
   }
 
   @Patch('posts/:transactionId/visibility')

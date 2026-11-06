@@ -13,6 +13,7 @@ import {
   NotificationPayloadMap,
   PasswordResetOtpPayload,
   PhoneVerificationOtpPayload,
+  PostReactionPayload,
   ReconciliationMismatchPayload,
   RefundAttentionRequiredPayload,
   SecurityAlertPayload,
@@ -268,6 +269,18 @@ export const inAppTemplates: {
     // Keyed on the pair, not the follow event, so following, unfollowing
     // and following again never stacks a second row.
     dedupeKey: `${payload.followerUserId}:${payload.userId}`,
+  }),
+  post_reaction: (payload: PostReactionPayload) => ({
+    title: 'New reaction',
+    body: `${payload.reactorUsername} reacted to your transaction.`,
+    data: {
+      transactionId: payload.transactionId,
+      reactorUserId: payload.reactorUserId,
+      reactorUsername: payload.reactorUsername,
+    },
+    // One row per reactor per post, so changing or re-adding a reaction
+    // never stacks a second notification.
+    dedupeKey: `${payload.transactionId}:${payload.reactorUserId}`,
   }),
   security_alert: (payload: SecurityAlertPayload) => ({
     title: 'Security alert',

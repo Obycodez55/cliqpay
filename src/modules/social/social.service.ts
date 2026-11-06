@@ -6,6 +6,8 @@ import { EventBusService } from '../../shared/events/event-bus.service';
 import {
   NEW_FOLLOWER_EVENT,
   NewFollowerEventPayload,
+  POST_REACTION_EVENT,
+  PostReactionEventPayload,
 } from '../../shared/events/domain-events';
 import {
   IdentitySummaryDto,
@@ -31,7 +33,16 @@ import { Block } from './entities/block.entity';
 import { FollowStateResponseDto } from './dto/follow-state-response.dto';
 import { BlockStateResponseDto } from './dto/block-state-response.dto';
 import { RelationshipResponseDto } from './dto/relationship-response.dto';
-import { FeedPostResponseDto } from './dto/feed-post-response.dto';
+import {
+  FeedPostResponseDto,
+  ReactionCountsDto,
+} from './dto/feed-post-response.dto';
+import { ReactionStateResponseDto } from './dto/reaction-state-response.dto';
+import {
+  PostReaction,
+  REACTIONS,
+  Reaction,
+} from './entities/post-reaction.entity';
 import {
   FollowLimitReachedException,
   FollowRequiresUnblockException,
@@ -81,6 +92,20 @@ const BLOCKED: EdgeList = {
   ownerColumn: 'blockerUserId',
   otherColumn: 'blockedUserId',
 };
+
+interface PostReactions {
+  reactionCounts: ReactionCountsDto;
+  myReaction: Reaction | null;
+}
+
+function emptyReactions(): PostReactions {
+  return {
+    reactionCounts: Object.fromEntries(
+      REACTIONS.map((reaction) => [reaction, 0]),
+    ) as Record<Reaction, number>,
+    myReaction: null,
+  };
+}
 
 interface PostRow {
   id: string;
@@ -433,7 +458,7 @@ export class SocialService {
     const page = hasMore ? rows.slice(0, pagination.limit) : rows;
     const last = page[page.length - 1];
     return {
-      items: await this.toFeedPosts(page),
+      items: await this.toFeedPosts(viewerId, page),
       nextCursor:
         hasMore && last
           ? encodeCreatedAtIdCursor({
@@ -450,18 +475,82 @@ export class SocialService {
   ): Promise<FeedPostResponseDto> {
     await this.requireSocialTier(viewerId);
     const post = await this.findReadablePost(viewerId, transactionId);
-    const [item] = await this.toFeedPosts([post]);
+    const [item] = await this.toFeedPosts(viewerId, [post]);
     if (!item) {
       throw new PostNotFoundException();
     }
     return item;
   }
 
+  async setReaction(
+    userId: string,
+    transactionId: string,
+    reaction: Reaction,
+  ): Promise<ReactionStateResponseDto> {
+    await this.requireSocialTier(userId);
+    const { post, isFirst } = await runInTransaction(
+      this.dataSource,
+      async (manager) => {
+        const found = await this.findReadablePost(
+          userId,
+          transactionId,
+          manager,
+        );
+        const others = [found.sender_user_id, found.recipient_user_id]
+          .filter((id) => id !== userId)
+          .sort();
+        // Sorted so two of one user's reactions can't take the same pair
+        // locks in opposite orders.
+        for (const other of others) {
+          await this.lockPair(manager, userId, other);
+        }
+        // Re-read under the pair locks so a block committed since the
+        // first read is seen before the reaction is written.
+        const locked = await this.findReadablePost(
+          userId,
+          transactionId,
+          manager,
+        );
+        const inserted: unknown[] = await manager.query(
+          `INSERT INTO post_reactions (post_id, user_id, reaction)
+          VALUES ($1, $2, $3)
+          ON CONFLICT (post_id, user_id) DO NOTHING
+          RETURNING post_id`,
+          [locked.id, userId, reaction],
+        );
+        if (inserted.length === 0) {
+          await manager
+            .getRepository(PostReaction)
+            .update({ postId: locked.id, userId }, { reaction });
+        }
+        return { post: locked, isFirst: inserted.length > 0 };
+      },
+    );
+
+    if (isFirst) {
+      await this.publishPostReaction(userId, post);
+    }
+    return { transactionId, reaction };
+  }
+
+  async removeReaction(
+    userId: string,
+    transactionId: string,
+  ): Promise<ReactionStateResponseDto> {
+    await this.requireSocialTier(userId);
+    const post = await this.findReadablePost(userId, transactionId);
+    await this.dataSource
+      .getRepository(PostReaction)
+      .delete({ postId: post.id, userId });
+    return { transactionId, reaction: null };
+  }
+
   private async findReadablePost(
     viewerId: string,
     transactionId: string,
+    manager: EntityManager = this.dataSource.manager,
   ): Promise<PostRow> {
-    const [post]: PostRow[] = await this.dataSource.query(
+    const [post]: PostRow[] = await manager.query(
       `SELECT ${POST_COLUMNS}
       FROM transaction_posts p
       WHERE p.transaction_id = $2 AND ${readableBy('$1::uuid')}`,
@@ -473,18 +562,23 @@ export class SocialService {
     return post;
   }
 
-  private async toFeedPosts(rows: PostRow[]): Promise<FeedPostResponseDto[]> {
+  private async toFeedPosts(
+    viewerId: string,
+    rows: PostRow[],
+  ): Promise<FeedPostResponseDto[]> {
     const userIds = [
       ...new Set(
         rows.flatMap((row) => [row.sender_user_id, row.recipient_user_id]),
       ),
     ];
-    const usersById = new Map(
-      (await this.usersService.findByIds(userIds)).map((user) => [
-        user.id,
-        user,
-      ]),
-    );
+    const [users, reactionsByPost] = await Promise.all([
+      this.usersService.findByIds(userIds),
+      this.loadReactions(
+        viewerId,
+        rows.map((row) => row.id),
+      ),
+    ]);
+    const usersById = new Map(users.map((user) => [user.id, user]));
     return rows.flatMap((row) => {
       const sender = usersById.get(row.sender_user_id);
       const recipient = usersById.get(row.recipient_user_id);
@@ -498,9 +592,45 @@ export class SocialService {
           recipient: toIdentitySummary(recipient),
           note: row.note,
           createdAt: row.created_at,
+          ...(reactionsByPost.get(row.id) ?? emptyReactions()),
         },
       ];
     });
+  }
+
+  private async loadReactions(
+    viewerId: string,
+    postIds: string[],
+  ): Promise<Map<string, PostReactions>> {
+    const byPost = new Map<string, PostReactions>();
+    if (postIds.length === 0) {
+      return byPost;
+    }
+    const rows: {
+      post_id: string;
+      reaction: Reaction;
+      count: number;
+      mine: boolean;
+    }[] = await this.dataSource.query(
+      `SELECT post_id, reaction, COUNT(*)::int AS count,
+        BOOL_OR(user_id = $2) AS mine
+      FROM post_reactions
+      WHERE post_id = ANY($1::uuid[])
+      GROUP BY post_id, reaction`,
+      [postIds, viewerId],
+    );
+    for (const row of rows) {
+      let entry = byPost.get(row.post_id);
+      if (!entry) {
+        entry = emptyReactions();
+        byPost.set(row.post_id, entry);
+      }
+      entry.reactionCounts[row.reaction] = row.count;
+      if (row.mine) {
+        entry.myReaction = row.reaction;
+      }
+    }
+    return byPost;
   }
 
   private async listEdges(
@@ -619,6 +749,34 @@ export class SocialService {
     } catch (error) {
       this.logger.error(
         `publishNewFollower: ${followerId} followed ${followeeId}, but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
+  }
+
+  private async publishPostReaction(
+    reactorId: string,
+    post: PostRow,
+  ): Promise<void> {
+    const recipients = [
+      ...new Set([post.sender_user_id, post.recipient_user_id]),
+    ].filter((id) => id !== reactorId);
+    try {
+      const reactor = await this.usersService.findById(reactorId);
+      for (const userId of recipients) {
+        await this.eventBus.publish<string, PostReactionEventPayload>({
+          name: POST_REACTION_EVENT,
+          payload: {
+            userId,
+            transactionId: post.transaction_id,
+            reactorUserId: reactorId,
+            reactorUsername: reactor.username,
+          },
+          occurredAt: new Date(),
+        });
+      }
+    } catch (error) {
+      this.logger.error(
+        `publishPostReaction: ${reactorId} reacted to ${post.transaction_id}, but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
       );
     }
   }
