@@ -31,6 +31,7 @@ import { Block } from './entities/block.entity';
 import { FollowStateResponseDto } from './dto/follow-state-response.dto';
 import { BlockStateResponseDto } from './dto/block-state-response.dto';
 import { RelationshipResponseDto } from './dto/relationship-response.dto';
+import { FeedPostResponseDto } from './dto/feed-post-response.dto';
 import {
   FollowLimitReachedException,
   FollowRequiresUnblockException,
@@ -80,6 +81,68 @@ const BLOCKED: EdgeList = {
   ownerColumn: 'blockerUserId',
   otherColumn: 'blockedUserId',
 };
+
+interface PostRow {
+  id: string;
+  transaction_id: string;
+  sender_user_id: string;
+  recipient_user_id: string;
+  note: string | null;
+  created_at: Date;
+  raw_created_at: string;
+}
+
+const POST_COLUMNS = `p.id, p.transaction_id, p.sender_user_id, p.recipient_user_id,
+  p.note, p.created_at, p.created_at::text AS raw_created_at`;
+
+// Must stay literal, not parameterised, for the planner to match the
+// partial indexes' predicate.
+const EFFECTIVELY_PUBLIC = `p.visibility = 'public' AND p.hidden_by_recipient = false`;
+
+function noBlockWithViewer(viewerParam: string): string {
+  return `NOT EXISTS (
+    SELECT 1 FROM blocks b
+    WHERE b.blocker_user_id = ${viewerParam}
+      AND b.blocked_user_id IN (p.sender_user_id, p.recipient_user_id)
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM blocks b
+    WHERE b.blocker_user_id IN (p.sender_user_id, p.recipient_user_id)
+      AND b.blocked_user_id = ${viewerParam}
+  )`;
+}
+
+function readableBy(viewerParam: string): string {
+  return `(
+    ${viewerParam} IN (p.sender_user_id, p.recipient_user_id)
+    OR (
+      ${EFFECTIVELY_PUBLIC}
+      AND EXISTS (
+        SELECT 1 FROM follows f
+        WHERE f.follower_user_id = ${viewerParam}
+          AND f.followee_user_id IN (p.sender_user_id, p.recipient_user_id)
+      )
+      AND ${noBlockWithViewer(viewerParam)}
+    )
+  )`;
+}
+
+function feedBranch(
+  participantColumn: string,
+  cursorClause: string,
+  limitParam: string,
+): string {
+  return `SELECT tp.* FROM followed CROSS JOIN LATERAL (
+    SELECT ${POST_COLUMNS}
+    FROM transaction_posts p
+    WHERE p.${participantColumn} = followed.user_id
+      AND ${EFFECTIVELY_PUBLIC}
+      ${cursorClause}
+      AND ${noBlockWithViewer('$1::uuid')}
+    ORDER BY p.created_at DESC, p.id DESC
+    LIMIT ${limitParam}
+  ) tp`;
+}
 
 @Injectable()
 export class SocialService {
@@ -330,6 +393,114 @@ export class SocialService {
       followerCount,
       followingCount,
     };
+  }
+
+  async getFeed(
+    viewerId: string,
+    pagination: SocialPagination,
+  ): Promise<PaginatedResult<FeedPostResponseDto>> {
+    await this.requireSocialTier(viewerId);
+    const cursor = pagination.cursor
+      ? decodeCreatedAtIdCursor(pagination.cursor)
+      : null;
+    const params: unknown[] = [viewerId, pagination.limit + 1];
+    let cursorClause = '';
+    if (cursor) {
+      params.push(cursor.createdAt, cursor.id);
+      cursorClause = 'AND (p.created_at, p.id) < ($3::timestamptz, $4::uuid)';
+    }
+
+    // Each followed user (and the viewer) contributes at most one page from
+    // each side, read straight off the partial indexes, so the merge below
+    // never sorts more than (follows + 1) * 2 pages of rows.
+    const rows: PostRow[] = await this.dataSource.query(
+      `WITH followed AS (
+        SELECT followee_user_id AS user_id FROM follows WHERE follower_user_id = $1
+        UNION ALL
+        SELECT $1::uuid
+      )
+      SELECT feed.* FROM (
+        ${feedBranch('sender_user_id', cursorClause, '$2')}
+        UNION
+        ${feedBranch('recipient_user_id', cursorClause, '$2')}
+      ) feed
+      ORDER BY feed.created_at DESC, feed.id DESC
+      LIMIT $2`,
+      params,
+    );
+
+    const hasMore = rows.length > pagination.limit;
+    const page = hasMore ? rows.slice(0, pagination.limit) : rows;
+    const last = page[page.length - 1];
+    return {
+      items: await this.toFeedPosts(page),
+      nextCursor:
+        hasMore && last
+          ? encodeCreatedAtIdCursor({
+              createdAt: last.raw_created_at,
+              id: last.id,
+            })
+          : null,
+    };
+  }
+
+  async getPost(
+    viewerId: string,
+    transactionId: string,
+  ): Promise<FeedPostResponseDto> {
+    await this.requireSocialTier(viewerId);
+    const post = await this.findReadablePost(viewerId, transactionId);
+    const [item] = await this.toFeedPosts([post]);
+    if (!item) {
+      throw new PostNotFoundException();
+    }
+    return item;
+  }
+
+  private async findReadablePost(
+    viewerId: string,
+    transactionId: string,
+  ): Promise<PostRow> {
+    const [post]: PostRow[] = await this.dataSource.query(
+      `SELECT ${POST_COLUMNS}
+      FROM transaction_posts p
+      WHERE p.transaction_id = $2 AND ${readableBy('$1::uuid')}`,
+      [viewerId, transactionId],
+    );
+    if (!post) {
+      throw new PostNotFoundException();
+    }
+    return post;
+  }
+
+  private async toFeedPosts(rows: PostRow[]): Promise<FeedPostResponseDto[]> {
+    const userIds = [
+      ...new Set(
+        rows.flatMap((row) => [row.sender_user_id, row.recipient_user_id]),
+      ),
+    ];
+    const usersById = new Map(
+      (await this.usersService.findByIds(userIds)).map((user) => [
+        user.id,
+        user,
+      ]),
+    );
+    return rows.flatMap((row) => {
+      const sender = usersById.get(row.sender_user_id);
+      const recipient = usersById.get(row.recipient_user_id);
+      if (!sender || !recipient) {
+        return [];
+      }
+      return [
+        {
+          transactionId: row.transaction_id,
+          sender: toIdentitySummary(sender),
+          recipient: toIdentitySummary(recipient),
+          note: row.note,
+          createdAt: row.created_at,
+        },
+      ];
+    });
   }
 
   private async listEdges(

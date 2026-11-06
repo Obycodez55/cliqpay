@@ -31,6 +31,7 @@ import { FollowStateResponseDto } from './dto/follow-state-response.dto';
 import { BlockStateResponseDto } from './dto/block-state-response.dto';
 import { RelationshipResponseDto } from './dto/relationship-response.dto';
 import { SocialPageQueryDto } from './dto/social-page-query.dto';
+import { FeedPostResponseDto } from './dto/feed-post-response.dto';
 import { IdentitySummaryDto } from '../../common/dto/identity-summary.dto';
 import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
 
@@ -52,6 +53,42 @@ const IDENTITY_PAGE_SCHEMA = {
 @UseGuards(JwtAuthGuard)
 export class SocialController {
   constructor(private readonly socialService: SocialService) {}
+
+  @Get('feed')
+  @ApiOperation({
+    summary:
+      'Public posts involving you or people you follow, newest first. Never includes amounts.',
+  })
+  @ApiExtraModels(FeedPostResponseDto)
+  @ApiOkResponse({
+    schema: {
+      properties: {
+        items: {
+          type: 'array',
+          items: { $ref: getSchemaPath(FeedPostResponseDto) },
+        },
+        nextCursor: { type: 'string', nullable: true },
+      },
+    },
+  })
+  async feed(
+    @Req() req: AuthenticatedRequest,
+    @Query() query: SocialPageQueryDto,
+  ): Promise<PaginatedResult<FeedPostResponseDto>> {
+    return this.socialService.getFeed(req.user.userId, {
+      cursor: query.cursor,
+      limit: query.limit,
+    });
+  }
+
+  @Get('posts/:transactionId')
+  @ApiOperation({ summary: 'A single post you can see' })
+  async post(
+    @Req() req: AuthenticatedRequest,
+    @Param('transactionId', ParseUUIDPipe) transactionId: string,
+  ): Promise<FeedPostResponseDto> {
+    return this.socialService.getPost(req.user.userId, transactionId);
+  }
 
   @Patch('posts/:transactionId/visibility')
   @ApiOperation({
