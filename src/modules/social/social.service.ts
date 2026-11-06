@@ -27,11 +27,15 @@ import {
   TransactionPost,
 } from './entities/transaction-post.entity';
 import { Follow } from './entities/follow.entity';
+import { Block } from './entities/block.entity';
 import { FollowStateResponseDto } from './dto/follow-state-response.dto';
+import { BlockStateResponseDto } from './dto/block-state-response.dto';
 import { RelationshipResponseDto } from './dto/relationship-response.dto';
 import {
   FollowLimitReachedException,
+  FollowRequiresUnblockException,
   PostNotFoundException,
+  SelfBlockException,
   SelfFollowException,
   SocialKycRequiredException,
   SocialUserNotFoundException,
@@ -55,7 +59,27 @@ export interface SocialPagination {
   limit: number;
 }
 
-type FollowListSide = 'followers' | 'following';
+interface EdgeList {
+  entity: typeof Follow | typeof Block;
+  ownerColumn: string;
+  otherColumn: string;
+}
+
+const FOLLOWERS: EdgeList = {
+  entity: Follow,
+  ownerColumn: 'followeeUserId',
+  otherColumn: 'followerUserId',
+};
+const FOLLOWING: EdgeList = {
+  entity: Follow,
+  ownerColumn: 'followerUserId',
+  otherColumn: 'followeeUserId',
+};
+const BLOCKED: EdgeList = {
+  entity: Block,
+  ownerColumn: 'blockerUserId',
+  otherColumn: 'blockedUserId',
+};
 
 @Injectable()
 export class SocialService {
@@ -145,6 +169,13 @@ export class SocialService {
       await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
         `follows:${followerId}`,
       ]);
+      await this.lockPair(manager, followerId, followeeId);
+      if (await this.hasBlocked(manager, followerId, followeeId)) {
+        throw new FollowRequiresUnblockException();
+      }
+      if (await this.isBlockedBetween(followerId, followeeId, manager)) {
+        throw new SocialUserNotFoundException();
+      }
       const repo = manager.getRepository(Follow);
       if (
         await repo.existsBy({
@@ -189,7 +220,7 @@ export class SocialService {
     pagination: SocialPagination,
   ): Promise<PaginatedResult<IdentitySummaryDto>> {
     await this.requireSocialTier(userId);
-    return this.listFollows(userId, 'followers', pagination);
+    return this.listEdges(FOLLOWERS, userId, pagination);
   }
 
   async listFollowing(
@@ -197,7 +228,77 @@ export class SocialService {
     pagination: SocialPagination,
   ): Promise<PaginatedResult<IdentitySummaryDto>> {
     await this.requireSocialTier(userId);
-    return this.listFollows(userId, 'following', pagination);
+    return this.listEdges(FOLLOWING, userId, pagination);
+  }
+
+  async block(
+    blockerId: string,
+    blockedId: string,
+  ): Promise<BlockStateResponseDto> {
+    if (blockerId === blockedId) {
+      throw new SelfBlockException();
+    }
+    await this.requireUser(blockedId);
+
+    await runInTransaction(this.dataSource, async (manager) => {
+      await this.lockPair(manager, blockerId, blockedId);
+      await manager
+        .createQueryBuilder()
+        .insert()
+        .into(Block)
+        .values({ blockerUserId: blockerId, blockedUserId: blockedId })
+        .orIgnore()
+        .execute();
+      const follows = manager.getRepository(Follow);
+      await follows.delete({
+        followerUserId: blockerId,
+        followeeUserId: blockedId,
+      });
+      await follows.delete({
+        followerUserId: blockedId,
+        followeeUserId: blockerId,
+      });
+    });
+    return { userId: blockedId, blocked: true };
+  }
+
+  async unblock(
+    blockerId: string,
+    blockedId: string,
+  ): Promise<BlockStateResponseDto> {
+    await this.dataSource.getRepository(Block).delete({
+      blockerUserId: blockerId,
+      blockedUserId: blockedId,
+    });
+    return { userId: blockedId, blocked: false };
+  }
+
+  async listBlocks(
+    blockerId: string,
+    pagination: SocialPagination,
+  ): Promise<PaginatedResult<IdentitySummaryDto>> {
+    return this.listEdges(BLOCKED, blockerId, pagination);
+  }
+
+  async isBlockedBetween(
+    userA: string,
+    userB: string,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<boolean> {
+    return manager.getRepository(Block).exists({
+      where: [
+        { blockerUserId: userA, blockedUserId: userB },
+        { blockerUserId: userB, blockedUserId: userA },
+      ],
+    });
+  }
+
+  async getBlockedUserIds(blockerId: string): Promise<string[]> {
+    const blocks = await this.dataSource.getRepository(Block).find({
+      where: { blockerUserId: blockerId },
+      select: { blockedUserId: true },
+    });
+    return blocks.map((block) => block.blockedUserId);
   }
 
   async getRelationship(
@@ -207,7 +308,7 @@ export class SocialService {
     await this.requireSocialTier(viewerId);
     await this.requireUser(otherUserId);
     const repo = this.dataSource.getRepository(Follow);
-    const [follows, followedBy, followerCount, followingCount] =
+    const [follows, followedBy, blocked, followerCount, followingCount] =
       await Promise.all([
         repo.existsBy({
           followerUserId: viewerId,
@@ -217,6 +318,7 @@ export class SocialService {
           followerUserId: otherUserId,
           followeeUserId: viewerId,
         }),
+        this.hasBlocked(this.dataSource.manager, viewerId, otherUserId),
         repo.countBy({ followeeUserId: otherUserId }),
         repo.countBy({ followerUserId: otherUserId }),
       ]);
@@ -224,38 +326,35 @@ export class SocialService {
       userId: otherUserId,
       follows,
       followedBy,
+      blocked,
       followerCount,
       followingCount,
     };
   }
 
-  private async listFollows(
+  private async listEdges(
+    { entity, ownerColumn, otherColumn }: EdgeList,
     ownerId: string,
-    side: FollowListSide,
     pagination: SocialPagination,
   ): Promise<PaginatedResult<IdentitySummaryDto>> {
     const cursor = pagination.cursor
       ? decodeCreatedAtIdCursor(pagination.cursor)
       : null;
-    const ownerColumn =
-      side === 'followers' ? 'followeeUserId' : 'followerUserId';
-    const otherColumn =
-      side === 'followers' ? 'followerUserId' : 'followeeUserId';
 
     const query = this.dataSource
-      .getRepository(Follow)
-      .createQueryBuilder('follow')
+      .getRepository<Follow | Block>(entity)
+      .createQueryBuilder('edge')
       // Compared as Postgres's own text form, not a millisecond JS Date, so
       // rows sharing a millisecond aren't skipped at a page boundary.
-      .addSelect('"follow"."created_at"::text', 'raw_created_at')
-      .where(`follow.${ownerColumn} = :ownerId`, { ownerId })
-      .orderBy('follow.createdAt', 'DESC')
-      .addOrderBy(`follow.${otherColumn}`, 'DESC')
+      .addSelect('"edge"."created_at"::text', 'raw_created_at')
+      .where(`edge.${ownerColumn} = :ownerId`, { ownerId })
+      .orderBy('edge.createdAt', 'DESC')
+      .addOrderBy(`edge.${otherColumn}`, 'DESC')
       .limit(pagination.limit + 1);
 
     if (cursor) {
       query.andWhere(
-        `(follow.createdAt, follow.${otherColumn}) < (:cursorCreatedAt::timestamptz, :cursorId::uuid)`,
+        `(edge.createdAt, edge.${otherColumn}) < (:cursorCreatedAt::timestamptz, :cursorId::uuid)`,
         { cursorCreatedAt: cursor.createdAt, cursorId: cursor.id },
       );
     }
@@ -265,7 +364,9 @@ export class SocialService {
     }>();
     const hasMore = entities.length > pagination.limit;
     const page = hasMore ? entities.slice(0, pagination.limit) : entities;
-    const otherIds = page.map((follow) => follow[otherColumn]);
+    const otherIds = page.map(
+      (edge) => (edge as unknown as Record<string, string>)[otherColumn],
+    );
     const usersById = new Map(
       (await this.usersService.findByIds(otherIds)).map((user) => [
         user.id,
@@ -283,10 +384,33 @@ export class SocialService {
         hasMore && last
           ? encodeCreatedAtIdCursor({
               createdAt: raw[page.length - 1].raw_created_at,
-              id: last[otherColumn],
+              id: otherIds[otherIds.length - 1],
             })
           : null,
     };
+  }
+
+  // Shared by follow and block so the two can't interleave for a pair:
+  // whichever commits second sees what the first wrote.
+  private async lockPair(
+    manager: EntityManager,
+    userA: string,
+    userB: string,
+  ): Promise<void> {
+    const [low, high] = userA < userB ? [userA, userB] : [userB, userA];
+    await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+      `social-pair:${low}:${high}`,
+    ]);
+  }
+
+  private async hasBlocked(
+    manager: EntityManager,
+    blockerId: string,
+    blockedId: string,
+  ): Promise<boolean> {
+    return manager
+      .getRepository(Block)
+      .existsBy({ blockerUserId: blockerId, blockedUserId: blockedId });
   }
 
   private async requireSocialTier(userId: string): Promise<void> {

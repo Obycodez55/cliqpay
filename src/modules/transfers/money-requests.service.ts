@@ -31,8 +31,10 @@ import {
   toMoneyRequestResponse,
 } from './dto/money-request-response.dto';
 import { TransfersService } from './transfers.service';
+import { SocialService } from '../social/social.service';
 import {
   MoneyRequestAmountTooSmallException,
+  MoneyRequestNotAllowedException,
   MoneyRequestNotFoundException,
   MoneyRequestNotPayableException,
   MoneyRequestPairCapExceededException,
@@ -105,6 +107,7 @@ export class MoneyRequestsService {
     private readonly transfersService: TransfersService,
     private readonly kycService: KycService,
     private readonly ledgerService: LedgerService,
+    private readonly socialService: SocialService,
     private readonly eventBus: EventBusService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
@@ -143,6 +146,11 @@ export class MoneyRequestsService {
         throw new PayerNotFoundException();
       }
       throw error;
+    }
+    if (
+      await this.socialService.isBlockedBetween(requesterId, dto.payerUserId)
+    ) {
+      throw new MoneyRequestNotAllowedException();
     }
 
     const now = new Date();
@@ -187,6 +195,7 @@ export class MoneyRequestsService {
       payerId,
       pagination,
       (mr) => mr.requesterUserId,
+      await this.socialService.getBlockedUserIds(payerId),
     );
   }
 
@@ -397,6 +406,7 @@ export class MoneyRequestsService {
     userId: string,
     pagination: MoneyRequestListPagination,
     counterpartyIdOf: (moneyRequest: MoneyRequest) => string,
+    hiddenPendingFrom: string[] = [],
   ): Promise<PaginatedResult<MoneyRequestResponseDto>> {
     const cursor = pagination.cursor
       ? decodeCreatedAtIdCursor(pagination.cursor)
@@ -413,6 +423,13 @@ export class MoneyRequestsService {
       .orderBy('moneyRequest.createdAt', 'DESC')
       .addOrderBy('moneyRequest.id', 'DESC')
       .take(pagination.limit + 1);
+
+    if (hiddenPendingFrom.length > 0) {
+      query.andWhere(
+        "NOT (moneyRequest.status = 'pending' AND moneyRequest.requesterUserId IN (:...hiddenPendingFrom))",
+        { hiddenPendingFrom },
+      );
+    }
 
     if (cursor) {
       query.andWhere(

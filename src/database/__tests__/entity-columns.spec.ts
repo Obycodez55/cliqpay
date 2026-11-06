@@ -3,7 +3,7 @@ import { buildDataSourceOptions } from '../data-source.options';
 
 // Pure relationship tables keyed on the pair itself, where a surrogate id
 // would only add a second uniqueness rule to keep in step with the first.
-const COMPOSITE_KEY_TABLES = new Set(['follows']);
+const COMPOSITE_KEY_TABLES = new Set(['follows', 'blocks']);
 
 describe('entity base columns', () => {
   let metadatas: EntityMetadata[];

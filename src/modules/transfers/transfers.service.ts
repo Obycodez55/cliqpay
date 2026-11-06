@@ -29,6 +29,7 @@ import { EventBusService } from '../../shared/events/event-bus.service';
 import { SendTransferDto } from './dto/send-transfer.dto';
 import { SendTransferResponseDto } from './dto/send-transfer-response.dto';
 import {
+  RecipientUnableToReceiveException,
   RecipientWalletNotFoundException,
   SelfTransferException,
   SenderAccountFrozenException,
@@ -271,6 +272,15 @@ export class TransfersService {
     };
 
     const post = async (tx: EntityManager) => {
+      if (
+        await this.socialService.isBlockedBetween(
+          senderId,
+          prepared.recipientUserId,
+          tx,
+        )
+      ) {
+        throw new RecipientUnableToReceiveException();
+      }
       await this.kycService.checkTransferLimits(
         tx,
         senderId,

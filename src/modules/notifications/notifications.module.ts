@@ -7,6 +7,7 @@ import {
   DOMAIN_EVENTS_QUEUE,
   PRIORITY_DISPATCH_QUEUE,
 } from '../../shared/events/event-bus.service';
+import { SocialModule } from '../social/social.module';
 import { PushToken } from './entities/push-token.entity';
 import { Notification } from './entities/notification.entity';
 import { NotificationService } from './notification.service';
@@ -72,6 +73,7 @@ const PUSH_ADAPTERS = {
 @Module({
   imports: [
     TypeOrmModule.forFeature([PushToken, Notification]),
+    SocialModule,
     BullModule.registerQueue({ name: DOMAIN_EVENTS_QUEUE }),
     BullModule.registerQueue({ name: PRIORITY_DISPATCH_QUEUE }),
     // Internal to this module — no other module publishes or consumes it,

@@ -79,7 +79,10 @@ describe('TransfersService.sendMoney', () => {
   let kycService: jest.Mocked<Pick<KycService, 'checkTransferLimits'>>;
   let authService: jest.Mocked<Pick<AuthService, 'verifyTransactionPin'>>;
   let socialService: jest.Mocked<
-    Pick<SocialService, 'recordTransferPost' | 'getRequestedVisibility'>
+    Pick<
+      SocialService,
+      'recordTransferPost' | 'getRequestedVisibility' | 'isBlockedBetween'
+    >
   >;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let service: TransfersService;
@@ -116,6 +119,7 @@ describe('TransfersService.sendMoney', () => {
     socialService = {
       recordTransferPost: jest.fn(),
       getRequestedVisibility: jest.fn(),
+      isBlockedBetween: jest.fn().mockResolvedValue(false),
     };
     eventBus = { publish: jest.fn() };
     service = new TransfersService(

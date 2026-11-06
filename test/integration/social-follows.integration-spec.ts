@@ -466,6 +466,7 @@ describe('Social follows', () => {
         userId: other.userId,
         follows: true,
         followedBy: false,
+        blocked: false,
         followerCount: 2,
         followingCount: 1,
       });

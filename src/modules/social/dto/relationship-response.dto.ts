@@ -10,6 +10,9 @@ export class RelationshipResponseDto {
   @ApiProperty({ description: 'Whether this user follows you' })
   followedBy: boolean;
 
+  @ApiProperty({ description: 'Whether you have blocked this user' })
+  blocked: boolean;
+
   @ApiProperty()
   followerCount: number;
 

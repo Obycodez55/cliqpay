@@ -28,6 +28,7 @@ import { SocialService } from './social.service';
 import { SetPostVisibilityDto } from './dto/set-post-visibility.dto';
 import { PostStateResponseDto } from './dto/post-state-response.dto';
 import { FollowStateResponseDto } from './dto/follow-state-response.dto';
+import { BlockStateResponseDto } from './dto/block-state-response.dto';
 import { RelationshipResponseDto } from './dto/relationship-response.dto';
 import { SocialPageQueryDto } from './dto/social-page-query.dto';
 import { IdentitySummaryDto } from '../../common/dto/identity-summary.dto';
@@ -137,6 +138,39 @@ export class SocialController {
     @Query() query: SocialPageQueryDto,
   ): Promise<PaginatedResult<IdentitySummaryDto>> {
     return this.socialService.listFollowing(req.user.userId, {
+      cursor: query.cursor,
+      limit: query.limit,
+    });
+  }
+
+  @Put('blocks/:userId')
+  @ApiOperation({ summary: 'Block a user' })
+  async block(
+    @Req() req: AuthenticatedRequest,
+    @Param('userId', ParseUUIDPipe) userId: string,
+  ): Promise<BlockStateResponseDto> {
+    return this.socialService.block(req.user.userId, userId);
+  }
+
+  @Delete('blocks/:userId')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Unblock a user' })
+  async unblock(
+    @Req() req: AuthenticatedRequest,
+    @Param('userId', ParseUUIDPipe) userId: string,
+  ): Promise<BlockStateResponseDto> {
+    return this.socialService.unblock(req.user.userId, userId);
+  }
+
+  @Get('blocks')
+  @ApiOperation({ summary: 'List the people you have blocked, newest first' })
+  @ApiExtraModels(IdentitySummaryDto)
+  @ApiOkResponse(IDENTITY_PAGE_SCHEMA)
+  async listBlocks(
+    @Req() req: AuthenticatedRequest,
+    @Query() query: SocialPageQueryDto,
+  ): Promise<PaginatedResult<IdentitySummaryDto>> {
+    return this.socialService.listBlocks(req.user.userId, {
       cursor: query.cursor,
       limit: query.limit,
     });

@@ -43,3 +43,20 @@ export class FollowLimitReachedException extends DomainException {
     this.details = { limit };
   }
 }
+
+export class SelfBlockException extends DomainException {
+  readonly code = 'SELF_BLOCK_NOT_ALLOWED';
+  constructor() {
+    super("You can't block yourself", HttpStatus.BAD_REQUEST);
+  }
+}
+
+export class FollowRequiresUnblockException extends DomainException {
+  readonly code = 'FOLLOW_REQUIRES_UNBLOCK';
+  constructor() {
+    super(
+      "You've blocked this user. Unblock them first to follow them.",
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
