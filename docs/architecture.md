@@ -36,6 +36,7 @@
 8. [Feature Reference](#8-feature-reference)
 9. [Frontend & Client Considerations](#9-frontend--client-considerations)
 10. [Code Architecture & Testing Strategy](#10-code-architecture--testing-strategy)
+11. [Future Features](#11-future-features--not-yet-phased)
 
 ---
 
@@ -827,15 +828,9 @@ CREDIT fx_spread_income_usd   spread
 
 ---
 
-### Not yet phased — candidate future features
+### Not yet phased
 
-Raised during Phase 2 design, deliberately not scoped into any phase above yet — noted here so they aren't forgotten, not so they get built ahead of need:
-
-- **Saved payment methods (card-on-file, recurring charge without redirect).** Checked directly against Kora's documentation (checkout, direct-API, and flexible/pre-auth card flows) — none of them return a reusable token, authorization code, or any other card-on-file identifier; Kora's card flow is single-use only as currently documented. Paystack's charge API is understood to return a reusable `authorization_code` for this purpose, so the likely shape is Kora for regular funding/withdrawal, Paystack as a second, narrowly-scoped provider used only for saved-card charges — the provider-scoped account design (§4.1) already anticipates a second active provider for NGN, so this fits without a schema change. Not yet verified against a real Paystack sandbox the way Kora's shape was confirmed (§3.6) — do that before designing it for real. Also note: "tokenize and charge a saved card" isn't a capability `PaymentProviderAdapter` (§3.6) models at all — it needs its own interface, not a second implementation of the existing one.
-- **Card issuing.** Confirmed via Kora's docs — they offer virtual USD Visa/Mastercard issuing (fund a card, let the user spend from it, suspend/terminate, webhooks on card transactions); no physical card product. Unscoped: no phase above accounts for issuing balance, card lifecycle state, or USD as a currency users hold cards in (Phase 10's multi-currency work doesn't currently include USD). Worth its own phase-sizing pass if pursued rather than folding into an existing phase.
-- **Airtime & data (VTU) purchase.** A peripheral module in the same tier as `billsplit` — spends from a wallet the ledger already tracks rather than changing ledger invariants, so it's a new transaction type through the existing double-entry machinery (a debit from the user's wallet balanced against a new system account), not a schema change. Unscoped and unverified: Kora's documented product set doesn't currently include VTU/bills recharge, so this needs either confirming Kora has one or bringing in a dedicated aggregator (e.g. Reloadly, VTpass, or a telco API) behind its own provider interface — "buy airtime/data" isn't a capability `PaymentProviderAdapter` (§3.6) models, the same way "tokenize and charge a saved card" above isn't. Not sized against a real provider sandbox yet.
-- **[v15] Per-user default visibility.** A stored preference the client reads to preselect the public/private toggle on the send screen, so it follows the user across devices. The server would still never apply it: `visibility` stays required on every transfer request (ADR-0025). Deferred because there is no user settings surface yet.
-- **Customer service / support.** Ticketing, in-app chat or a help-desk integration, and staff tooling to look up a user's account and transaction history when responding to a complaint. Overlaps the still-unbuilt admin surface (§9's `AdminUser` note) for the staff side, but the support-facing half — ticket/conversation state, SLA tracking, whatever a user-facing help flow needs — isn't modeled anywhere yet and isn't obviously ledger/payments/auth's concern, so it's its own unscoped peripheral capability rather than an extension of an existing module.
+Candidate features that aren't scoped into any phase above now live in [§11 Future Features](#11-future-features--not-yet-phased).
 
 ---
 
@@ -1012,6 +1007,29 @@ The four test layers above don't all run on the same cadence:
 
 - **Every PR:** module-boundary lint + unit tests + integration tests — fast enough to gate every commit
 - **Nightly / pre-release:** contract tests against Kora's real sandbox + a higher-iteration property-based fuzz run — slower and network-dependent, don't belong gating every commit
+
+---
+
+## 11. Future Features — not yet phased
+
+Features raised during design and deliberately not scoped into any phase in §6. They're recorded so they aren't forgotten, not so they get built ahead of need. Each one gets a design pass and its own phase when it's picked up.
+
+### Product features
+
+- **Saved payment methods (card-on-file, recurring charge without redirect).** Checked directly against Kora's documentation (checkout, direct-API, and flexible/pre-auth card flows) — none of them return a reusable token, authorization code, or any other card-on-file identifier; Kora's card flow is single-use only as currently documented. Paystack's charge API is understood to return a reusable `authorization_code` for this purpose, so the likely shape is Kora for regular funding/withdrawal, Paystack as a second, narrowly-scoped provider used only for saved-card charges — the provider-scoped account design (§4.1) already anticipates a second active provider for NGN, so this fits without a schema change. Not yet verified against a real Paystack sandbox the way Kora's shape was confirmed (§3.6) — do that before designing it for real. Also note: "tokenize and charge a saved card" isn't a capability `PaymentProviderAdapter` (§3.6) models at all — it needs its own interface, not a second implementation of the existing one.
+- **Card issuing.** Confirmed via Kora's docs — they offer virtual USD Visa/Mastercard issuing (fund a card, let the user spend from it, suspend/terminate, webhooks on card transactions); no physical card product. Unscoped: no phase above accounts for issuing balance, card lifecycle state, or USD as a currency users hold cards in (Phase 10's multi-currency work doesn't currently include USD). Worth its own phase-sizing pass if pursued rather than folding into an existing phase.
+- **Airtime & data (VTU) purchase.** A peripheral module in the same tier as `billsplit` — spends from a wallet the ledger already tracks rather than changing ledger invariants, so it's a new transaction type through the existing double-entry machinery (a debit from the user's wallet balanced against a new system account), not a schema change. Unscoped and unverified: Kora's documented product set doesn't currently include VTU/bills recharge, so this needs either confirming Kora has one or bringing in a dedicated aggregator (e.g. Reloadly, VTpass, or a telco API) behind its own provider interface — "buy airtime/data" isn't a capability `PaymentProviderAdapter` (§3.6) models, the same way "tokenize and charge a saved card" above isn't. Not sized against a real provider sandbox yet.
+- **Customer service / support.** Ticketing, in-app chat or a help-desk integration, and staff tooling to look up a user's account and transaction history when responding to a complaint. Overlaps the still-unbuilt admin surface (§9's `AdminUser` note) for the staff side, but the support-facing half — ticket/conversation state, SLA tracking, whatever a user-facing help flow needs — isn't modeled anywhere yet and isn't obviously ledger/payments/auth's concern, so it's its own unscoped peripheral capability rather than an extension of an existing module.
+- **[v15] Esusu (rotating group savings).** The Yoruba rotating savings practice (*isusu* in Igbo, *adashe* in Hausa): a fixed group each contributes a fixed amount every period, and each period one member collects the whole pot, in an agreed order, until everyone has collected once. The starting design is orchestration only, with no pot held by Cliqpay. Each round is "every member pays this round's recipient": one money request per member, all to the same payee. That makes it bill splitting (Phase 8) combined with recurring scheduling (Phase 9), so it needs no ledger change and adds no custody, and it would sit as a peripheral module that creates requests and schedules through `transfers` and `scheduling` and reacts to `money_request_paid`. A pooled pot instead, with contributions held in a per-group ledger account and paid out from it, would allow guarantees such as escrow and paying out only once the pot is complete. But it needs a new account type and posting rules, likely makes the module core (payouts would consult it before committing), and holding pooled savings needs a compliance answer first. Questions any version must settle: default after a member has already collected (Tier 1 KYC, an upfront auto-debit mandate via Phase 9, ordering newer members later, penalties), payout order (organiser-set, random or bid), late contributions (wait, partial payout or organiser covers), members leaving mid-cycle, and the organiser's role and any fee. Blocks between two users should keep them out of the same group. Builds on Phases 8 and 9, so it comes after both.
+
+### Deferred from an existing phase or section
+
+- **[v15] Per-user default visibility.** A stored preference the client reads to preselect the public/private toggle on the send screen, so it follows the user across devices. The server would still never apply it: `visibility` stays required on every transfer request (ADR-0025). Deferred because there is no user settings surface yet.
+- **Admin panel and `AdminUser`.** A React/Next.js internal panel with its own `AdminUser` model, stricter auth (mandatory security-key MFA, no trusted-device skip) and a `/v1/admin/*` namespace (§9). Until then, internal operations such as recording a chargeback use the shared-secret internal guard (Phase 5).
+- **SMS and security-key MFA.** Deferred from Phase 1, which ships email MFA (mandatory, non-removable) plus optional TOTP (§3.8).
+- **MFA recovery codes (`mfa_recovery_codes`).** Not planned while email MFA is permanent: losing every MFA method then means losing the email account, which recovery codes can't rescue. Revisit only if email MFA's permanence is relaxed (§3.8).
+- **Provider chargeback webhooks.** Chargebacks are recorded by an admin today because Kora's webhooks have no dispute event (Phase 5). Paystack models disputes over webhooks; adopting it for this is tracked in [issue #33](https://github.com/Obycodez55/cliqpay/issues/33).
+- **Behavioural / ML fraud detection and NFIU reporting.** Explicitly out of scope for Phase 11's rules-based fraud work: ML needs real transaction volume to be meaningful, and NFIU/SAR-style reporting only applies once operating under a licence.
 
 ---
 
