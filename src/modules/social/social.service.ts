@@ -579,8 +579,8 @@ export class SocialService {
     transactionId: string,
   ): Promise<ReactionStateResponseDto> {
     await this.requireSocialTier(userId);
-    // Like deleteComment, a reactor can withdraw their own reaction even
-    // after losing sight of the post.
+    // A reactor can withdraw their own reaction even after losing sight of
+    // the post.
     const result = await this.dataSource
       .createQueryBuilder()
       .delete()

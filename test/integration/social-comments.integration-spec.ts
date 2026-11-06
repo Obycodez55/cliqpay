@@ -443,7 +443,9 @@ describe('Social comments', () => {
         );
         await waitFor(async () => {
           const waiting: unknown[] = await ctx.dataSource.query(
-            `SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+            `SELECT 1 FROM pg_locks
+             WHERE locktype = 'advisory' AND NOT granted
+               AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
           );
           return waiting.length > 0;
         });

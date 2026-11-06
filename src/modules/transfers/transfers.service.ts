@@ -55,8 +55,8 @@ export interface PreparedTransfer {
   amount: Money;
 }
 
-// What the sender chose to attach to the transfer beyond the money itself;
-// both are part of the idempotency fingerprint.
+// A replayed reference carrying a different note or visibility is rejected,
+// even though neither is in the ledger fingerprint.
 export interface TransferPostDetails {
   note: string | null;
   visibility: PostVisibility;

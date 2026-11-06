@@ -91,7 +91,6 @@ export interface FundingRefundTransactionMetadata {
 // grossAmount above.
 export interface TransferTransactionMetadata {
   platformFee: { amount: string; currency: string };
-  // Absent when the sender gave none. Never updated after posting.
   note?: string;
 }
 
