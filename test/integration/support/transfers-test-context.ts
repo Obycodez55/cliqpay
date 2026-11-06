@@ -1,5 +1,10 @@
 import { GenericContainer, StartedTestContainer } from 'testcontainers';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import {
+  DynamicModule,
+  INestApplication,
+  Type,
+  ValidationPipe,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { App } from 'supertest/types';
@@ -35,6 +40,7 @@ import {
 } from '../../../src/modules/users/users.service';
 import { TransfersModule } from '../../../src/modules/transfers/transfers.module';
 import { TransfersService } from '../../../src/modules/transfers/transfers.service';
+import { SocialService } from '../../../src/modules/social/social.service';
 import { MoneyRequestsService } from '../../../src/modules/transfers/money-requests.service';
 import { MoneyRequest } from '../../../src/modules/transfers/entities/money-request.entity';
 import { NotificationsModule } from '../../../src/modules/notifications/notifications.module';
@@ -57,6 +63,7 @@ export interface TransfersTestContext {
   ledgerService: LedgerService;
   transfersService: TransfersService;
   moneyRequestsService: MoneyRequestsService;
+  socialService: SocialService;
   notificationService: NotificationService;
   dataSource: DataSource;
   userRepo: Repository<User>;
@@ -77,6 +84,7 @@ export interface TransfersTestContext {
 // first flow that genuinely needs both at once.
 export async function createTransfersTestContext(
   platformFee = 0,
+  extraImports: (DynamicModule | Type<unknown>)[] = [],
 ): Promise<TransfersTestContext> {
   const database = await createTestDatabase();
   const redis = await new GenericContainer('redis:7-alpine')
@@ -109,6 +117,7 @@ export async function createTransfersTestContext(
       AuthModule,
       TransfersModule,
       NotificationsModule,
+      ...extraImports,
     ],
   }).compile();
 
@@ -133,6 +142,7 @@ export async function createTransfersTestContext(
     ledgerService: moduleRef.get(LedgerService),
     transfersService: moduleRef.get(TransfersService),
     moneyRequestsService: moduleRef.get(MoneyRequestsService),
+    socialService: moduleRef.get(SocialService),
     notificationService: moduleRef.get(NotificationService),
     dataSource,
     userRepo: dataSource.getRepository(User),

@@ -1,6 +1,11 @@
 import { ConflictException, Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, Repository, WhereExpressionBuilder } from 'typeorm';
+import {
+  DataSource,
+  EntityManager,
+  Repository,
+  WhereExpressionBuilder,
+} from 'typeorm';
 import { EntityNotFoundError } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { UsersService } from '../users/users.service';
@@ -26,17 +31,20 @@ import { runInTransaction } from '../../database/transaction.util';
 import { MoneyRequest } from './entities/money-request.entity';
 import { CreateMoneyRequestDto } from './dto/create-money-request.dto';
 import { PayMoneyRequestDto } from './dto/pay-money-request.dto';
+import { IncomingBucket } from './dto/list-incoming-money-requests-query.dto';
 import {
   MoneyRequestResponseDto,
   toMoneyRequestResponse,
 } from './dto/money-request-response.dto';
 import { TransfersService } from './transfers.service';
+import { SocialService } from '../social/social.service';
 import {
   MoneyRequestAmountTooSmallException,
   MoneyRequestNotFoundException,
   MoneyRequestNotPayableException,
   MoneyRequestPairCapExceededException,
   PayerNotFoundException,
+  RecipientUnableToReceiveException,
   SelfMoneyRequestException,
 } from './internal/errors';
 
@@ -50,6 +58,11 @@ type CounterpartyUser = Awaited<ReturnType<UsersService['findById']>>;
 export interface MoneyRequestListPagination {
   cursor?: string;
   limit: number;
+}
+
+interface RequesterFilter {
+  hiddenPendingFrom: string[];
+  bucket?: { kind: IncomingBucket; followedIds: string[] };
 }
 
 // Applied to every query that treats a request as still actionable — a
@@ -105,6 +118,7 @@ export class MoneyRequestsService {
     private readonly transfersService: TransfersService,
     private readonly kycService: KycService,
     private readonly ledgerService: LedgerService,
+    private readonly socialService: SocialService,
     private readonly eventBus: EventBusService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
@@ -146,34 +160,61 @@ export class MoneyRequestsService {
     }
 
     const now = new Date();
-    const outstanding = await this.countEffectivelyPending(
-      requesterId,
-      dto.payerUserId,
-      now,
-    );
-    if (outstanding >= this.config.moneyRequests.maxPendingPerPair) {
-      throw new MoneyRequestPairCapExceededException(
-        this.config.moneyRequests.maxPendingPerPair,
-      );
-    }
+    const { moneyRequest, fromFollowed } = await runInTransaction(
+      this.dataSource,
+      async (manager) => {
+        if (
+          await this.socialService.lockPairAndCheckBlock(
+            manager,
+            requesterId,
+            dto.payerUserId,
+          )
+        ) {
+          throw new RecipientUnableToReceiveException();
+        }
 
-    const expiresAt = new Date(
-      now.getTime() +
-        this.config.moneyRequests.expiryDays * 24 * 60 * 60 * 1000,
-    );
-    const moneyRequest = this.moneyRequests.create({
-      requesterUserId: requesterId,
-      payerUserId: dto.payerUserId,
-      amount: BigInt(dto.amount),
-      currency: NGN,
-      note: dto.note ?? null,
-      status: 'pending',
-      expiresAt,
-      transactionId: null,
-    });
-    await this.moneyRequests.save(moneyRequest);
+        const outstanding = await this.countEffectivelyPending(
+          manager,
+          requesterId,
+          dto.payerUserId,
+          now,
+        );
+        if (outstanding >= this.config.moneyRequests.maxPendingPerPair) {
+          throw new MoneyRequestPairCapExceededException(
+            this.config.moneyRequests.maxPendingPerPair,
+          );
+        }
 
-    await this.publishCreatedEvent(moneyRequest, requester, payer);
+        const expiresAt = new Date(
+          now.getTime() +
+            this.config.moneyRequests.expiryDays * 24 * 60 * 60 * 1000,
+        );
+        const repo = manager.getRepository(MoneyRequest);
+        const created = repo.create({
+          requesterUserId: requesterId,
+          payerUserId: dto.payerUserId,
+          amount: BigInt(dto.amount),
+          currency: NGN,
+          note: dto.note ?? null,
+          status: 'pending',
+          expiresAt,
+          transactionId: null,
+        });
+        const followed = await this.socialService.isFollowing(
+          payer.id,
+          requester.id,
+        );
+        await repo.save(created);
+        return { moneyRequest: created, fromFollowed: followed };
+      },
+    );
+
+    await this.publishCreatedEvent(
+      moneyRequest,
+      requester,
+      payer,
+      fromFollowed,
+    );
 
     return toMoneyRequestResponse(moneyRequest, toIdentitySummary(payer), now);
   }
@@ -181,12 +222,24 @@ export class MoneyRequestsService {
   async listIncoming(
     payerId: string,
     pagination: MoneyRequestListPagination,
+    bucket?: IncomingBucket,
   ): Promise<PaginatedResult<MoneyRequestResponseDto>> {
+    const [hiddenPendingFrom, followedIds] = await Promise.all([
+      this.socialService.getBlockedUserIds(payerId),
+      bucket ? this.socialService.getFollowedUserIds(payerId) : [],
+    ]);
+    if (bucket === 'following' && followedIds.length === 0) {
+      return { items: [], nextCursor: null };
+    }
     return this.list(
       'payerUserId',
       payerId,
       pagination,
       (mr) => mr.requesterUserId,
+      {
+        hiddenPendingFrom,
+        bucket: bucket ? { kind: bucket, followedIds } : undefined,
+      },
     );
   }
 
@@ -299,6 +352,10 @@ export class MoneyRequestsService {
         throw new MoneyRequestNotFoundException();
       }
 
+      const details = {
+        note: moneyRequest.note || null,
+        visibility: dto.visibility,
+      };
       const prepared = await this.transfersService.prepareTransfer(
         payerId,
         moneyRequest.requesterUserId,
@@ -309,6 +366,7 @@ export class MoneyRequestsService {
         payerId,
         prepared,
         dto.reference,
+        details,
       );
       if (replayResult) {
         // checkTransferReplay's fingerprint (amount/currency/counterparty)
@@ -342,6 +400,7 @@ export class MoneyRequestsService {
         prepared,
         dto.reference,
         dto.pin,
+        details,
         manager,
       );
 
@@ -371,12 +430,14 @@ export class MoneyRequestsService {
   }
 
   private async countEffectivelyPending(
+    manager: EntityManager,
     requesterId: string,
     payerId: string,
     now: Date,
   ): Promise<number> {
     const qb = applyEffectivelyPending(
-      this.moneyRequests
+      manager
+        .getRepository(MoneyRequest)
         .createQueryBuilder('moneyRequest')
         .where('moneyRequest.requesterUserId = :requesterId', { requesterId })
         .andWhere('moneyRequest.payerUserId = :payerId', { payerId }),
@@ -391,6 +452,7 @@ export class MoneyRequestsService {
     userId: string,
     pagination: MoneyRequestListPagination,
     counterpartyIdOf: (moneyRequest: MoneyRequest) => string,
+    { hiddenPendingFrom, bucket }: RequesterFilter = { hiddenPendingFrom: [] },
   ): Promise<PaginatedResult<MoneyRequestResponseDto>> {
     const cursor = pagination.cursor
       ? decodeCreatedAtIdCursor(pagination.cursor)
@@ -407,6 +469,29 @@ export class MoneyRequestsService {
       .orderBy('moneyRequest.createdAt', 'DESC')
       .addOrderBy('moneyRequest.id', 'DESC')
       .take(pagination.limit + 1);
+
+    if (hiddenPendingFrom.length > 0) {
+      query.andWhere(
+        "NOT (moneyRequest.status = 'pending' AND moneyRequest.requesterUserId = ANY(:hiddenPendingFrom::uuid[]))",
+        { hiddenPendingFrom },
+      );
+    }
+
+    if (bucket?.kind === 'following') {
+      query.andWhere(
+        'moneyRequest.requesterUserId = ANY(:followedIds::uuid[])',
+        {
+          followedIds: bucket.followedIds,
+        },
+      );
+    } else if (bucket?.kind === 'others' && bucket.followedIds.length > 0) {
+      query.andWhere(
+        'moneyRequest.requesterUserId <> ALL(:followedIds::uuid[])',
+        {
+          followedIds: bucket.followedIds,
+        },
+      );
+    }
 
     if (cursor) {
       query.andWhere(
@@ -457,6 +542,7 @@ export class MoneyRequestsService {
     moneyRequest: MoneyRequest,
     requester: CounterpartyUser,
     payer: CounterpartyUser,
+    fromFollowed: boolean,
   ): Promise<void> {
     try {
       await this.eventBus.publish<string, MoneyRequestCreatedEventPayload>({
@@ -464,6 +550,7 @@ export class MoneyRequestsService {
         payload: {
           userId: payer.id,
           email: payer.email,
+          requesterUserId: requester.id,
           counterpartyUsername: requester.username,
           amount: Money.of(
             moneyRequest.amount,
@@ -472,6 +559,7 @@ export class MoneyRequestsService {
           currency: moneyRequest.currency,
           note: moneyRequest.note,
           moneyRequestId: moneyRequest.id,
+          fromFollowed,
         },
         occurredAt: new Date(),
       });

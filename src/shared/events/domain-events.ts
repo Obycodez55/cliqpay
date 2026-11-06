@@ -115,6 +115,7 @@ export interface TransferReceivedEventPayload {
   amount: string; // decimal display string (Money.toDecimalString())
   currency: string;
   reference: string;
+  note?: string;
 }
 
 export const MONEY_REQUEST_CREATED_EVENT = 'money_request_created';
@@ -122,6 +123,7 @@ export const MONEY_REQUEST_CREATED_EVENT = 'money_request_created';
 export interface MoneyRequestCreatedEventPayload {
   userId: string; // the payer being asked
   email: string;
+  requesterUserId: string;
   counterpartyUsername: string; // requester's username
   amount: string; // decimal display string (Money.toDecimalString())
   currency: string;
@@ -129,6 +131,8 @@ export interface MoneyRequestCreatedEventPayload {
   // The money request's own id — the in-app channel's dedupe_key, same
   // reasoning as TransferSentEventPayload's reference.
   moneyRequestId: string;
+  // Whether the payer followed the requester when the request was created.
+  fromFollowed: boolean;
 }
 
 export const MONEY_REQUEST_DECLINED_EVENT = 'money_request_declined';
@@ -240,4 +244,31 @@ export interface RefundAttentionRequiredEventPayload {
   attempts: number | null;
   lastFailure: string | null;
   occurredAt: string; // ISO timestamp
+}
+
+export const NEW_FOLLOWER_EVENT = 'new_follower';
+
+export interface NewFollowerEventPayload {
+  userId: string; // the user who was followed
+  followerUserId: string;
+  followerUsername: string;
+}
+
+export const POST_REACTION_EVENT = 'post_reaction';
+
+export interface PostReactionEventPayload {
+  userId: string; // the participant being notified
+  transactionId: string;
+  reactorUserId: string;
+  reactorUsername: string;
+}
+
+export const POST_COMMENT_EVENT = 'post_comment';
+
+export interface PostCommentEventPayload {
+  userId: string; // the participant being notified
+  transactionId: string;
+  commentId: string;
+  commenterUserId: string;
+  commenterUsername: string;
 }

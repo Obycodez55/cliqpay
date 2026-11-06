@@ -65,6 +65,44 @@ describe('NotificationEventsProcessor', () => {
     });
   });
 
+  describe('money_request_created', () => {
+    const basePayload = {
+      userId: 'payer',
+      email: 'payer@example.com',
+      counterpartyUsername: 'requester',
+      amount: '100.00',
+      currency: 'NGN',
+      note: null,
+      moneyRequestId: 'mr1',
+    };
+
+    function enqueuedChannels(): string[] {
+      return queue.add.mock.calls.map(([, data]) => data.channel);
+    }
+
+    it('uses every catalog channel when the payer follows the requester', async () => {
+      await processor.process(
+        jobFor('money_request_created', { ...basePayload, fromFollowed: true }),
+      );
+      expect(enqueuedChannels().sort()).toEqual(['email', 'in_app', 'push']);
+    });
+
+    it('routes to in-app only when the payer does not follow the requester', async () => {
+      await processor.process(
+        jobFor('money_request_created', {
+          ...basePayload,
+          fromFollowed: false,
+        }),
+      );
+      expect(enqueuedChannels()).toEqual(['in_app']);
+    });
+
+    it('keeps every catalog channel for an event published without fromFollowed', async () => {
+      await processor.process(jobFor('money_request_created', basePayload));
+      expect(enqueuedChannels().sort()).toEqual(['email', 'in_app', 'push']);
+    });
+  });
+
   it('skips job names it does not own without enqueueing anything', async () => {
     await processor.process(jobFor('some_other_domain_event', { foo: 'bar' }));
     expect(queue.add).not.toHaveBeenCalled();

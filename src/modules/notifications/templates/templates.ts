@@ -9,9 +9,12 @@ import {
   MoneyRequestCreatedPayload,
   MoneyRequestDeclinedPayload,
   MoneyRequestPaidPayload,
+  NewFollowerPayload,
   NotificationPayloadMap,
   PasswordResetOtpPayload,
   PhoneVerificationOtpPayload,
+  PostCommentPayload,
+  PostReactionPayload,
   ReconciliationMismatchPayload,
   RefundAttentionRequiredPayload,
   SecurityAlertPayload,
@@ -173,6 +176,19 @@ export const pushTemplates: {
     title: 'Request paid',
     body: `${payload.counterpartyUsername} paid you ${payload.currency} ${payload.amount}.`,
   }),
+  new_follower: (payload: NewFollowerPayload) => ({
+    title: 'New follower',
+    body: `${payload.followerUsername} started following you.`,
+    data: { followerUserId: payload.followerUserId },
+  }),
+  post_comment: (payload: PostCommentPayload) => ({
+    title: 'New comment',
+    body: `${payload.commenterUsername} commented on your transaction.`,
+    data: {
+      transactionId: payload.transactionId,
+      commentId: payload.commentId,
+    },
+  }),
 };
 
 export const inAppTemplates: {
@@ -215,6 +231,7 @@ export const inAppTemplates: {
       amount: payload.amount,
       currency: payload.currency,
       counterpartyUsername: payload.counterpartyUsername,
+      ...(payload.note ? { note: payload.note } : {}),
     },
     dedupeKey: payload.reference,
   }),
@@ -226,6 +243,7 @@ export const inAppTemplates: {
       currency: payload.currency,
       counterpartyUsername: payload.counterpartyUsername,
       moneyRequestId: payload.moneyRequestId,
+      ...(payload.note ? { note: payload.note } : {}),
     },
     dedupeKey: payload.moneyRequestId,
   }),
@@ -250,6 +268,40 @@ export const inAppTemplates: {
       moneyRequestId: payload.moneyRequestId,
     },
     dedupeKey: payload.moneyRequestId,
+  }),
+  new_follower: (payload: NewFollowerPayload) => ({
+    title: 'New follower',
+    body: `${payload.followerUsername} started following you.`,
+    data: {
+      followerUserId: payload.followerUserId,
+      followerUsername: payload.followerUsername,
+    },
+    // Keyed on the pair, not the follow event, so following, unfollowing
+    // and following again never stacks a second row.
+    dedupeKey: `${payload.followerUserId}:${payload.userId}`,
+  }),
+  post_reaction: (payload: PostReactionPayload) => ({
+    title: 'New reaction',
+    body: `${payload.reactorUsername} reacted to your transaction.`,
+    data: {
+      transactionId: payload.transactionId,
+      reactorUserId: payload.reactorUserId,
+      reactorUsername: payload.reactorUsername,
+    },
+    // One row per reactor per post, so changing or re-adding a reaction
+    // never stacks a second notification.
+    dedupeKey: `${payload.transactionId}:${payload.reactorUserId}`,
+  }),
+  post_comment: (payload: PostCommentPayload) => ({
+    title: 'New comment',
+    body: `${payload.commenterUsername} commented on your transaction.`,
+    data: {
+      transactionId: payload.transactionId,
+      commentId: payload.commentId,
+      commenterUserId: payload.commenterUserId,
+      commenterUsername: payload.commenterUsername,
+    },
+    dedupeKey: payload.commentId,
   }),
   security_alert: (payload: SecurityAlertPayload) => ({
     title: 'Security alert',

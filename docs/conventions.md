@@ -48,6 +48,10 @@ Convention:
 - Response shape: `{ items: T[], nextCursor: string | null }` — see `PaginatedResult<T>` in `src/common/interfaces/`.
 - The cursor is opaque to the client — encode whatever the query needs (typically the last row's `id` or `created_at`), don't expose raw offsets or internal IDs as a contract.
 
+## Free-text input
+
+User-written text (transfer notes, comments) goes through `src/common/validation/text.ts`. `normalizeText` trims the text, then treats it as blank when nothing but zero-width characters (U+200B/C/D, U+2060, U+FEFF) would be left. Blank text becomes `''`. A required field then fails its minimum length, and an optional field maps it to absent, so it's stored as null. Otherwise those characters are kept, because U+200D joins multi-part emoji. Lengths are validated with `HasCodePointLength(min, max)`, which counts code points as Postgres counts `varchar(n)`. That way an emoji counts as one character, and text that passes validation can't overflow the column. Don't use class-validator's `Length`/`MaxLength` on these fields: they skip variation selectors, which Postgres counts, so a string can pass them and still be too long for the column.
+
 ## CORS
 
 Configured via `CORS_ALLOWED_ORIGINS` (comma-separated). Empty in dev reflects that no browser client exists yet — set it before the admin panel or any browser-based client is wired up (see architecture.md §9). `credentials: true` is on by default since cookie-based refresh-token handling is the likely direction once a web client exists; revisit if that changes.

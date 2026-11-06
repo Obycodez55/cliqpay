@@ -122,3 +122,13 @@ export class MoneyRequestNotPayableException extends DomainException {
     );
   }
 }
+
+export class RecipientUnableToReceiveException extends DomainException {
+  readonly code = 'RECIPIENT_UNABLE_TO_RECEIVE';
+  constructor() {
+    super(
+      "This recipient can't receive this amount right now.",
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}

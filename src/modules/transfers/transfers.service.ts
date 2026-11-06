@@ -15,6 +15,7 @@ import {
 } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
 import { KycService } from '../kyc/kyc.service';
+import { PostVisibility, SocialService } from '../social/social.service';
 import { AuthService } from '../auth/auth.service';
 import { Money } from '../../shared/primitives/money';
 import { runInTransaction } from '../../database/transaction.util';
@@ -28,6 +29,7 @@ import { EventBusService } from '../../shared/events/event-bus.service';
 import { SendTransferDto } from './dto/send-transfer.dto';
 import { SendTransferResponseDto } from './dto/send-transfer-response.dto';
 import {
+  RecipientUnableToReceiveException,
   RecipientWalletNotFoundException,
   SelfTransferException,
   SenderAccountFrozenException,
@@ -53,11 +55,19 @@ export interface PreparedTransfer {
   amount: Money;
 }
 
+// A replayed reference carrying a different note or visibility is rejected,
+// even though neither is in the ledger fingerprint.
+export interface TransferPostDetails {
+  note: string | null;
+  visibility: PostVisibility;
+}
+
 export interface ExecuteTransferParams {
   recipientUserId: string;
   amount: number; // minor units
   reference: string;
   pin: string;
+  details: TransferPostDetails;
 }
 
 export interface FinalizeTransferOutcome {
@@ -91,6 +101,7 @@ export class TransfersService {
     private readonly ledgerService: LedgerService,
     private readonly usersService: UsersService,
     private readonly kycService: KycService,
+    private readonly socialService: SocialService,
     private readonly authService: AuthService,
     private readonly eventBus: EventBusService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
@@ -105,6 +116,7 @@ export class TransfersService {
       amount: dto.amount,
       reference: dto.reference,
       pin: dto.pin,
+      details: { note: dto.note ?? null, visibility: dto.visibility },
     });
 
     if (!outcome.replayed) {
@@ -112,10 +124,12 @@ export class TransfersService {
         outcome.result,
         outcome.sender,
         dto.recipientUserId,
+        dto.note,
       );
     }
 
     return {
+      transactionId: outcome.result.transactionId,
       reference: outcome.result.reference,
       amount: outcome.result.amount.toJSON(),
       fee: outcome.result.platformFee.toJSON(),
@@ -187,6 +201,7 @@ export class TransfersService {
     senderId: string,
     prepared: PreparedTransfer,
     reference: string,
+    details: TransferPostDetails,
   ): Promise<PostTransferResult | null> {
     // Only the fields that define the operation (ADR-0010) — the platform
     // fee is config-derived, never client-supplied, so it isn't part of the
@@ -203,7 +218,29 @@ export class TransfersService {
       senderId,
       fingerprint,
     );
+    if (replay.outcome === 'match') {
+      await this.assertSameDetails(replay.transaction, details);
+    }
     return resolveReplayAsPostResult(replay, prepared);
+  }
+
+  private async assertSameDetails(
+    transaction: { id: string; metadata: unknown },
+    details: TransferPostDetails,
+  ): Promise<void> {
+    const storedNote =
+      (transaction.metadata as { note?: string } | null)?.note ?? null;
+    const storedVisibility = await this.socialService.getRequestedVisibility(
+      transaction.id,
+    );
+    if (
+      storedNote !== details.note ||
+      (storedVisibility !== null && storedVisibility !== details.visibility)
+    ) {
+      throw new ConflictException(
+        'This reference was already used with a different note or visibility — use a new reference.',
+      );
+    }
   }
 
   // PIN verification and posting — called only once a caller has confirmed
@@ -217,6 +254,7 @@ export class TransfersService {
     prepared: PreparedTransfer,
     reference: string,
     pin: string,
+    details: TransferPostDetails,
     manager?: EntityManager,
   ): Promise<FinalizeTransferOutcome> {
     if (prepared.sender.isFrozen) {
@@ -231,9 +269,19 @@ export class TransfersService {
       recipientWalletId: prepared.recipientWallet.id,
       amount: prepared.amount,
       platformFee: fee,
+      note: details.note,
     };
 
     const post = async (tx: EntityManager) => {
+      if (
+        await this.socialService.lockPairAndCheckBlock(
+          tx,
+          senderId,
+          prepared.recipientUserId,
+        )
+      ) {
+        throw new RecipientUnableToReceiveException();
+      }
       await this.kycService.checkTransferLimits(
         tx,
         senderId,
@@ -249,7 +297,18 @@ export class TransfersService {
             ),
         },
       );
-      return this.ledgerService.postTransferWithinTransaction(tx, postParams);
+      const result = await this.ledgerService.postTransferWithinTransaction(
+        tx,
+        postParams,
+      );
+      await this.socialService.recordTransferPost(tx, {
+        transactionId: result.transactionId,
+        senderUserId: result.senderUserId,
+        recipientUserId: result.recipientUserId,
+        note: details.note,
+        visibility: details.visibility,
+      });
+      return result;
     };
 
     if (manager) {
@@ -295,6 +354,7 @@ export class TransfersService {
         senderId,
         prepared,
         reference,
+        details,
       );
       if (raced) {
         return { result: raced, replayed: true };
@@ -323,6 +383,7 @@ export class TransfersService {
       senderId,
       prepared,
       params.reference,
+      params.details,
     );
     if (replayResult) {
       return { result: replayResult, replayed: true, sender: prepared.sender };
@@ -336,6 +397,7 @@ export class TransfersService {
       prepared,
       params.reference,
       params.pin,
+      params.details,
       manager,
     );
     return { result, replayed, sender: prepared.sender };
@@ -345,6 +407,7 @@ export class TransfersService {
     result: PostTransferResult,
     sender: { email: string; username: string },
     recipientUserId: string,
+    note: string | undefined,
   ): Promise<void> {
     try {
       const recipient = await this.usersService.findById(recipientUserId);
@@ -370,6 +433,7 @@ export class TransfersService {
           amount: result.amount.toDecimalString(),
           currency: result.amount.currency,
           reference: result.reference,
+          ...(note ? { note } : {}),
         },
         occurredAt,
       });

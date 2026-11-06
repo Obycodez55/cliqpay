@@ -236,7 +236,7 @@ describe('GET /wallet/transactions', () => {
       netAmountMinor: 100_000n,
     });
 
-    await ctx.ledgerService.postTransfer({
+    const posted = await ctx.ledgerService.postTransfer({
       reference: 'cliqpay-history-transfer-1',
       senderWalletId: sender.walletId,
       recipientWalletId: recipient.walletId,
@@ -254,6 +254,10 @@ describe('GET /wallet/transactions', () => {
       (i) => i.type === 'p2p_transfer',
     );
     expect(senderTransferRow).toBeDefined();
+    expect(senderTransferRow!.transactionId).toBe(posted.transactionId);
+    expect(
+      senderBody.items.find((i) => i.type === 'funding')!.transactionId,
+    ).toBeNull();
     expect(senderTransferRow!.direction).toBe('debit');
     // Fee-inclusive: 5000 transfer + 100 platform fee.
     expect(senderTransferRow!.amount.amount).toBe('5100');
@@ -277,6 +281,7 @@ describe('GET /wallet/transactions', () => {
       (i) => i.type === 'p2p_transfer',
     );
     expect(recipientTransferRow).toBeDefined();
+    expect(recipientTransferRow!.transactionId).toBe(posted.transactionId);
     expect(recipientTransferRow!.direction).toBe('credit');
     expect(recipientTransferRow!.amount.amount).toBe('5000');
     expect(recipientTransferRow!.counterparty).toEqual({

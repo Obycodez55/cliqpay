@@ -5,8 +5,9 @@ import { DOMAIN_EVENTS_QUEUE } from '../../../shared/events/event-bus.service';
 import { DomainEventEnvelope } from '../../../shared/events/domain-events';
 import {
   NOTIFICATION_CATALOG,
-  NotificationChannel,
+  NotificationPayloadMap,
   NotificationType,
+  channelsFor,
 } from '../notification-catalog';
 import {
   CHANNEL_DISPATCH_QUEUE,
@@ -44,8 +45,10 @@ export class NotificationEventsProcessor extends WorkerHost {
       return;
     }
     const type: NotificationType = job.name;
-    const channels: readonly NotificationChannel[] =
-      NOTIFICATION_CATALOG[type].channels;
+    const channels = channelsFor(
+      type,
+      job.data.payload as NotificationPayloadMap[typeof type],
+    );
     // This job is "done" once each channel's job is enqueued, not once
     // they've delivered — that's what keeps one channel's BullMQ retry
     // budget from resending a channel that already succeeded.

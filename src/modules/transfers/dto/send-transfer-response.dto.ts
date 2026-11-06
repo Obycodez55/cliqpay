@@ -2,6 +2,13 @@ import { ApiProperty } from '@nestjs/swagger';
 import { MoneyDto } from '../../../common/dto/money-response.dto';
 
 export class SendTransferResponseDto {
+  @ApiProperty({
+    format: 'uuid',
+    description:
+      "Keys this transfer's post under /social/posts/{transactionId}",
+  })
+  transactionId: string;
+
   @ApiProperty()
   reference: string;
 

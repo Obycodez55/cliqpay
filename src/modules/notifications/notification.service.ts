@@ -8,7 +8,7 @@ import {
 } from '../../common/pagination/cursor';
 import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
 import {
-  NOTIFICATION_CATALOG,
+  channelsFor,
   NotificationChannel,
   NotificationPayloadMap,
   NotificationType,
@@ -69,8 +69,7 @@ export class NotificationService {
     type: T,
     payload: NotificationPayloadMap[T],
   ): Promise<void> {
-    const channels: readonly NotificationChannel[] =
-      NOTIFICATION_CATALOG[type].channels;
+    const channels = channelsFor(type, payload);
     await Promise.all(
       channels.map((channel) => this.dispatchToChannel(channel, type, payload)),
     );

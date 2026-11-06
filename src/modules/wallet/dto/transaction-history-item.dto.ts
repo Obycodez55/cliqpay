@@ -7,6 +7,15 @@ export class TransactionHistoryItemDto {
   @ApiProperty({ description: 'Ledger entry id' })
   id: string;
 
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description:
+      'The transaction id for a P2P transfer — the same id on both sides, and the key for /social/posts/{transactionId}. Null for every other type.',
+  })
+  transactionId: string | null;
+
   @ApiProperty()
   reference: string;
 
@@ -56,6 +65,13 @@ export class TransactionHistoryItemDto {
   })
   counterparty: IdentitySummaryDto | null;
 
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'The note attached to a P2P transfer, or null',
+  })
+  note: string | null;
+
   @ApiProperty()
   createdAt: string;
 }
@@ -66,6 +82,7 @@ export function toTransactionHistoryItem(
 ): TransactionHistoryItemDto {
   return {
     id: entry.id,
+    transactionId: entry.transactionId,
     reference: entry.reference,
     type: entry.type,
     status: entry.status,
@@ -74,6 +91,7 @@ export function toTransactionHistoryItem(
     counterparty: entry.counterpartyUserId
       ? (identityByUserId.get(entry.counterpartyUserId) ?? null)
       : null,
+    note: entry.note,
     createdAt: entry.createdAt.toISOString(),
   };
 }

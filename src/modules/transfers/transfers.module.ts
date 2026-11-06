@@ -5,6 +5,7 @@ import { LedgerModule } from '../ledger/ledger.module';
 import { UsersModule } from '../users/users.module';
 import { AuthModule } from '../auth/auth.module';
 import { KycModule } from '../kyc/kyc.module';
+import { SocialModule } from '../social/social.module';
 import { TransfersController } from './transfers.controller';
 import { TransfersService } from './transfers.service';
 import { MoneyRequestsController } from './money-requests.controller';
@@ -17,6 +18,7 @@ import { MoneyRequest } from './entities/money-request.entity';
     UsersModule,
     AuthModule,
     KycModule,
+    SocialModule,
     EventBusModule,
     TypeOrmModule.forFeature([MoneyRequest]),
   ],

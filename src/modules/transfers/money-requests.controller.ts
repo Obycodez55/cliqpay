@@ -27,6 +27,7 @@ import { MoneyRequestsService } from './money-requests.service';
 import { CreateMoneyRequestDto } from './dto/create-money-request.dto';
 import { PayMoneyRequestDto } from './dto/pay-money-request.dto';
 import { MoneyRequestResponseDto } from './dto/money-request-response.dto';
+import { ListIncomingMoneyRequestsQueryDto } from './dto/list-incoming-money-requests-query.dto';
 
 @ApiTags('Money requests')
 @ApiBearerAuth()
@@ -63,12 +64,13 @@ export class MoneyRequestsController {
   })
   async listIncoming(
     @Req() req: AuthenticatedRequest,
-    @Query() query: CursorPaginationQueryDto,
+    @Query() query: ListIncomingMoneyRequestsQueryDto,
   ): Promise<PaginatedResult<MoneyRequestResponseDto>> {
-    return this.moneyRequestsService.listIncoming(req.user.userId, {
-      cursor: query.cursor,
-      limit: query.limit,
-    });
+    return this.moneyRequestsService.listIncoming(
+      req.user.userId,
+      { cursor: query.cursor, limit: query.limit },
+      query.bucket,
+    );
   }
 
   @Get('outgoing')
