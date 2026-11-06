@@ -1,6 +1,10 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IdentitySummaryDto } from '../../../common/dto/identity-summary.dto';
 import { REACTIONS, Reaction } from '../entities/post-reaction.entity';
+import {
+  POST_VISIBILITIES,
+  PostVisibility,
+} from '../entities/transaction-post.entity';
 
 export class ReactionCountsDto implements Record<Reaction, number> {
   @ApiProperty()
@@ -57,4 +61,18 @@ export class FeedPostResponseDto {
       'Comments you can read: not deleted, and not by anyone you have blocked',
   })
   commentCount: number;
+}
+
+export class PostResponseDto extends FeedPostResponseDto {
+  @ApiPropertyOptional({
+    enum: POST_VISIBILITIES,
+    description: 'Present only when you are the sender or recipient',
+  })
+  visibility?: PostVisibility;
+
+  @ApiPropertyOptional({
+    description:
+      'Whether the recipient has hidden this post from public view. Present only when you are the sender or recipient',
+  })
+  hiddenByRecipient?: boolean;
 }

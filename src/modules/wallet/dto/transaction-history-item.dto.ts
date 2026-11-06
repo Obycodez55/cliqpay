@@ -7,6 +7,15 @@ export class TransactionHistoryItemDto {
   @ApiProperty({ description: 'Ledger entry id' })
   id: string;
 
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description:
+      'The transaction id for a P2P transfer — the same id on both sides, and the key for /social/posts/{transactionId}. Null for every other type.',
+  })
+  transactionId: string | null;
+
   @ApiProperty()
   reference: string;
 
@@ -73,6 +82,7 @@ export function toTransactionHistoryItem(
 ): TransactionHistoryItemDto {
   return {
     id: entry.id,
+    transactionId: entry.transactionId,
     reference: entry.reference,
     type: entry.type,
     status: entry.status,

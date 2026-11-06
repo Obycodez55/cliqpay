@@ -309,5 +309,40 @@ describe('POST /money-requests — create', () => {
         ),
       ).toBe(true);
     });
+
+    it("carries the request's note in the in-app data only when there is one", async () => {
+      const requester = await seedUser('notifynotereq');
+      const payer = await seedUser('notifynotepay');
+      await ctx.socialService.follow(payer.userId, requester.userId);
+
+      const withNote = await create(
+        tokenFor(requester.userId),
+        { payerUserId: payer.userId, amount: 60_000, note: 'Concert tickets' },
+        201,
+      );
+      const withoutNote = await create(
+        tokenFor(requester.userId),
+        { payerUserId: payer.userId, amount: 60_000 },
+        201,
+      );
+
+      await waitFor(
+        async () =>
+          (await ctx.notificationRepo.countBy({
+            userId: payer.userId,
+            type: 'money_request_created',
+          })) === 2,
+      );
+      const notifications = await ctx.notificationRepo.findBy({
+        userId: payer.userId,
+        type: 'money_request_created',
+      });
+      const byRequest = new Map(notifications.map((n) => [n.dedupeKey, n]));
+      expect(byRequest.get(withNote.id)?.data).toMatchObject({
+        moneyRequestId: withNote.id,
+        note: 'Concert tickets',
+      });
+      expect(byRequest.get(withoutNote.id)?.data).not.toHaveProperty('note');
+    });
   });
 });

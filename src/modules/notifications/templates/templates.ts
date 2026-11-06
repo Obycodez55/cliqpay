@@ -243,6 +243,7 @@ export const inAppTemplates: {
       currency: payload.currency,
       counterpartyUsername: payload.counterpartyUsername,
       moneyRequestId: payload.moneyRequestId,
+      ...(payload.note ? { note: payload.note } : {}),
     },
     dedupeKey: payload.moneyRequestId,
   }),

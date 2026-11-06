@@ -37,6 +37,7 @@ import { BlockStateResponseDto } from './dto/block-state-response.dto';
 import { RelationshipResponseDto } from './dto/relationship-response.dto';
 import {
   FeedPostResponseDto,
+  PostResponseDto,
   ReactionCountsDto,
 } from './dto/feed-post-response.dto';
 import { ReactionStateResponseDto } from './dto/reaction-state-response.dto';
@@ -55,6 +56,7 @@ import {
   PostNotFoundException,
   SelfBlockException,
   SelfFollowException,
+  SelfRelationshipException,
   SocialKycRequiredException,
   SocialUserNotFoundException,
 } from './internal/errors';
@@ -147,6 +149,11 @@ interface PostRow {
   note: string | null;
   created_at: Date;
   raw_created_at: string;
+}
+
+interface ReadablePostRow extends PostRow {
+  visibility: PostVisibility;
+  hidden_by_recipient: boolean;
 }
 
 const POST_COLUMNS = `p.id, p.transaction_id, p.sender_user_id, p.recipient_user_id,
@@ -450,6 +457,9 @@ export class SocialService {
     otherUserId: string,
   ): Promise<RelationshipResponseDto> {
     await this.requireSocialTier(viewerId);
+    if (otherUserId === viewerId) {
+      throw new SelfRelationshipException();
+    }
     await this.requireUser(otherUserId);
     const repo = this.dataSource.getRepository(Follow);
     const [follows, followedBy, blocked, followerCount, followingCount] =
@@ -528,14 +538,24 @@ export class SocialService {
   async getPost(
     viewerId: string,
     transactionId: string,
-  ): Promise<FeedPostResponseDto> {
+  ): Promise<PostResponseDto> {
     await this.requireSocialTier(viewerId);
     const post = await this.findReadablePost(viewerId, transactionId);
     const [item] = await this.toFeedPosts(viewerId, [post]);
     if (!item) {
       throw new PostNotFoundException();
     }
-    return item;
+    if (
+      viewerId !== post.sender_user_id &&
+      viewerId !== post.recipient_user_id
+    ) {
+      return item;
+    }
+    return {
+      ...item,
+      visibility: post.visibility,
+      hiddenByRecipient: post.hidden_by_recipient,
+    };
   }
 
   async setReaction(
@@ -744,9 +764,9 @@ export class SocialService {
     viewerId: string,
     transactionId: string,
     manager: EntityManager = this.dataSource.manager,
-  ): Promise<PostRow> {
-    const [post]: PostRow[] = await manager.query(
-      `SELECT ${POST_COLUMNS}
+  ): Promise<ReadablePostRow> {
+    const [post]: ReadablePostRow[] = await manager.query(
+      `SELECT ${POST_COLUMNS}, p.visibility, p.hidden_by_recipient
       FROM transaction_posts p
       WHERE p.transaction_id = $2 AND ${readableBy('$1::uuid')}`,
       [viewerId, transactionId],

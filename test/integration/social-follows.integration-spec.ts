@@ -481,6 +481,14 @@ describe('Social follows', () => {
       });
     });
 
+    it('rejects looking up a relationship with yourself with a 400', async () => {
+      const viewer = await seedUser('rself');
+
+      const res = await relationship(viewer.userId, viewer.userId).expect(400);
+
+      expect(errorOf(res).code).toBe('SELF_RELATIONSHIP_NOT_ALLOWED');
+    });
+
     it('returns 404 for a user that does not exist', async () => {
       const viewer = await seedUser('rnf');
 

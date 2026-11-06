@@ -29,6 +29,15 @@ export class MoneyRequestResponseDto {
   })
   status: MoneyRequestApiStatus;
 
+  @ApiProperty({
+    type: String,
+    format: 'uuid',
+    nullable: true,
+    description:
+      "The payment's transaction id once paid, keying its post under /social/posts/{transactionId}; null otherwise",
+  })
+  transactionId: string | null;
+
   @ApiProperty()
   expiresAt: string;
 
@@ -62,6 +71,7 @@ export function toMoneyRequestResponse(
       moneyRequest.expiresAt,
       now,
     ),
+    transactionId: moneyRequest.transactionId,
     expiresAt: moneyRequest.expiresAt.toISOString(),
     createdAt: moneyRequest.createdAt.toISOString(),
   };

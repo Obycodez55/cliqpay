@@ -406,6 +406,47 @@ describe('Social feed and post view', () => {
       expect(await feedIds(sender)).toEqual([]);
     });
 
+    it('shows visibility and hiddenByRecipient to participants only, never in the feed', async () => {
+      const sender = await seedUser('sender');
+      const recipient = await seedUser('recipient');
+      const follower = await seedUser('viewer');
+      await follow(follower, sender);
+      const publicPost = await insertPost({ sender, recipient });
+      const privatePost = await insertPost({
+        sender,
+        recipient,
+        visibility: 'private',
+      });
+      const hiddenPost = await insertPost({ sender, recipient, hidden: true });
+
+      for (const viewer of [sender, recipient]) {
+        expect(
+          dataOf(await getPost(viewer, publicPost).expect(200)),
+        ).toMatchObject({ visibility: 'public', hiddenByRecipient: false });
+        expect(
+          dataOf(await getPost(viewer, privatePost).expect(200)),
+        ).toMatchObject({ visibility: 'private', hiddenByRecipient: false });
+        expect(
+          dataOf(await getPost(viewer, hiddenPost).expect(200)),
+        ).toMatchObject({ visibility: 'public', hiddenByRecipient: true });
+      }
+
+      const asFollower = dataOf(
+        await getPost(follower, publicPost).expect(200),
+      );
+      expect(asFollower).not.toHaveProperty('visibility');
+      expect(asFollower).not.toHaveProperty('hiddenByRecipient');
+
+      for (const viewer of [sender, follower]) {
+        const [item] = dataOf<FeedPage>(
+          await getFeed(viewer).expect(200),
+        ).items;
+        expect(item.transactionId).toBe(publicPost);
+        expect(item).not.toHaveProperty('visibility');
+        expect(item).not.toHaveProperty('hiddenByRecipient');
+      }
+    });
+
     it('lets a follower of either participant read a public post', async () => {
       const sender = await seedUser('sender');
       const recipient = await seedUser('recipient');

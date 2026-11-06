@@ -30,6 +30,7 @@ async function waitFor(
 }
 
 interface HistoryItem {
+  transactionId: string | null;
   reference: string;
   type: string;
   note: string | null;
@@ -684,6 +685,121 @@ describe('Social posts for transfers', () => {
       await request(ctx.app.getHttpServer())
         .put(`/social/posts/${randomUUID()}/hide`)
         .expect(401);
+    });
+
+    describe('using only ids the API returns', () => {
+      function getPost(userId: string, transactionId: string) {
+        return request(ctx.app.getHttpServer())
+          .get(`/social/posts/${transactionId}`)
+          .set('Authorization', `Bearer ${tokenFor(userId)}`);
+      }
+
+      async function feedIds(userId: string): Promise<string[]> {
+        const res = await request(ctx.app.getHttpServer())
+          .get('/social/feed')
+          .set('Authorization', `Bearer ${tokenFor(userId)}`)
+          .expect(200);
+        return dataOf<{ items: { transactionId: string }[] }>(res).items.map(
+          (item) => item.transactionId,
+        );
+      }
+
+      async function historyTransactionId(
+        userId: string,
+        reference: string,
+      ): Promise<string | null | undefined> {
+        const res = await request(ctx.app.getHttpServer())
+          .get('/wallet/transactions')
+          .set('Authorization', `Bearer ${tokenFor(userId)}`)
+          .expect(200);
+        return dataOf<{ items: HistoryItem[] }>(res).items.find(
+          (item) => item.reference === reference,
+        )?.transactionId;
+      }
+
+      it('makes a post sent private public with the transactionId from the transfer response', async () => {
+        const sender = await seedUser('sender', 5_000_000n);
+        const recipient = await seedUser('recipient');
+        const follower = await seedUser('follower');
+        await request(ctx.app.getHttpServer())
+          .put(`/social/follows/${sender.userId}`)
+          .set('Authorization', `Bearer ${tokenFor(follower.userId)}`)
+          .expect(200);
+        const body = sendBody(recipient.userId, { visibility: 'private' });
+
+        const sent = await send(sender.userId, body).expect(201);
+        const { transactionId } = dataOf<{ transactionId: string }>(sent);
+        const replay = await send(sender.userId, body).expect(201);
+        expect(dataOf(replay)).toMatchObject({ transactionId });
+
+        expect(
+          dataOf(await getPost(sender.userId, transactionId).expect(200)),
+        ).toMatchObject({ visibility: 'private' });
+        expect(await feedIds(follower.userId)).not.toContain(transactionId);
+
+        await setVisibility(sender.userId, transactionId, 'public').expect(200);
+
+        expect(await feedIds(follower.userId)).toContain(transactionId);
+        expect(
+          dataOf(await getPost(recipient.userId, transactionId).expect(200)),
+        ).toMatchObject({ visibility: 'public', hiddenByRecipient: false });
+      });
+
+      it('finds a post toggled private again through /wallet/transactions, for both participants', async () => {
+        const sender = await seedUser('sender', 5_000_000n);
+        const recipient = await seedUser('recipient');
+        const body = sendBody(recipient.userId, { visibility: 'public' });
+        const sent = await send(sender.userId, body).expect(201);
+        await setVisibility(
+          sender.userId,
+          dataOf<{ transactionId: string }>(sent).transactionId,
+          'private',
+        ).expect(200);
+
+        const senderId = await historyTransactionId(
+          sender.userId,
+          body.reference,
+        );
+        const recipientId = await historyTransactionId(
+          recipient.userId,
+          body.reference,
+        );
+        expect(senderId).toEqual(expect.any(String));
+        expect(recipientId).toBe(senderId);
+
+        expect(
+          dataOf(await getPost(sender.userId, senderId!).expect(200)),
+        ).toMatchObject({ visibility: 'private' });
+        await setVisibility(sender.userId, senderId!, 'public').expect(200);
+        await hide('put', recipient.userId, recipientId!).expect(200);
+        expect(
+          dataOf(await getPost(recipient.userId, recipientId!).expect(200)),
+        ).toMatchObject({ visibility: 'public', hiddenByRecipient: true });
+      });
+
+      it("makes a paid request's private post public with the transactionId from the pay response", async () => {
+        const payer = await seedUser('payer', 5_000_000n);
+        const requester = await seedUser('requester');
+        const requestId = await createRequest(requester.userId, payer.userId);
+        const payBody = {
+          reference: `cliqpay-social-${randomUUID()}`,
+          visibility: 'private',
+        };
+
+        const paid = await pay(payer.userId, requestId, payBody).expect(201);
+        const { transactionId } = dataOf<{ transactionId: string | null }>(
+          paid,
+        );
+        expect(transactionId).toEqual(expect.any(String));
+        const replay = await pay(payer.userId, requestId, payBody).expect(201);
+        expect(dataOf(replay)).toMatchObject({ transactionId });
+
+        await setVisibility(payer.userId, transactionId!, 'public').expect(200);
+
+        expect(
+          dataOf(await getPost(requester.userId, transactionId!).expect(200)),
+        ).toMatchObject({ visibility: 'public' });
+      });
     });
   });
 });

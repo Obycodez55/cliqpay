@@ -25,6 +25,16 @@ export class SelfFollowException extends DomainException {
   }
 }
 
+export class SelfRelationshipException extends DomainException {
+  readonly code = 'SELF_RELATIONSHIP_NOT_ALLOWED';
+  constructor() {
+    super(
+      "You can't look up a relationship with yourself",
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+}
+
 export class SocialUserNotFoundException extends DomainException {
   readonly code = 'USER_NOT_FOUND';
   constructor() {

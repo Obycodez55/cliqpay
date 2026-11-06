@@ -16,6 +16,7 @@ import {
 // name is the caller's job.
 export interface TransactionHistoryEntry {
   id: string;
+  transactionId: string | null;
   reference: string;
   type: TransactionType;
   status: TransactionStatus;
@@ -52,6 +53,8 @@ export function toTransactionHistoryEntry(
 
   return {
     id: entry.id,
+    transactionId:
+      entry.transaction.type === 'p2p_transfer' ? entry.transaction.id : null,
     reference: entry.transaction.reference,
     type: entry.transaction.type,
     status: entry.transaction.status,
@@ -78,6 +81,7 @@ export function toHeldFundingHistoryEntry(
 ): TransactionHistoryEntry {
   return {
     id: funding.id,
+    transactionId: null,
     reference: funding.reference,
     type: funding.type,
     status: funding.status,

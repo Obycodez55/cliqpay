@@ -33,7 +33,10 @@ import { FollowStateResponseDto } from './dto/follow-state-response.dto';
 import { BlockStateResponseDto } from './dto/block-state-response.dto';
 import { RelationshipResponseDto } from './dto/relationship-response.dto';
 import { SocialPageQueryDto } from './dto/social-page-query.dto';
-import { FeedPostResponseDto } from './dto/feed-post-response.dto';
+import {
+  FeedPostResponseDto,
+  PostResponseDto,
+} from './dto/feed-post-response.dto';
 import { SetReactionDto } from './dto/set-reaction.dto';
 import { ReactionStateResponseDto } from './dto/reaction-state-response.dto';
 import { AddCommentDto } from './dto/add-comment.dto';
@@ -95,7 +98,7 @@ export class SocialController {
   async post(
     @Req() req: AuthenticatedRequest,
     @Param('transactionId', ParseUUIDPipe) transactionId: string,
-  ): Promise<FeedPostResponseDto> {
+  ): Promise<PostResponseDto> {
     return this.socialService.getPost(req.user.userId, transactionId);
   }
 

@@ -129,6 +129,7 @@ export class TransfersService {
     }
 
     return {
+      transactionId: outcome.result.transactionId,
       reference: outcome.result.reference,
       amount: outcome.result.amount.toJSON(),
       fee: outcome.result.platformFee.toJSON(),
