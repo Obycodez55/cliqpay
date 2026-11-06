@@ -60,3 +60,10 @@ export class FollowRequiresUnblockException extends DomainException {
     );
   }
 }
+
+export class CommentNotFoundException extends DomainException {
+  readonly code = 'COMMENT_NOT_FOUND';
+  constructor() {
+    super('Comment not found', HttpStatus.NOT_FOUND);
+  }
+}

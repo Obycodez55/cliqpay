@@ -259,3 +259,13 @@ export interface PostReactionEventPayload {
   reactorUserId: string;
   reactorUsername: string;
 }
+
+export const POST_COMMENT_EVENT = 'post_comment';
+
+export interface PostCommentEventPayload {
+  userId: string; // the participant being notified
+  transactionId: string;
+  commentId: string;
+  commenterUserId: string;
+  commenterUsername: string;
+}

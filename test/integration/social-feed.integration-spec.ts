@@ -177,6 +177,7 @@ describe('Social feed and post view', () => {
           pray: 0,
         },
         myReaction: null,
+        commentCount: 0,
       });
       expect(JSON.stringify(res.body)).not.toMatch(/amount/i);
     });

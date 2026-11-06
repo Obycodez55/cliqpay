@@ -203,6 +203,14 @@ export interface PostReactionPayload {
   reactorUsername: string;
 }
 
+export interface PostCommentPayload {
+  userId: string;
+  transactionId: string;
+  commentId: string;
+  commenterUserId: string;
+  commenterUsername: string;
+}
+
 export interface NotificationPayloadMap {
   email_verification_otp: EmailVerificationOtpPayload;
   phone_verification_otp: PhoneVerificationOtpPayload;
@@ -226,6 +234,7 @@ export interface NotificationPayloadMap {
   refund_attention_required: RefundAttentionRequiredPayload;
   new_follower: NewFollowerPayload;
   post_reaction: PostReactionPayload;
+  post_comment: PostCommentPayload;
 }
 
 // The in-app channel writes a row addressed to a user (see
@@ -282,6 +291,7 @@ export const NOTIFICATION_CATALOG = {
   refund_attention_required: { channels: ['email'] },
   new_follower: { channels: ['push', 'in_app'] },
   post_reaction: { channels: ['in_app'] },
+  post_comment: { channels: ['push', 'in_app'] },
 } as const satisfies NotificationCatalogShape;
 
 export type NotificationType = keyof typeof NOTIFICATION_CATALOG;

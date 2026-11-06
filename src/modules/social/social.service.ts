@@ -6,7 +6,9 @@ import { EventBusService } from '../../shared/events/event-bus.service';
 import {
   NEW_FOLLOWER_EVENT,
   NewFollowerEventPayload,
+  POST_COMMENT_EVENT,
   POST_REACTION_EVENT,
+  PostCommentEventPayload,
   PostReactionEventPayload,
 } from '../../shared/events/domain-events';
 import {
@@ -43,7 +45,10 @@ import {
   REACTIONS,
   Reaction,
 } from './entities/post-reaction.entity';
+import { PostComment } from './entities/post-comment.entity';
+import { CommentResponseDto } from './dto/comment-response.dto';
 import {
+  CommentNotFoundException,
   FollowLimitReachedException,
   FollowRequiresUnblockException,
   PostNotFoundException,
@@ -54,6 +59,7 @@ import {
 } from './internal/errors';
 
 const MAX_FOLLOWING = 5_000;
+const COMMENT_PAGE_SIZE = 20;
 
 export { POST_VISIBILITIES };
 export type { PostVisibility };
@@ -105,6 +111,22 @@ function emptyReactions(): PostReactions {
     ) as Record<Reaction, number>,
     myReaction: null,
   };
+}
+
+interface CommentRow {
+  id: string;
+  author_user_id: string;
+  body: string;
+  created_at: Date;
+  raw_created_at: string;
+}
+
+function notAuthoredByBlockedOf(viewerParam: string): string {
+  return `NOT EXISTS (
+    SELECT 1 FROM blocks b
+    WHERE b.blocker_user_id = ${viewerParam}
+      AND b.blocked_user_id = c.author_user_id
+  )`;
 }
 
 interface PostRow {
@@ -545,6 +567,139 @@ export class SocialService {
     return { transactionId, reaction: null };
   }
 
+  async addComment(
+    userId: string,
+    transactionId: string,
+    body: string,
+  ): Promise<CommentResponseDto> {
+    await this.requireSocialTier(userId);
+    const { post, comment } = await runInTransaction(
+      this.dataSource,
+      async (manager) => {
+        const found = await this.findReadablePost(
+          userId,
+          transactionId,
+          manager,
+        );
+        const others = [found.sender_user_id, found.recipient_user_id]
+          .filter((id) => id !== userId)
+          .sort();
+        for (const other of others) {
+          await this.lockPair(manager, userId, other);
+        }
+        const locked = await this.findReadablePost(
+          userId,
+          transactionId,
+          manager,
+        );
+        // Participants can always read their own post, so a block with the
+        // counterparty has to be checked here rather than by the read.
+        for (const other of others) {
+          if (await this.isBlockedBetween(userId, other, manager)) {
+            throw new PostNotFoundException();
+          }
+        }
+        const repo = manager.getRepository(PostComment);
+        const saved = await repo.save(
+          repo.create({ postId: locked.id, authorUserId: userId, body }),
+        );
+        return { post: locked, comment: saved };
+      },
+    );
+
+    await this.publishPostComment(userId, post, comment.id);
+    const author = await this.usersService.findById(userId);
+    return {
+      id: comment.id,
+      author: toIdentitySummary(author),
+      body: comment.body,
+      createdAt: comment.createdAt,
+    };
+  }
+
+  async listComments(
+    viewerId: string,
+    transactionId: string,
+    cursor?: string,
+  ): Promise<PaginatedResult<CommentResponseDto>> {
+    await this.requireSocialTier(viewerId);
+    const post = await this.findReadablePost(viewerId, transactionId);
+    const after = cursor ? decodeCreatedAtIdCursor(cursor) : null;
+    const params: unknown[] = [post.id, viewerId, COMMENT_PAGE_SIZE + 1];
+    let cursorClause = '';
+    if (after) {
+      params.push(after.createdAt, after.id);
+      cursorClause = 'AND (c.created_at, c.id) > ($4::timestamptz, $5::uuid)';
+    }
+    const rows: CommentRow[] = await this.dataSource.query(
+      `SELECT c.id, c.author_user_id, c.body, c.created_at,
+        c.created_at::text AS raw_created_at
+      FROM post_comments c
+      WHERE c.post_id = $1 AND c.deleted_at IS NULL
+        ${cursorClause}
+        AND ${notAuthoredByBlockedOf('$2::uuid')}
+      ORDER BY c.created_at, c.id
+      LIMIT $3`,
+      params,
+    );
+
+    const hasMore = rows.length > COMMENT_PAGE_SIZE;
+    const page = hasMore ? rows.slice(0, COMMENT_PAGE_SIZE) : rows;
+    const usersById = new Map(
+      (
+        await this.usersService.findByIds([
+          ...new Set(page.map((row) => row.author_user_id)),
+        ])
+      ).map((user) => [user.id, user]),
+    );
+    const last = page[page.length - 1];
+    return {
+      items: page.flatMap((row) => {
+        const author = usersById.get(row.author_user_id);
+        return author
+          ? [
+              {
+                id: row.id,
+                author: toIdentitySummary(author),
+                body: row.body,
+                createdAt: row.created_at,
+              },
+            ]
+          : [];
+      }),
+      nextCursor:
+        hasMore && last
+          ? encodeCreatedAtIdCursor({
+              createdAt: last.raw_created_at,
+              id: last.id,
+            })
+          : null,
+    };
+  }
+
+  // Not gated on reading the post: the author can always withdraw their own
+  // words, and participants can always moderate their own post.
+  async deleteComment(userId: string, commentId: string): Promise<void> {
+    await this.requireSocialTier(userId);
+    const result = await this.dataSource
+      .createQueryBuilder()
+      .update(PostComment)
+      .set({ deletedAt: () => 'now()', deletedByUserId: userId })
+      .where('id = :commentId AND deleted_at IS NULL', { commentId })
+      .andWhere(
+        `EXISTS (
+          SELECT 1 FROM transaction_posts p
+          WHERE p.id = post_id
+            AND :userId IN (author_user_id, p.sender_user_id, p.recipient_user_id)
+        )`,
+        { userId },
+      )
+      .execute();
+    if (!result.affected) {
+      throw new CommentNotFoundException();
+    }
+  }
+
   private async findReadablePost(
     viewerId: string,
     transactionId: string,
@@ -571,12 +726,11 @@ export class SocialService {
         rows.flatMap((row) => [row.sender_user_id, row.recipient_user_id]),
       ),
     ];
-    const [users, reactionsByPost] = await Promise.all([
+    const postIds = rows.map((row) => row.id);
+    const [users, reactionsByPost, commentCounts] = await Promise.all([
       this.usersService.findByIds(userIds),
-      this.loadReactions(
-        viewerId,
-        rows.map((row) => row.id),
-      ),
+      this.loadReactions(viewerId, postIds),
+      this.loadCommentCounts(viewerId, postIds),
     ]);
     const usersById = new Map(users.map((user) => [user.id, user]));
     return rows.flatMap((row) => {
@@ -593,6 +747,7 @@ export class SocialService {
           note: row.note,
           createdAt: row.created_at,
           ...(reactionsByPost.get(row.id) ?? emptyReactions()),
+          commentCount: commentCounts.get(row.id) ?? 0,
         },
       ];
     });
@@ -631,6 +786,25 @@ export class SocialService {
       }
     }
     return byPost;
+  }
+
+  private async loadCommentCounts(
+    viewerId: string,
+    postIds: string[],
+  ): Promise<Map<string, number>> {
+    if (postIds.length === 0) {
+      return new Map();
+    }
+    const rows: { post_id: string; count: number }[] =
+      await this.dataSource.query(
+        `SELECT c.post_id, COUNT(*)::int AS count
+        FROM post_comments c
+        WHERE c.post_id = ANY($1::uuid[]) AND c.deleted_at IS NULL
+          AND ${notAuthoredByBlockedOf('$2::uuid')}
+        GROUP BY c.post_id`,
+        [postIds, viewerId],
+      );
+    return new Map(rows.map((row) => [row.post_id, row.count]));
   }
 
   private async listEdges(
@@ -777,6 +951,36 @@ export class SocialService {
     } catch (error) {
       this.logger.error(
         `publishPostReaction: ${reactorId} reacted to ${post.transaction_id}, but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
+  }
+
+  private async publishPostComment(
+    commenterId: string,
+    post: PostRow,
+    commentId: string,
+  ): Promise<void> {
+    const recipients = [
+      ...new Set([post.sender_user_id, post.recipient_user_id]),
+    ].filter((id) => id !== commenterId);
+    try {
+      const commenter = await this.usersService.findById(commenterId);
+      for (const userId of recipients) {
+        await this.eventBus.publish<string, PostCommentEventPayload>({
+          name: POST_COMMENT_EVENT,
+          payload: {
+            userId,
+            transactionId: post.transaction_id,
+            commentId,
+            commenterUserId: commenterId,
+            commenterUsername: commenter.username,
+          },
+          occurredAt: new Date(),
+        });
+      }
+    } catch (error) {
+      this.logger.error(
+        `publishPostComment: ${commenterId} commented on ${post.transaction_id}, but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
       );
     }
   }

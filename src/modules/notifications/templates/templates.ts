@@ -13,6 +13,7 @@ import {
   NotificationPayloadMap,
   PasswordResetOtpPayload,
   PhoneVerificationOtpPayload,
+  PostCommentPayload,
   PostReactionPayload,
   ReconciliationMismatchPayload,
   RefundAttentionRequiredPayload,
@@ -180,6 +181,14 @@ export const pushTemplates: {
     body: `${payload.followerUsername} started following you.`,
     data: { followerUserId: payload.followerUserId },
   }),
+  post_comment: (payload: PostCommentPayload) => ({
+    title: 'New comment',
+    body: `${payload.commenterUsername} commented on your transaction.`,
+    data: {
+      transactionId: payload.transactionId,
+      commentId: payload.commentId,
+    },
+  }),
 };
 
 export const inAppTemplates: {
@@ -281,6 +290,17 @@ export const inAppTemplates: {
     // One row per reactor per post, so changing or re-adding a reaction
     // never stacks a second notification.
     dedupeKey: `${payload.transactionId}:${payload.reactorUserId}`,
+  }),
+  post_comment: (payload: PostCommentPayload) => ({
+    title: 'New comment',
+    body: `${payload.commenterUsername} commented on your transaction.`,
+    data: {
+      transactionId: payload.transactionId,
+      commentId: payload.commentId,
+      commenterUserId: payload.commenterUserId,
+      commenterUsername: payload.commenterUsername,
+    },
+    dedupeKey: payload.commentId,
   }),
   security_alert: (payload: SecurityAlertPayload) => ({
     title: 'Security alert',

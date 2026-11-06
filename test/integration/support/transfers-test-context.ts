@@ -1,5 +1,10 @@
 import { GenericContainer, StartedTestContainer } from 'testcontainers';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import {
+  DynamicModule,
+  INestApplication,
+  Type,
+  ValidationPipe,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { App } from 'supertest/types';
@@ -79,6 +84,7 @@ export interface TransfersTestContext {
 // first flow that genuinely needs both at once.
 export async function createTransfersTestContext(
   platformFee = 0,
+  extraImports: (DynamicModule | Type<unknown>)[] = [],
 ): Promise<TransfersTestContext> {
   const database = await createTestDatabase();
   const redis = await new GenericContainer('redis:7-alpine')
@@ -111,6 +117,7 @@ export async function createTransfersTestContext(
       AuthModule,
       TransfersModule,
       NotificationsModule,
+      ...extraImports,
     ],
   }).compile();
 

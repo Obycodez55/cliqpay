@@ -51,4 +51,10 @@ export class FeedPostResponseDto {
     description: 'Your own reaction, or null if you have none',
   })
   myReaction: Reaction | null;
+
+  @ApiProperty({
+    description:
+      'Comments you can read: not deleted, and not by anyone you have blocked',
+  })
+  commentCount: number;
 }
