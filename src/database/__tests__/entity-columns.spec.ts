@@ -1,6 +1,10 @@
 import { DataSource, EntityMetadata } from 'typeorm';
 import { buildDataSourceOptions } from '../data-source.options';
 
+// Pure relationship tables keyed on the pair itself, where a surrogate id
+// would only add a second uniqueness rule to keep in step with the first.
+const COMPOSITE_KEY_TABLES = new Set(['follows']);
+
 describe('entity base columns', () => {
   let metadatas: EntityMetadata[];
 
@@ -26,7 +30,11 @@ describe('entity base columns', () => {
       const createdAt = metadata.findColumnWithPropertyName('createdAt');
       const updatedAt = metadata.findColumnWithPropertyName('updatedAt');
 
-      if (
+      if (COMPOSITE_KEY_TABLES.has(table)) {
+        if (metadata.primaryColumns.length < 2 || id) {
+          violations.push(`${table} should have a composite primary key`);
+        }
+      } else if (
         metadata.primaryColumns.length !== 1 ||
         metadata.primaryColumns[0] !== id ||
         id?.type !== 'uuid' ||

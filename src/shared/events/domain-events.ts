@@ -242,3 +242,11 @@ export interface RefundAttentionRequiredEventPayload {
   lastFailure: string | null;
   occurredAt: string; // ISO timestamp
 }
+
+export const NEW_FOLLOWER_EVENT = 'new_follower';
+
+export interface NewFollowerEventPayload {
+  userId: string; // the user who was followed
+  followerUserId: string;
+  followerUsername: string;
+}

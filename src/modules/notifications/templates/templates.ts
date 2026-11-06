@@ -9,6 +9,7 @@ import {
   MoneyRequestCreatedPayload,
   MoneyRequestDeclinedPayload,
   MoneyRequestPaidPayload,
+  NewFollowerPayload,
   NotificationPayloadMap,
   PasswordResetOtpPayload,
   PhoneVerificationOtpPayload,
@@ -173,6 +174,11 @@ export const pushTemplates: {
     title: 'Request paid',
     body: `${payload.counterpartyUsername} paid you ${payload.currency} ${payload.amount}.`,
   }),
+  new_follower: (payload: NewFollowerPayload) => ({
+    title: 'New follower',
+    body: `${payload.followerUsername} started following you.`,
+    data: { followerUserId: payload.followerUserId },
+  }),
 };
 
 export const inAppTemplates: {
@@ -251,6 +257,17 @@ export const inAppTemplates: {
       moneyRequestId: payload.moneyRequestId,
     },
     dedupeKey: payload.moneyRequestId,
+  }),
+  new_follower: (payload: NewFollowerPayload) => ({
+    title: 'New follower',
+    body: `${payload.followerUsername} started following you.`,
+    data: {
+      followerUserId: payload.followerUserId,
+      followerUsername: payload.followerUsername,
+    },
+    // Keyed on the pair, not the follow event, so following, unfollowing
+    // and following again never stacks a second row.
+    dedupeKey: `${payload.followerUserId}:${payload.userId}`,
   }),
   security_alert: (payload: SecurityAlertPayload) => ({
     title: 'Security alert',
