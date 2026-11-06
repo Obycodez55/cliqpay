@@ -273,10 +273,10 @@ export class TransfersService {
 
     const post = async (tx: EntityManager) => {
       if (
-        await this.socialService.isBlockedBetween(
+        await this.socialService.lockPairAndCheckBlock(
+          tx,
           senderId,
           prepared.recipientUserId,
-          tx,
         )
       ) {
         throw new RecipientUnableToReceiveException();

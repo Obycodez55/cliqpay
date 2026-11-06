@@ -334,7 +334,6 @@ describe('Social reactions', () => {
         const { sender, transactionId } = await seedPublicPost();
         const viewer = await seedUser('viewer');
         await follow(viewer, sender);
-        await react(viewer, transactionId, 'wow').expect(200);
         if (viewerBlocks) {
           await block(viewer, sender);
         } else {
@@ -347,6 +346,110 @@ describe('Social reactions', () => {
         await expectNotFound(viewer, transactionId);
       });
     });
+
+    const participantBlocks = [
+      { name: 'they blocked the counterparty', participantBlocks: true },
+      { name: 'the counterparty blocked them', participantBlocks: false },
+    ];
+
+    it.each(participantBlocks)(
+      'rejects a participant reacting across a block when $name',
+      async ({ participantBlocks }) => {
+        const { sender, recipient, transactionId } = await seedPublicPost();
+        if (participantBlocks) {
+          await block(sender, recipient);
+        } else {
+          await block(recipient, sender);
+        }
+
+        const res = await react(sender, transactionId, 'heart').expect(422);
+
+        expect(errorOf(res).code).toBe('INTERACTION_UNAVAILABLE');
+        expect(JSON.stringify(res.body)).not.toMatch(/block/i);
+        expect(
+          await ctx.dataSource
+            .getRepository(PostReaction)
+            .countBy({ userId: sender }),
+        ).toBe(0);
+        expect(
+          (await postView(recipient, transactionId)).reactionCounts,
+        ).toEqual(ZERO_COUNTS);
+      },
+    );
+
+    it('sees a block committed while a participant’s reaction waits on the pair lock', async () => {
+      const { sender, recipient, transactionId } = await seedPublicPost();
+      const [low, high] = [sender, recipient].sort();
+      const runner = ctx.dataSource.createQueryRunner();
+      await runner.connect();
+      await runner.startTransaction();
+      try {
+        await runner.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          `social-pair:${low}:${high}`,
+        ]);
+        await runner.query(
+          'INSERT INTO blocks (blocker_user_id, blocked_user_id) VALUES ($1, $2)',
+          [recipient, sender],
+        );
+
+        const pending = react(sender, transactionId, 'heart').then(
+          (res) => res,
+        );
+        await waitFor(async () => {
+          const waiting: unknown[] = await ctx.dataSource.query(
+            `SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+          );
+          return waiting.length > 0;
+        });
+        await runner.commitTransaction();
+
+        const res = await pending;
+        expect(res.status).toBe(422);
+        expect(errorOf(res).code).toBe('INTERACTION_UNAVAILABLE');
+      } finally {
+        if (runner.isTransactionActive) {
+          await runner.rollbackTransaction();
+        }
+        await runner.release();
+      }
+      expect(
+        await ctx.dataSource
+          .getRepository(PostReaction)
+          .countBy({ userId: sender }),
+      ).toBe(0);
+    });
+
+    it.each([
+      { name: 'the reactor blocked a participant', reactorBlocks: true },
+      { name: 'a participant blocked the reactor', reactorBlocks: false },
+    ])(
+      'lets a reactor withdraw their reaction after losing sight of the post when $name',
+      async ({ reactorBlocks }) => {
+        const { sender, recipient, transactionId } = await seedPublicPost();
+        const viewer = await seedUser('viewer');
+        await follow(viewer, sender);
+        await react(viewer, transactionId, 'heart').expect(200);
+        if (reactorBlocks) {
+          await block(viewer, sender);
+        } else {
+          await block(sender, viewer);
+        }
+        await getPost(viewer, transactionId).expect(404);
+
+        const res = await unreact(viewer, transactionId).expect(200);
+
+        expect(dataOf(res)).toEqual({ transactionId, reaction: null });
+        expect(
+          await ctx.dataSource
+            .getRepository(PostReaction)
+            .countBy({ userId: viewer }),
+        ).toBe(0);
+        expect(
+          (await postView(recipient, transactionId)).reactionCounts,
+        ).toEqual(ZERO_COUNTS);
+        await unreact(viewer, transactionId).expect(404);
+      },
+    );
 
     it('rejects Tier 0 callers with KYC_VERIFICATION_REQUIRED', async () => {
       const sender = await seedUser('sender', 'tier0');
@@ -413,6 +516,29 @@ describe('Social reactions', () => {
       );
       expect(third.get(first)?.myReaction).toBe('laugh');
       expect(third.get(second)?.myReaction).toBeNull();
+    });
+  });
+
+  describe('after a participant blocks a reactor', () => {
+    it('leaves the reactor’s reactions out of the counts for every reader', async () => {
+      const { sender, recipient, transactionId } = await seedPublicPost();
+      const reactor = await seedUser('reactor');
+      const bystander = await seedUser('bystander');
+      await follow(reactor, sender);
+      await follow(bystander, sender);
+      await react(reactor, transactionId, 'heart').expect(200);
+      await react(bystander, transactionId, 'fire').expect(200);
+
+      await block(sender, reactor);
+
+      const expected = { ...ZERO_COUNTS, fire: 1 };
+      for (const viewer of [sender, recipient, bystander]) {
+        expect((await postView(viewer, transactionId)).reactionCounts).toEqual(
+          expected,
+        );
+      }
+      const [item] = await feed(bystander);
+      expect(item.reactionCounts).toEqual(expected);
     });
   });
 

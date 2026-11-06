@@ -87,9 +87,15 @@ served from `social`'s own tables without a hop into `ledger` per page.
 neither can create money requests to the other, send money to the other,
 follow the other (existing follows are removed), see posts involving the
 other in their feed, or react or comment on posts the other participates in.
-Existing pending requests from the blocked user are hidden at read time, not
-cancelled. Recipient lookup is unchanged, and rejections use generic wording
-that never says "blocked." Blocking is ungated by KYC tier.
+When a participant blocks someone, that user's existing comments and
+reactions on the participant's posts are hidden from every reader and left
+out of the counts. Existing pending requests from the blocked user are hidden
+at read time, not cancelled. Recipient lookup is unchanged. Rejections never
+name the block: transfers and money requests reuse `RECIPIENT_UNABLE_TO_RECEIVE`,
+and follows, reactions and comments return `INTERACTION_UNAVAILABLE`. A
+blocked user may still infer the block. Full concealment isn't attempted,
+because lookup still resolving the blocker and the transfer rejection
+already signal it. Blocking is ungated by KYC tier.
 
 **Social participation requires KYC Tier 1.** Following, reacting,
 commenting and every social read surface reject Tier 0 with
@@ -136,7 +142,8 @@ social surface.
 
 - `transfers` gains `socialService.isBlocked` checks on transfer and
   money-request creation, and a `follows` lookup on money-request creation.
-  The transfer check is one indexed lookup on the hottest write path.
+  The transfer check is one pair advisory lock, shared with `block`, plus one
+  indexed lookup on the hottest write path.
 - The transfer transaction gains one insert. It takes no locks beyond its own
   row, so it doesn't widen the wallet lock window.
 - Making `visibility` required on `SendTransferDto` and the pay-money-request

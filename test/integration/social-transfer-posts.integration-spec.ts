@@ -194,6 +194,61 @@ describe('Social posts for transfers', () => {
         }),
       ).expect(400);
     });
+
+    it('counts the 500-character note limit in code points', async () => {
+      const sender = await seedUser('sender', 5_000_000n);
+      const recipient = await seedUser('recipient');
+      const note = '🔥'.repeat(500);
+      const body = sendBody(recipient.userId, { visibility: 'private', note });
+
+      await send(sender.userId, body).expect(201);
+      await send(
+        sender.userId,
+        sendBody(recipient.userId, {
+          visibility: 'private',
+          note: '🔥'.repeat(501),
+        }),
+      ).expect(400);
+
+      const post = await postRepo().findOneByOrFail({
+        transactionId: await transactionIdOf(body.reference),
+      });
+      expect(post.note).toBe(note);
+    });
+
+    it('stores no note when only zero-width characters are left, and keeps emoji joiners in a real note', async () => {
+      const sender = await seedUser('sender', 5_000_000n);
+      const recipient = await seedUser('recipient');
+      const blank = sendBody(recipient.userId, {
+        visibility: 'public',
+        note: ' \u200B\u200C\u200D\u2060\uFEFF ',
+      });
+      const padded = sendBody(recipient.userId, {
+        visibility: 'public',
+        note: ' rent \uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67 ',
+      });
+
+      await send(sender.userId, blank).expect(201);
+      await send(sender.userId, padded).expect(201);
+
+      const blankId = await transactionIdOf(blank.reference);
+      expect(
+        (await postRepo().findOneByOrFail({ transactionId: blankId })).note,
+      ).toBeNull();
+      const blankTx = await ctx.transactionRepo.findOneByOrFail({
+        id: blankId,
+      });
+      expect(
+        (blankTx.metadata as { note?: string } | null)?.note,
+      ).toBeUndefined();
+      expect(
+        (
+          await postRepo().findOneByOrFail({
+            transactionId: await transactionIdOf(padded.reference),
+          })
+        ).note,
+      ).toBe('rent 👨‍👩‍👧');
+    });
   });
 
   describe('POST /money-requests/:id/pay — note and visibility', () => {

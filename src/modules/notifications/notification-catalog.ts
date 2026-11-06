@@ -92,6 +92,9 @@ export interface TransferReceivedPayload {
 export interface MoneyRequestCreatedPayload {
   userId: string;
   email: string;
+  // Absent on events published before the field existed; those skip the
+  // dispatch-time block check.
+  requesterUserId?: string;
   counterpartyUsername: string;
   amount: string;
   currency: string;

@@ -19,6 +19,8 @@ import {
   EventBusService,
 } from '../../src/shared/events/event-bus.service';
 import {
+  MONEY_REQUEST_CREATED_EVENT,
+  MoneyRequestCreatedEventPayload,
   NEW_FOLLOWER_EVENT,
   NewFollowerEventPayload,
 } from '../../src/shared/events/domain-events';
@@ -360,16 +362,16 @@ describe('Social blocks', () => {
       ).toBe(1);
     });
 
-    it('answers the blocked user with the same 404 as an unknown user', async () => {
+    it('answers the blocked user with a generic rejection, not a 404, since the user still resolves elsewhere', async () => {
       const blocker = await seedUser('fna');
       const blocked = await seedUser('fnb');
       await block(blocker.userId, blocked.userId).expect(200);
 
-      const res = await follow(blocked.userId, blocker.userId).expect(404);
-      const unknown = await follow(blocked.userId, randomUUID()).expect(404);
+      const res = await follow(blocked.userId, blocker.userId).expect(422);
 
-      expect(errorOf(res)).toEqual(errorOf(unknown));
+      expect(errorOf(res).code).toBe('INTERACTION_UNAVAILABLE');
       expectNoBlockedWording(res);
+      await relationship(blocked.userId, blocker.userId).expect(200);
       expect(
         await followRepo().countBy({ followerUserId: blocked.userId }),
       ).toBe(0);
@@ -581,7 +583,7 @@ describe('Social blocks', () => {
             requester.userId,
             payer.userId,
           ).expect(422);
-          expect(errorOf(res).code).toBe('MONEY_REQUEST_NOT_ALLOWED');
+          expect(errorOf(res).code).toBe('RECIPIENT_UNABLE_TO_RECEIVE');
           expectNoBlockedWording(res);
         }
         expect(
@@ -646,6 +648,55 @@ describe('Social blocks', () => {
       expect(statuses.get(willExpire.id)).toBe('expired');
     });
 
+    it('rejects a request the same way as a transfer, so the code reveals nothing more', async () => {
+      const requester = await seedFunded('mca');
+      const payer = await seedFunded('mcb');
+      await block(payer.userId, requester.userId).expect(200);
+
+      const requested = await createRequest(
+        requester.userId,
+        payer.userId,
+      ).expect(422);
+      const sent = await sendMoney(requester.userId, payer.userId).expect(422);
+
+      expect(errorOf(requested)).toEqual(errorOf(sent));
+    });
+
+    it('lists incoming requests for a payer with more blocks than Postgres allows bind parameters', async () => {
+      const payer = await seedUser('bigpay', 'tier3');
+      const followed = await seedUser('bigfol', 'tier3');
+      const stranger = await seedUser('bigstr', 'tier3');
+      const fromFollowed = dataOf<MoneyRequestBody>(
+        await createRequest(followed.userId, payer.userId).expect(201),
+      );
+      const fromStranger = dataOf<MoneyRequestBody>(
+        await createRequest(stranger.userId, payer.userId).expect(201),
+      );
+      await follow(payer.userId, followed.userId).expect(200);
+      await ctx.dataSource.query(
+        `INSERT INTO blocks (blocker_user_id, blocked_user_id)
+         SELECT $1, gen_random_uuid() FROM generate_series(1, 70000)`,
+        [payer.userId],
+      );
+
+      expect(await incomingIds(payer.userId)).toEqual(
+        expect.arrayContaining([fromFollowed.id, fromStranger.id]),
+      );
+      for (const [bucket, expected] of [
+        ['following', fromFollowed.id],
+        ['others', fromStranger.id],
+      ]) {
+        const res = await http()
+          .get('/money-requests/incoming')
+          .query({ bucket })
+          .set('Authorization', `Bearer ${tokenFor(payer.userId)}`)
+          .expect(200);
+        expect(
+          dataOf<{ items: { id: string }[] }>(res).items.map((item) => item.id),
+        ).toEqual([expected]);
+      }
+    });
+
     it('keeps showing requests to the payer when it is the requester who blocked', async () => {
       const payer = await seedUser('rpay', 'tier3');
       const requester = await seedUser('rreq', 'tier3');
@@ -656,6 +707,144 @@ describe('Social blocks', () => {
       await block(requester.userId, payer.userId).expect(200);
 
       expect(await incomingIds(payer.userId)).toContain(created.id);
+    });
+  });
+
+  describe('a block committed while money is waiting on the pair lock', () => {
+    async function whileBlockLands<T>(
+      blocker: SeededUser,
+      blocked: SeededUser,
+      act: () => Promise<T>,
+    ): Promise<T> {
+      const [low, high] = [blocker.userId, blocked.userId].sort();
+      const runner = ctx.dataSource.createQueryRunner();
+      await runner.connect();
+      await runner.startTransaction();
+      try {
+        await runner.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+          `social-pair:${low}:${high}`,
+        ]);
+        await runner.query(
+          'INSERT INTO blocks (blocker_user_id, blocked_user_id) VALUES ($1, $2)',
+          [blocker.userId, blocked.userId],
+        );
+        const pending = act();
+        await waitFor(async () => {
+          const waiting: unknown[] = await ctx.dataSource.query(
+            `SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted`,
+          );
+          return waiting.length > 0;
+        });
+        await runner.commitTransaction();
+        return await pending;
+      } finally {
+        if (runner.isTransactionActive) {
+          await runner.rollbackTransaction();
+        }
+        await runner.release();
+      }
+    }
+
+    it('stops the transfer', async () => {
+      const sender = await seedFunded('lxa');
+      const recipient = await seedFunded('lxb');
+      const before = await ctx.ledgerEntryRepo.count();
+
+      const res = await whileBlockLands(recipient, sender, () =>
+        sendMoney(sender.userId, recipient.userId).then((r) => r),
+      );
+
+      expect(res.status).toBe(422);
+      expect(errorOf(res).code).toBe('RECIPIENT_UNABLE_TO_RECEIVE');
+      expect(await ctx.ledgerEntryRepo.count()).toBe(before);
+    });
+
+    it('stops the money request', async () => {
+      const requester = await seedUser('lra', 'tier3');
+      const payer = await seedUser('lrb', 'tier3');
+
+      const res = await whileBlockLands(payer, requester, () =>
+        createRequest(requester.userId, payer.userId).then((r) => r),
+      );
+
+      expect(res.status).toBe(422);
+      expect(errorOf(res).code).toBe('RECIPIENT_UNABLE_TO_RECEIVE');
+      expect(
+        await ctx.moneyRequestRepo.countBy({
+          requesterUserId: requester.userId,
+        }),
+      ).toBe(0);
+    });
+  });
+
+  describe('money_request_created notification', () => {
+    async function publishCreated(
+      requester: SeededUser,
+      payer: SeededUser,
+    ): Promise<void> {
+      const payerUser = await ctx.usersService.findById(payer.userId);
+      await ctx.app
+        .get(EventBusService)
+        .publish<string, MoneyRequestCreatedEventPayload>({
+          name: MONEY_REQUEST_CREATED_EVENT,
+          payload: {
+            userId: payer.userId,
+            email: payerUser.email,
+            requesterUserId: requester.userId,
+            counterpartyUsername: 'someone',
+            amount: '100.00',
+            currency: 'NGN',
+            note: null,
+            moneyRequestId: randomUUID(),
+            fromFollowed: true,
+          },
+          occurredAt: new Date(),
+        });
+    }
+
+    it.each(directions)(
+      'is skipped at dispatch time when $name',
+      async ({ blockerIndex }) => {
+        const requester = await seedUser('mna');
+        const payer = await seedUser('mnb');
+        const token = `push-mr-block-${payer.userId}`;
+        await ctx.notificationService.registerPushToken(
+          payer.userId,
+          'android',
+          token,
+        );
+        const emailsBefore = ctx.emailAdapter.sent.length;
+        await blockBetween([requester, payer], blockerIndex);
+
+        await publishCreated(requester, payer);
+        await waitForQueuesDrained();
+
+        expect(
+          await ctx.notificationRepo.countBy({
+            userId: payer.userId,
+            type: 'money_request_created',
+          }),
+        ).toBe(0);
+        expect(
+          ctx.pushAdapter.sent.filter((message) => message.token === token),
+        ).toHaveLength(0);
+        expect(ctx.emailAdapter.sent.length).toBe(emailsBefore);
+      },
+    );
+
+    it('is still delivered when there is no block', async () => {
+      const requester = await seedUser('mda');
+      const payer = await seedUser('mdb');
+
+      await publishCreated(requester, payer);
+      await waitForQueuesDrained();
+
+      expect(
+        await ctx.notificationRepo.countBy({
+          userId: payer.userId,
+          type: 'money_request_created',
+        }),
+      ).toBe(1);
     });
   });
 

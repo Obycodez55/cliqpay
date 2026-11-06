@@ -1,6 +1,11 @@
 import { ConflictException, Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, Repository, WhereExpressionBuilder } from 'typeorm';
+import {
+  DataSource,
+  EntityManager,
+  Repository,
+  WhereExpressionBuilder,
+} from 'typeorm';
 import { EntityNotFoundError } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { UsersService } from '../users/users.service';
@@ -35,11 +40,11 @@ import { TransfersService } from './transfers.service';
 import { SocialService } from '../social/social.service';
 import {
   MoneyRequestAmountTooSmallException,
-  MoneyRequestNotAllowedException,
   MoneyRequestNotFoundException,
   MoneyRequestNotPayableException,
   MoneyRequestPairCapExceededException,
   PayerNotFoundException,
+  RecipientUnableToReceiveException,
   SelfMoneyRequestException,
 } from './internal/errors';
 
@@ -153,43 +158,56 @@ export class MoneyRequestsService {
       }
       throw error;
     }
-    if (
-      await this.socialService.isBlockedBetween(requesterId, dto.payerUserId)
-    ) {
-      throw new MoneyRequestNotAllowedException();
-    }
 
     const now = new Date();
-    const outstanding = await this.countEffectivelyPending(
-      requesterId,
-      dto.payerUserId,
-      now,
-    );
-    if (outstanding >= this.config.moneyRequests.maxPendingPerPair) {
-      throw new MoneyRequestPairCapExceededException(
-        this.config.moneyRequests.maxPendingPerPair,
-      );
-    }
+    const { moneyRequest, fromFollowed } = await runInTransaction(
+      this.dataSource,
+      async (manager) => {
+        if (
+          await this.socialService.lockPairAndCheckBlock(
+            manager,
+            requesterId,
+            dto.payerUserId,
+          )
+        ) {
+          throw new RecipientUnableToReceiveException();
+        }
 
-    const expiresAt = new Date(
-      now.getTime() +
-        this.config.moneyRequests.expiryDays * 24 * 60 * 60 * 1000,
+        const outstanding = await this.countEffectivelyPending(
+          manager,
+          requesterId,
+          dto.payerUserId,
+          now,
+        );
+        if (outstanding >= this.config.moneyRequests.maxPendingPerPair) {
+          throw new MoneyRequestPairCapExceededException(
+            this.config.moneyRequests.maxPendingPerPair,
+          );
+        }
+
+        const expiresAt = new Date(
+          now.getTime() +
+            this.config.moneyRequests.expiryDays * 24 * 60 * 60 * 1000,
+        );
+        const repo = manager.getRepository(MoneyRequest);
+        const created = repo.create({
+          requesterUserId: requesterId,
+          payerUserId: dto.payerUserId,
+          amount: BigInt(dto.amount),
+          currency: NGN,
+          note: dto.note ?? null,
+          status: 'pending',
+          expiresAt,
+          transactionId: null,
+        });
+        const followed = await this.socialService.isFollowing(
+          payer.id,
+          requester.id,
+        );
+        await repo.save(created);
+        return { moneyRequest: created, fromFollowed: followed };
+      },
     );
-    const moneyRequest = this.moneyRequests.create({
-      requesterUserId: requesterId,
-      payerUserId: dto.payerUserId,
-      amount: BigInt(dto.amount),
-      currency: NGN,
-      note: dto.note ?? null,
-      status: 'pending',
-      expiresAt,
-      transactionId: null,
-    });
-    const fromFollowed = await this.socialService.isFollowing(
-      payer.id,
-      requester.id,
-    );
-    await this.moneyRequests.save(moneyRequest);
 
     await this.publishCreatedEvent(
       moneyRequest,
@@ -412,12 +430,14 @@ export class MoneyRequestsService {
   }
 
   private async countEffectivelyPending(
+    manager: EntityManager,
     requesterId: string,
     payerId: string,
     now: Date,
   ): Promise<number> {
     const qb = applyEffectivelyPending(
-      this.moneyRequests
+      manager
+        .getRepository(MoneyRequest)
         .createQueryBuilder('moneyRequest')
         .where('moneyRequest.requesterUserId = :requesterId', { requesterId })
         .andWhere('moneyRequest.payerUserId = :payerId', { payerId }),
@@ -452,19 +472,25 @@ export class MoneyRequestsService {
 
     if (hiddenPendingFrom.length > 0) {
       query.andWhere(
-        "NOT (moneyRequest.status = 'pending' AND moneyRequest.requesterUserId IN (:...hiddenPendingFrom))",
+        "NOT (moneyRequest.status = 'pending' AND moneyRequest.requesterUserId = ANY(:hiddenPendingFrom::uuid[]))",
         { hiddenPendingFrom },
       );
     }
 
     if (bucket?.kind === 'following') {
-      query.andWhere('moneyRequest.requesterUserId IN (:...followedIds)', {
-        followedIds: bucket.followedIds,
-      });
+      query.andWhere(
+        'moneyRequest.requesterUserId = ANY(:followedIds::uuid[])',
+        {
+          followedIds: bucket.followedIds,
+        },
+      );
     } else if (bucket?.kind === 'others' && bucket.followedIds.length > 0) {
-      query.andWhere('moneyRequest.requesterUserId NOT IN (:...followedIds)', {
-        followedIds: bucket.followedIds,
-      });
+      query.andWhere(
+        'moneyRequest.requesterUserId <> ALL(:followedIds::uuid[])',
+        {
+          followedIds: bucket.followedIds,
+        },
+      );
     }
 
     if (cursor) {
@@ -524,6 +550,7 @@ export class MoneyRequestsService {
         payload: {
           userId: payer.id,
           email: payer.email,
+          requesterUserId: requester.id,
           counterpartyUsername: requester.username,
           amount: Money.of(
             moneyRequest.amount,

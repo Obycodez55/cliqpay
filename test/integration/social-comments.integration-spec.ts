@@ -313,6 +313,11 @@ describe('Social comments', () => {
     it.each([
       { name: 'empty', body: '' },
       { name: 'only whitespace', body: '   \n\t ' },
+      { name: 'only zero-width characters', body: '\u200B' },
+      {
+        name: 'only zero-width characters and whitespace',
+        body: ' \u200D\u200C\u2060\uFEFF ',
+      },
       { name: 'over 280 characters', body: 'a'.repeat(281) },
       { name: 'not a string', body: 42 },
     ])('rejects a body that is $name', async ({ body }) => {
@@ -320,6 +325,19 @@ describe('Social comments', () => {
 
       const res = await comment(viewer, transactionId, body).expect(400);
       expect(errorOf(res).code).toBe('VALIDATION_FAILED');
+    });
+
+    it('keeps emoji joiners in a body that has visible text', async () => {
+      const { viewer, transactionId } = await seedFollowedPost();
+
+      const res = await comment(
+        viewer,
+        transactionId,
+        '  great lunch \uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67  ',
+      ).expect(201);
+      expect(dataOf<CommentItem>(res).body).toBe(
+        'great lunch \uD83D\uDC68\u200D\uD83D\uDC69\u200D\uD83D\uDC67',
+      );
     });
 
     it('accepts exactly 280 characters, counting an emoji as one, after trimming', async () => {
@@ -376,11 +394,14 @@ describe('Social comments', () => {
           await expectNotFound(viewer, transactionId);
         },
       );
+    });
 
-      it.each([
-        { name: 'they blocked the counterparty', participantBlocks: true },
-        { name: 'the counterparty blocked them', participantBlocks: false },
-      ])('for a participant when $name', async ({ participantBlocks }) => {
+    it.each([
+      { name: 'they blocked the counterparty', participantBlocks: true },
+      { name: 'the counterparty blocked them', participantBlocks: false },
+    ])(
+      'rejects a participant commenting across a block when $name',
+      async ({ participantBlocks }) => {
         const { sender, recipient, transactionId } = await seedPublicPost();
         if (participantBlocks) {
           await block(recipient, sender);
@@ -388,9 +409,19 @@ describe('Social comments', () => {
           await block(sender, recipient);
         }
 
-        await expectNotFound(recipient, transactionId);
-      });
-    });
+        await list(recipient, transactionId).expect(200);
+        const res = await comment(recipient, transactionId, 'hello').expect(
+          422,
+        );
+        expect(errorOf(res).code).toBe('INTERACTION_UNAVAILABLE');
+        expect(JSON.stringify(res.body)).not.toMatch(/block/i);
+        expect(
+          await ctx.dataSource
+            .getRepository(PostComment)
+            .countBy({ authorUserId: recipient }),
+        ).toBe(0);
+      },
+    );
 
     it('sees a block committed while the comment waits on the pair lock', async () => {
       const { sender, viewer, transactionId } = await seedFollowedPost();
@@ -514,6 +545,26 @@ describe('Social comments', () => {
         (await listAll(viewer, transactionId)).map((item) => item.id),
       ).toEqual([fromViewer]);
       expect(await listAll(recipient, transactionId)).toHaveLength(2);
+    });
+
+    it('hides comments by a user a participant blocked, from every reader', async () => {
+      const { sender, recipient, viewer, transactionId } =
+        await seedFollowedPost();
+      const harasser = await seedUser('harasser');
+      await follow(harasser, sender);
+      await commentId(harasser, transactionId, 'harass');
+      const kept = await commentId(viewer, transactionId, 'kind words');
+
+      await block(sender, harasser);
+
+      for (const reader of [sender, recipient, viewer]) {
+        expect(
+          (await listAll(reader, transactionId)).map((item) => item.id),
+        ).toEqual([kept]);
+        expect((await postView(reader, transactionId)).commentCount).toBe(1);
+      }
+      const [item] = await feed(viewer);
+      expect(item.commentCount).toBe(1);
     });
 
     it('returns 404 POST_NOT_FOUND when the caller cannot read the post', async () => {

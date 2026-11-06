@@ -132,13 +132,3 @@ export class RecipientUnableToReceiveException extends DomainException {
     );
   }
 }
-
-export class MoneyRequestNotAllowedException extends DomainException {
-  readonly code = 'MONEY_REQUEST_NOT_ALLOWED';
-  constructor() {
-    super(
-      "You can't request money from this user.",
-      HttpStatus.UNPROCESSABLE_ENTITY,
-    );
-  }
-}

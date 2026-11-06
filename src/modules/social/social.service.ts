@@ -51,6 +51,7 @@ import {
   CommentNotFoundException,
   FollowLimitReachedException,
   FollowRequiresUnblockException,
+  InteractionUnavailableException,
   PostNotFoundException,
   SelfBlockException,
   SelfFollowException,
@@ -121,12 +122,21 @@ interface CommentRow {
   raw_created_at: string;
 }
 
-function notAuthoredByBlockedOf(viewerParam: string): string {
+const PARTICIPANTS = 'p.sender_user_id, p.recipient_user_id';
+
+// A participant's block hides the blocked user's comments and reactions on
+// that post from everyone, so the blocker isn't left with harassment they
+// can't see on their own post.
+function notBlockedBy(actorColumn: string, blockers: string): string {
   return `NOT EXISTS (
     SELECT 1 FROM blocks b
-    WHERE b.blocker_user_id = ${viewerParam}
-      AND b.blocked_user_id = c.author_user_id
+    WHERE b.blocked_user_id = ${actorColumn}
+      AND b.blocker_user_id IN (${blockers})
   )`;
+}
+
+function commentVisibleTo(viewerParam: string): string {
+  return notBlockedBy('c.author_user_id', `${viewerParam}, ${PARTICIPANTS}`);
 }
 
 interface PostRow {
@@ -283,8 +293,8 @@ export class SocialService {
       if (await this.hasBlocked(manager, followerId, followeeId)) {
         throw new FollowRequiresUnblockException();
       }
-      if (await this.isBlockedBetween(followerId, followeeId, manager)) {
-        throw new SocialUserNotFoundException();
+      if (await this.hasBlocked(manager, followeeId, followerId)) {
+        throw new InteractionUnavailableException();
       }
       const repo = manager.getRepository(Follow);
       if (
@@ -401,6 +411,15 @@ export class SocialService {
         { blockerUserId: userB, blockedUserId: userA },
       ],
     });
+  }
+
+  async lockPairAndCheckBlock(
+    manager: EntityManager,
+    userA: string,
+    userB: string,
+  ): Promise<boolean> {
+    await this.lockPair(manager, userA, userB);
+    return this.isBlockedBetween(userA, userB, manager);
   }
 
   async getBlockedUserIds(blockerId: string): Promise<string[]> {
@@ -528,25 +547,10 @@ export class SocialService {
     const { post, isFirst } = await runInTransaction(
       this.dataSource,
       async (manager) => {
-        const found = await this.findReadablePost(
+        const locked = await this.lockPostForInteraction(
+          manager,
           userId,
           transactionId,
-          manager,
-        );
-        const others = [found.sender_user_id, found.recipient_user_id]
-          .filter((id) => id !== userId)
-          .sort();
-        // Sorted so two of one user's reactions can't take the same pair
-        // locks in opposite orders.
-        for (const other of others) {
-          await this.lockPair(manager, userId, other);
-        }
-        // Re-read under the pair locks so a block committed since the
-        // first read is seen before the reaction is written.
-        const locked = await this.findReadablePost(
-          userId,
-          transactionId,
-          manager,
         );
         const inserted: unknown[] = await manager.query(
           `INSERT INTO post_reactions (post_id, user_id, reaction)
@@ -575,10 +579,21 @@ export class SocialService {
     transactionId: string,
   ): Promise<ReactionStateResponseDto> {
     await this.requireSocialTier(userId);
-    const post = await this.findReadablePost(userId, transactionId);
-    await this.dataSource
-      .getRepository(PostReaction)
-      .delete({ postId: post.id, userId });
+    // Like deleteComment, a reactor can withdraw their own reaction even
+    // after losing sight of the post.
+    const result = await this.dataSource
+      .createQueryBuilder()
+      .delete()
+      .from(PostReaction)
+      .where('user_id = :userId', { userId })
+      .andWhere(
+        'post_id IN (SELECT id FROM transaction_posts WHERE transaction_id = :transactionId)',
+        { transactionId },
+      )
+      .execute();
+    if (!result.affected) {
+      await this.findReadablePost(userId, transactionId);
+    }
     return { transactionId, reaction: null };
   }
 
@@ -591,29 +606,11 @@ export class SocialService {
     const { post, comment } = await runInTransaction(
       this.dataSource,
       async (manager) => {
-        const found = await this.findReadablePost(
+        const locked = await this.lockPostForInteraction(
+          manager,
           userId,
           transactionId,
-          manager,
         );
-        const others = [found.sender_user_id, found.recipient_user_id]
-          .filter((id) => id !== userId)
-          .sort();
-        for (const other of others) {
-          await this.lockPair(manager, userId, other);
-        }
-        const locked = await this.findReadablePost(
-          userId,
-          transactionId,
-          manager,
-        );
-        // Participants can always read their own post, so a block with the
-        // counterparty has to be checked here rather than by the read.
-        for (const other of others) {
-          if (await this.isBlockedBetween(userId, other, manager)) {
-            throw new PostNotFoundException();
-          }
-        }
         const repo = manager.getRepository(PostComment);
         const saved = await repo.save(
           repo.create({ postId: locked.id, authorUserId: userId, body }),
@@ -650,9 +647,10 @@ export class SocialService {
       `SELECT c.id, c.author_user_id, c.body, c.created_at,
         c.created_at::text AS raw_created_at
       FROM post_comments c
+      JOIN transaction_posts p ON p.id = c.post_id
       WHERE c.post_id = $1 AND c.deleted_at IS NULL
         ${cursorClause}
-        AND ${notAuthoredByBlockedOf('$2::uuid')}
+        AND ${commentVisibleTo('$2::uuid')}
       ORDER BY c.created_at, c.id
       LIMIT $3`,
       params,
@@ -713,6 +711,33 @@ export class SocialService {
     if (!result.affected) {
       throw new CommentNotFoundException();
     }
+  }
+
+  private async lockPostForInteraction(
+    manager: EntityManager,
+    userId: string,
+    transactionId: string,
+  ): Promise<PostRow> {
+    const found = await this.findReadablePost(userId, transactionId, manager);
+    const others = [found.sender_user_id, found.recipient_user_id]
+      .filter((id) => id !== userId)
+      .sort();
+    // Sorted so two of one user's interactions can't take the same pair
+    // locks in opposite orders.
+    for (const other of others) {
+      await this.lockPair(manager, userId, other);
+    }
+    // Re-read under the pair locks so a block committed since the first
+    // read is seen before anything is written.
+    const locked = await this.findReadablePost(userId, transactionId, manager);
+    // Participants can always read their own post, so a block with the
+    // counterparty has to be checked here rather than by the read.
+    for (const other of others) {
+      if (await this.isBlockedBetween(userId, other, manager)) {
+        throw new InteractionUnavailableException();
+      }
+    }
+    return locked;
   }
 
   private async findReadablePost(
@@ -782,11 +807,13 @@ export class SocialService {
       count: number;
       mine: boolean;
     }[] = await this.dataSource.query(
-      `SELECT post_id, reaction, COUNT(*)::int AS count,
-        BOOL_OR(user_id = $2) AS mine
-      FROM post_reactions
-      WHERE post_id = ANY($1::uuid[])
-      GROUP BY post_id, reaction`,
+      `SELECT r.post_id, r.reaction,
+        COUNT(*) FILTER (WHERE ${notBlockedBy('r.user_id', PARTICIPANTS)})::int AS count,
+        BOOL_OR(r.user_id = $2) AS mine
+      FROM post_reactions r
+      JOIN transaction_posts p ON p.id = r.post_id
+      WHERE r.post_id = ANY($1::uuid[])
+      GROUP BY r.post_id, r.reaction`,
       [postIds, viewerId],
     );
     for (const row of rows) {
@@ -814,8 +841,9 @@ export class SocialService {
       await this.dataSource.query(
         `SELECT c.post_id, COUNT(*)::int AS count
         FROM post_comments c
+        JOIN transaction_posts p ON p.id = c.post_id
         WHERE c.post_id = ANY($1::uuid[]) AND c.deleted_at IS NULL
-          AND ${notAuthoredByBlockedOf('$2::uuid')}
+          AND ${commentVisibleTo('$2::uuid')}
         GROUP BY c.post_id`,
         [postIds, viewerId],
       );
@@ -880,8 +908,9 @@ export class SocialService {
     };
   }
 
-  // Shared by follow and block so the two can't interleave for a pair:
-  // whichever commits second sees what the first wrote.
+  // Taken by everything that writes or checks a block between a pair, so
+  // none of it can interleave with a block: whichever commits second sees
+  // what the first wrote.
   private async lockPair(
     manager: EntityManager,
     userA: string,

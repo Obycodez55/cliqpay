@@ -123,6 +123,7 @@ export const MONEY_REQUEST_CREATED_EVENT = 'money_request_created';
 export interface MoneyRequestCreatedEventPayload {
   userId: string; // the payer being asked
   email: string;
+  requesterUserId: string;
   counterpartyUsername: string; // requester's username
   amount: string; // decimal display string (Money.toDecimalString())
   currency: string;

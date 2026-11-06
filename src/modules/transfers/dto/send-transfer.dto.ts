@@ -11,6 +11,10 @@ import {
   MaxLength,
 } from 'class-validator';
 import { POST_VISIBILITIES, PostVisibility } from '../../social/social.service';
+import {
+  HasCodePointLength,
+  normalizeText,
+} from '../../../common/validation/text';
 
 export class SendTransferDto {
   @IsUUID()
@@ -27,12 +31,13 @@ export class SendTransferDto {
   })
   amount: number;
 
-  @Transform(({ value }: { value: unknown }) =>
-    typeof value === 'string' ? value.trim() || undefined : value,
-  )
+  @Transform(({ value }: { value: unknown }) => {
+    const note = normalizeText(value);
+    return note === '' ? undefined : note;
+  })
   @IsOptional()
   @IsString()
-  @MaxLength(500)
+  @HasCodePointLength(1, 500)
   @ApiProperty({
     required: false,
     example: 'Thanks for lunch',

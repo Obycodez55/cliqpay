@@ -11,9 +11,10 @@ import {
   ChannelDispatchJobData,
 } from './channel-dispatch.queue';
 
-// Social notifications are dropped when either side has blocked the other.
-// Checked here, per delivery, so a block created after the triggering event
-// still stops it.
+// Social notifications and money requests are dropped when either side has
+// blocked the other. Checked here, per delivery, so a block created after the
+// triggering event still stops it. Notifications about money that already
+// moved are still delivered: they're a record, not contact.
 function blockCheckedPair(
   type: NotificationType,
   payload: unknown,
@@ -33,6 +34,11 @@ function blockCheckedPair(
       const { userId, commenterUserId } =
         payload as NotificationPayloadMap['post_comment'];
       return [userId, commenterUserId];
+    }
+    case 'money_request_created': {
+      const { userId, requesterUserId } =
+        payload as NotificationPayloadMap['money_request_created'];
+      return requesterUserId ? [userId, requesterUserId] : null;
     }
     default:
       return null;

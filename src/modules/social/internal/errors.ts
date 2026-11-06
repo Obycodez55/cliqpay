@@ -67,3 +67,13 @@ export class CommentNotFoundException extends DomainException {
     super('Comment not found', HttpStatus.NOT_FOUND);
   }
 }
+
+export class InteractionUnavailableException extends DomainException {
+  readonly code = 'INTERACTION_UNAVAILABLE';
+  constructor() {
+    super(
+      "This action isn't available for this user.",
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
