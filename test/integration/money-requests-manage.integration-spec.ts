@@ -7,6 +7,7 @@ import {
   seedTransferUser,
 } from './support/transfers-test-context';
 import { dataOf } from './support/api-response';
+import { EventBusService } from '../../src/shared/events/event-bus.service';
 
 jest.setTimeout(180_000);
 
@@ -162,6 +163,30 @@ describe('POST /money-requests/:id/cancel and /decline', () => {
         id: created.id,
       });
       expect(row.status).toBe('pending');
+    });
+
+    it('publishes money_request_cancelled once the cancel has committed', async () => {
+      const requester = await seedUser('cancelevtreq');
+      const payer = await seedUser('cancelevtpay');
+      const created = await create(
+        tokenFor(requester.userId),
+        { payerUserId: payer.userId, amount: 20_000 },
+        201,
+      );
+      const publish = jest.spyOn(ctx.app.get(EventBusService), 'publish');
+
+      await cancel(tokenFor(requester.userId), created.id, 201);
+
+      const cancelled = publish.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.name === 'money_request_cancelled');
+      expect(cancelled).toHaveLength(1);
+      expect(cancelled[0].payload).toEqual({
+        moneyRequestId: created.id,
+        requesterUserId: requester.userId,
+        payerUserId: payer.userId,
+      });
+      publish.mockRestore();
     });
 
     it('sends no notification on cancel', async () => {

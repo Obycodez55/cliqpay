@@ -146,6 +146,15 @@ export interface MoneyRequestDeclinedEventPayload {
   moneyRequestId: string;
 }
 
+// No notification catalog entry — it exists for non-notification subscribers.
+export const MONEY_REQUEST_CANCELLED_EVENT = 'money_request_cancelled';
+
+export interface MoneyRequestCancelledEventPayload {
+  moneyRequestId: string;
+  requesterUserId: string;
+  payerUserId: string;
+}
+
 export const MONEY_REQUEST_PAID_EVENT = 'money_request_paid';
 
 export interface MoneyRequestPaidEventPayload {
