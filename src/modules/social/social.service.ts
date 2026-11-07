@@ -142,17 +142,22 @@ interface CommentRow {
 
 const PARTICIPANT_IDS = `SELECT pp.user_id FROM post_participants pp WHERE pp.post_id = p.id`;
 
-// A participant's block hides the blocked user's comments and reactions on
-// that post from everyone, so the blocker isn't left with harassment they
-// can't see on their own post.
-function notBlockedBy(actorColumn: string, viewerParam?: string): string {
-  const viewerBlock = viewerParam
-    ? `b.blocker_user_id = ${viewerParam} OR `
-    : '';
+// A participant's block hides the blocked user's comments and reactions from
+// everyone, so the blocker isn't left with harassment they can't see on their
+// own post. On a bill split only the author's block does that; a member's
+// block hides the blocked user only from that member, so the author isn't
+// shown a block between two other people.
+function notBlockedBy(actorColumn: string, viewerParam: string): string {
   return `NOT EXISTS (
     SELECT 1 FROM blocks b
     WHERE b.blocked_user_id = ${actorColumn}
-      AND (${viewerBlock}b.blocker_user_id IN (${PARTICIPANT_IDS}))
+      AND (
+        b.blocker_user_id = ${viewerParam}
+        OR (
+          b.blocker_user_id IN (${PARTICIPANT_IDS})
+          AND (p.kind <> 'bill_split' OR b.blocker_user_id = p.author_user_id)
+        )
+      )
   )`;
 }
 
@@ -558,11 +563,30 @@ export class SocialService {
     return blocks.map((block) => block.blockedUserId);
   }
 
-  async isFollowing(followerId: string, followeeId: string): Promise<boolean> {
-    return this.dataSource.getRepository(Follow).existsBy({
+  async isFollowing(
+    followerId: string,
+    followeeId: string,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<boolean> {
+    return manager.getRepository(Follow).existsBy({
       followerUserId: followerId,
       followeeUserId: followeeId,
     });
+  }
+
+  async followedBy(
+    followeeId: string,
+    userIds: string[],
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<Set<string>> {
+    if (userIds.length === 0) {
+      return new Set();
+    }
+    const follows = await manager.getRepository(Follow).find({
+      where: { followeeUserId: followeeId, followerUserId: In(userIds) },
+      select: { followerUserId: true },
+    });
+    return new Set(follows.map((follow) => follow.followerUserId));
   }
 
   async getFollowedUserIds(followerId: string): Promise<string[]> {
@@ -886,9 +910,14 @@ export class SocialService {
     // Re-read under the pair locks so a block committed since the first
     // read is seen before anything is written.
     const locked = await this.findReadablePost(userId, transactionId, manager);
-    // Participants can always read their own post, so a block with another
-    // participant has to be checked here rather than by the read.
-    for (const other of others) {
+    // On a split only a block with the author refuses; members' blocks are
+    // handled by hiding content. Every pair is still locked because a
+    // non-participant's read depends on their blocks with all participants.
+    const blockable =
+      locked.kind === 'bill_split'
+        ? others.filter((id) => id === locked.author_user_id)
+        : others;
+    for (const other of blockable) {
       if (await this.isBlockedBetween(userId, other, manager)) {
         throw new InteractionUnavailableException();
       }
@@ -1000,7 +1029,7 @@ export class SocialService {
       mine: boolean;
     }[] = await this.dataSource.query(
       `SELECT r.post_id, r.reaction,
-        COUNT(*) FILTER (WHERE ${notBlockedBy('r.user_id')})::int AS count,
+        COUNT(*) FILTER (WHERE ${notBlockedBy('r.user_id', '$2::uuid')})::int AS count,
         BOOL_OR(r.user_id = $2) AS mine
       FROM post_reactions r
       JOIN posts p ON p.id = r.post_id

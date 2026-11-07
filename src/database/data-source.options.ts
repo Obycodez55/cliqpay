@@ -2,6 +2,10 @@ import { DataSourceOptions } from 'typeorm';
 import { AppConfig } from '../config';
 import { CliqpayNamingStrategy } from './naming-strategy';
 
+// Without it a checkout from an exhausted pool waits forever; failing after
+// this long turns a hung request into an error.
+const CONNECTION_TIMEOUT_MS = 10_000;
+
 /**
  * The one place that defines what a Cliqpay datasource looks like. Both the
  * migration CLI (data-source.ts) and the running app (database.module.ts)
@@ -24,5 +28,6 @@ export function buildDataSourceOptions(
     // Migrations only, always — see docs/architecture.md §7 Data Integrity.
     synchronize: false,
     uuidExtension: 'pgcrypto',
+    extra: { connectionTimeoutMillis: CONNECTION_TIMEOUT_MS },
   };
 }

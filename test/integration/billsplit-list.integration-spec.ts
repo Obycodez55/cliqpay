@@ -11,6 +11,7 @@ import {
   createBillSplitTestContext,
 } from './support/billsplit-test-context';
 import { dataOf, errorOf } from './support/api-response';
+import { waitFor } from './support/social-blocks-test-helpers';
 import { BillSplit } from '../../src/modules/billsplit/entities/bill-split.entity';
 import { BILL_SPLIT_EVENTS_QUEUE } from '../../src/modules/billsplit/internal/bill-split-events.queue';
 
@@ -142,13 +143,12 @@ describe('GET /bill-splits', () => {
       .expect(201);
     await cancel(alice.userId, cancelled.id);
 
-    const stamped = async (id: string) =>
-      (await ctx.dataSource.getRepository(BillSplit).findOneByOrFail({ id }))
-        .completedAt;
-    for (let i = 0; i < 50 && !(await stamped(completed.id)); i++) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    await settle();
+    const stored = (id: string) =>
+      ctx.dataSource.getRepository(BillSplit).findOneByOrFail({ id });
+    await waitFor(
+      async () => (await stored(completed.id)).completedAt !== null,
+    );
+    await waitFor(async () => (await stored(closed.id)).closedAt !== null);
 
     const ids = async (status: string) =>
       (await listed(alice.userId, `role=initiator&status=${status}`)).items.map(
@@ -184,7 +184,14 @@ describe('GET /bill-splits', () => {
     } finally {
       await queue.resume();
     }
-    await settle();
+    await waitFor(
+      async () =>
+        (
+          await ctx.dataSource
+            .getRepository(BillSplit)
+            .findOneByOrFail({ id: created.id })
+        ).completedAt !== null,
+    );
 
     expect(
       (await listed(alice.userId, 'role=initiator&status=completed')).items.map(

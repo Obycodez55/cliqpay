@@ -10,6 +10,11 @@ import {
   createBillSplitTestContext,
 } from './support/billsplit-test-context';
 import { dataOf, errorOf } from './support/api-response';
+import { EventBusService } from '../../src/shared/events/event-bus.service';
+import {
+  MONEY_REQUEST_CREATED_EVENT,
+  MoneyRequestCreatedEventPayload,
+} from '../../src/shared/events/domain-events';
 
 jest.setTimeout(180_000);
 
@@ -92,6 +97,57 @@ describe('money request kinds — paying direct and group-share requests', () =>
           [randomUUID(), randomUUID()],
         ),
       ).rejects.toThrow(/CHK_money_requests_kind/);
+    });
+
+    it('exposes the kind on the create response, the lists and the created event', async () => {
+      const publish = jest.spyOn(ctx.app.get(EventBusService), 'publish');
+      try {
+        const requester = await h.seedUser('requester');
+        const payer = await h.seedUser('payer', { balanceMinor: 50_000_000n });
+        const created = await h
+          .http()
+          .post('/money-requests')
+          .set('Authorization', `Bearer ${h.tokenFor(requester.userId)}`)
+          .send({ payerUserId: payer.userId, amount: 20_000 })
+          .expect(201);
+        expect(dataOf<{ kind: string }>(created).kind).toBe('direct');
+
+        const split = dataOf<SplitBody>(
+          await h
+            .createSplit(requester.userId, {
+              total: 40_000,
+              participants: [{ userId: payer.userId }],
+            })
+            .expect(201),
+        );
+        const shareId = split.participants[0].moneyRequestId;
+
+        const incoming = dataOf<{ items: { id: string; kind: string }[] }>(
+          await h
+            .http()
+            .get('/money-requests/incoming')
+            .set('Authorization', `Bearer ${h.tokenFor(payer.userId)}`)
+            .expect(200),
+        ).items;
+        expect(
+          incoming.find((r) => r.id === dataOf<{ id: string }>(created).id)
+            ?.kind,
+        ).toBe('direct');
+        expect(incoming.find((r) => r.id === shareId)?.kind).toBe(
+          'group_share',
+        );
+
+        const kindOfEvent = (moneyRequestId: string) =>
+          publish.mock.calls
+            .map(([event]) => event)
+            .filter((event) => event.name === MONEY_REQUEST_CREATED_EVENT)
+            .map((event) => event.payload as MoneyRequestCreatedEventPayload)
+            .find((payload) => payload.moneyRequestId === moneyRequestId)?.kind;
+        expect(kindOfEvent(dataOf<{ id: string }>(created).id)).toBe('direct');
+        expect(kindOfEvent(shareId)).toBe('group_share');
+      } finally {
+        publish.mockRestore();
+      }
     });
 
     it('creates split requests as group_share', async () => {

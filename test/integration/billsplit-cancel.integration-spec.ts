@@ -9,6 +9,8 @@ import {
   createBillSplitTestContext,
 } from './support/billsplit-test-context';
 import { dataOf, errorOf } from './support/api-response';
+import { waitFor } from './support/social-blocks-test-helpers';
+import { BillSplitService } from '../../src/modules/billsplit/billsplit.service';
 import { BillSplit } from '../../src/modules/billsplit/entities/bill-split.entity';
 import { EventBusService } from '../../src/shared/events/event-bus.service';
 import { MONEY_REQUEST_CANCELLED_EVENT } from '../../src/shared/events/domain-events';
@@ -71,7 +73,21 @@ describe('POST /bill-splits/:id/cancel', () => {
     const [paid, declined, ...pending] = participants;
     await h.payRequest(paid.userId, requestOf(paid)).expect(201);
     await decline(declined.userId, requestOf(declined));
-    await settle();
+    const notificationsOf = (userId: string, type: string) =>
+      ctx.notificationRepo.countBy({ userId, type: type as never });
+    await waitFor(
+      async () =>
+        (await notificationsOf(initiator.userId, 'money_request_paid')) === 1 &&
+        (await notificationsOf(initiator.userId, 'money_request_declined')) ===
+          1,
+    );
+    for (const p of participants) {
+      await waitFor(
+        async () =>
+          (await notificationsOf(p.userId, 'money_request_created')) === 1,
+      );
+    }
+    await h.waitForSplitEventsProcessed();
     const notificationsBefore = await ctx.notificationRepo.count();
     const publish = jest.spyOn(ctx.app.get(EventBusService), 'publish');
 
@@ -113,10 +129,12 @@ describe('POST /bill-splits/:id/cancel', () => {
       .expect(201);
     await cancelSplit(initiator.userId, split.id).expect(201);
 
-    await settle();
+    await h.waitForSplitEventsProcessed();
+    expect(await ctx.app.get(BillSplitService).recordOutcome(split.id)).toBe(
+      null,
+    );
     await h.getSplit(initiator.userId, split.id).expect(200);
     await h.getSplit(participants[0].userId, split.id).expect(200);
-    await settle();
 
     const stored = await row(split.id);
     expect(stored.cancelledAt).not.toBeNull();

@@ -37,6 +37,14 @@ export class AddBillSplits1794046850838 implements MigrationInterface {
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
+    const [{ count }] = (await queryRunner.query(
+      `SELECT count(*) FROM "money_requests" WHERE "kind" = 'group_share'`,
+    )) as { count: string }[];
+    if (Number(count) > 0) {
+      throw new Error(
+        `Cannot revert AddBillSplits: ${count} group_share money request(s) exist, and dropping "kind" would turn them into direct requests`,
+      );
+    }
     await queryRunner.query(
       `ALTER TABLE "bill_split_participants" DROP CONSTRAINT "FK_bill_split_participants_bill_split_id"`,
     );

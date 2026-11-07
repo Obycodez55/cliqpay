@@ -21,6 +21,7 @@ import { dataOf, errorOf } from './support/api-response';
 import { BILL_SPLIT_EVENTS_QUEUE } from '../../src/modules/billsplit/internal/bill-split-events.queue';
 import { CHANNEL_DISPATCH_QUEUE } from '../../src/modules/notifications/internal/channel-dispatch.queue';
 import { Follow } from '../../src/modules/social/entities/follow.entity';
+import { BillSplitService } from '../../src/modules/billsplit/billsplit.service';
 
 jest.setTimeout(180_000);
 
@@ -374,15 +375,16 @@ describe('bill split posts', () => {
     });
   });
 
-  describe('members who have blocked each other', () => {
-    it('can share a split; cannot interact on its post; each hides the other’s content', async () => {
+  describe('blocks on a split post', () => {
+    async function seedBlockedPair(mutual: boolean) {
       const initiator = await h.seedUser('initiator');
       const a = await h.seedUser('blocker', { balanceMinor: 50_000_000n });
       const b = await h.seedUser('blocked', { balanceMinor: 50_000_000n });
       const c = await h.seedUser('bystander', { balanceMinor: 50_000_000n });
       await s.block(a.userId, b.userId).expect(200);
-      await s.block(b.userId, a.userId).expect(200);
-
+      if (mutual) {
+        await s.block(b.userId, a.userId).expect(200);
+      }
       const split = dataOf<SplitBody>(
         await h
           .createSplit(initiator.userId, {
@@ -392,8 +394,81 @@ describe('bill split posts', () => {
           })
           .expect(201),
       );
+      for (const user of [a, b, c]) {
+        await comment(user.userId, split.id, `from ${user.username}`).expect(
+          201,
+        );
+        await react(user.userId, split.id).expect(200);
+      }
+      await comment(initiator.userId, split.id, 'from initiator').expect(201);
+      const seenBy = async (viewer: SplitUser) => ({
+        bodies: dataOf<{ items: { body: string }[] }>(
+          await listComments(viewer.userId, split.id).expect(200),
+        ).items.map((item) => item.body),
+        post: dataOf<PostBody>(
+          await getPost(viewer.userId, split.id).expect(200),
+        ),
+      });
+      return { initiator, a, b, c, seenBy };
+    }
 
-      for (const user of [a, b]) {
+    it('lets members who blocked each other interact, hiding each one’s content only from the other', async () => {
+      const { initiator, a, b, c, seenBy } = await seedBlockedPair(true);
+      const everything = [a, b, c].map((u) => `from ${u.username}`);
+
+      const forA = await seenBy(a);
+      expect(forA.bodies).toEqual([
+        `from ${a.username}`,
+        `from ${c.username}`,
+        'from initiator',
+      ]);
+      expect(forA.post.commentCount).toBe(3);
+      expect(forA.post.reactionCounts.heart).toBe(2);
+
+      const forB = await seenBy(b);
+      expect(forB.bodies).toEqual([
+        `from ${b.username}`,
+        `from ${c.username}`,
+        'from initiator',
+      ]);
+      expect(forB.post.commentCount).toBe(3);
+      expect(forB.post.reactionCounts.heart).toBe(2);
+
+      for (const viewer of [c, initiator]) {
+        const seen = await seenBy(viewer);
+        expect(seen.bodies).toEqual([...everything, 'from initiator']);
+        expect(seen.post.commentCount).toBe(4);
+        expect(seen.post.reactionCounts.heart).toBe(3);
+      }
+    });
+
+    it('hides the blocked member’s content only from the blocker when the block is one-way', async () => {
+      const { initiator, a, b, c, seenBy } = await seedBlockedPair(false);
+      const everything = [a, b, c].map((u) => `from ${u.username}`);
+
+      const forA = await seenBy(a);
+      expect(forA.bodies).toEqual([
+        `from ${a.username}`,
+        `from ${c.username}`,
+        'from initiator',
+      ]);
+      expect(forA.post.reactionCounts.heart).toBe(2);
+
+      for (const viewer of [b, c, initiator]) {
+        const seen = await seenBy(viewer);
+        expect(seen.bodies).toEqual([...everything, 'from initiator']);
+        expect(seen.post.commentCount).toBe(4);
+        expect(seen.post.reactionCounts.heart).toBe(3);
+      }
+    });
+
+    it('refuses an interaction from a member blocked by the initiator, or who blocked them, and only that', async () => {
+      const { initiator, members, split } = await seedSplit();
+      const [blockedByInitiator, blockedInitiator, bystander] = members;
+      await s.block(initiator.userId, blockedByInitiator.userId).expect(200);
+      await s.block(blockedInitiator.userId, initiator.userId).expect(200);
+
+      for (const user of [blockedByInitiator, blockedInitiator]) {
         const rejectedComment = await comment(user.userId, split.id).expect(
           422,
         );
@@ -401,26 +476,8 @@ describe('bill split posts', () => {
         const rejectedReaction = await react(user.userId, split.id).expect(422);
         expect(errorOf(rejectedReaction).code).toBe('INTERACTION_UNAVAILABLE');
       }
-      await comment(c.userId, split.id, 'from c').expect(201);
-      await comment(initiator.userId, split.id, 'from initiator').expect(201);
-
-      await ctx.dataSource.query(
-        `INSERT INTO post_comments (post_id, author_user_id, body)
-        VALUES ($1, $2, 'from a'), ($1, $3, 'from b')`,
-        [split.id, a.userId, b.userId],
-      );
-      const bodiesFor = async (viewer: string) =>
-        dataOf<{ items: { body: string }[] }>(
-          await listComments(viewer, split.id).expect(200),
-        ).items.map((item) => item.body);
-
-      expect(await bodiesFor(a.userId)).toEqual(['from c', 'from initiator']);
-      expect(await bodiesFor(b.userId)).toEqual(['from c', 'from initiator']);
-      expect(await bodiesFor(c.userId)).toEqual(['from c', 'from initiator']);
-      expect(
-        dataOf<PostBody>(await getPost(c.userId, split.id).expect(200))
-          .commentCount,
-      ).toBe(2);
+      await comment(bystander.userId, split.id).expect(201);
+      await react(bystander.userId, split.id).expect(200);
     });
   });
 
@@ -491,32 +548,44 @@ describe('bill split posts', () => {
       });
     });
 
-    it('never publishes a cancelled split, even when a paid share lands first', async () => {
-      const { initiator, members, split, requestOf } = await seedSplit();
-      await h.payRequest(members[0].userId, requestOf(members[0])).expect(201);
-      await h
-        .http()
-        .post(`/bill-splits/${split.id}/cancel`)
-        .set(as(initiator.userId))
-        .expect(201);
-      await settle();
-      await h.getSplit(initiator.userId, split.id).expect(200);
-      expect(await postRow(split.id)).toMatchObject({ published_at: null });
+    // Every share paid but the split already stamped: states the real flows
+    // can't produce, which is why they have to be built by hand to exercise
+    // the guards.
+    async function paidThenStamped(column: 'cancelled_at' | 'closed_at') {
+      const seeded = await seedSplit();
+      const queue = ctx.app.get<Queue>(getQueueToken(BILL_SPLIT_EVENTS_QUEUE));
+      await queue.pause();
+      try {
+        await payAll(seeded.members, seeded.requestOf);
+        await ctx.dataSource.query(
+          `UPDATE bill_splits SET ${column} = now() WHERE id = $1`,
+          [seeded.split.id],
+        );
+        expect(
+          await ctx.app.get(BillSplitService).recordOutcome(seeded.split.id),
+        ).toBeNull();
+        await h.getSplit(seeded.initiator.userId, seeded.split.id).expect(200);
+      } finally {
+        await queue.resume();
+      }
+      await h.waitForSplitEventsProcessed();
+      return seeded;
+    }
+
+    it('never publishes a split already cancelled, even with every share paid', async () => {
+      const { split } = await paidThenStamped('cancelled_at');
+      expect(await postRow(split.id)).toMatchObject({
+        published_at: null,
+        is_public: false,
+      });
     });
 
-    it('never publishes an expired split', async () => {
-      const { initiator, members, split, requestOf } = await seedSplit();
-      await h.payRequest(members[0].userId, requestOf(members[0])).expect(201);
-      await ctx.dataSource.query(
-        `UPDATE bill_splits SET expires_at = now() - interval '1 day' WHERE id = $1`,
-        [split.id],
-      );
-      const seen = dataOf<SplitBody>(
-        await h.getSplit(initiator.userId, split.id).expect(200),
-      );
-      expect(seen.status).toBe('expired');
-      await settle();
-      expect(await postRow(split.id)).toMatchObject({ published_at: null });
+    it('never publishes a split already closed, even with every share paid', async () => {
+      const { split } = await paidThenStamped('closed_at');
+      expect(await postRow(split.id)).toMatchObject({
+        published_at: null,
+        is_public: false,
+      });
     });
 
     it('publishes a lost completion event by read-repair', async () => {

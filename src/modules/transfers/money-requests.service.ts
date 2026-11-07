@@ -180,6 +180,7 @@ export class MoneyRequestsService {
         const followed = await this.socialService.isFollowing(
           payer.id,
           requester.id,
+          manager,
         );
         await repo.save(created);
         return { moneyRequest: created, fromFollowed: followed };

@@ -1,4 +1,6 @@
 import { randomUUID } from 'crypto';
+import { getQueueToken } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import {
   TransfersTestContext,
   destroyTransfersTestContext,
@@ -10,6 +12,7 @@ import {
   createBillSplitTestContext,
 } from './support/billsplit-test-context';
 import { dataOf, errorOf } from './support/api-response';
+import { BILL_SPLIT_EVENTS_QUEUE } from '../../src/modules/billsplit/internal/bill-split-events.queue';
 
 jest.setTimeout(180_000);
 
@@ -202,5 +205,34 @@ describe('GET /bill-splits/:id — view', () => {
   it('rejects a malformed id', async () => {
     const { initiator } = await seedSplit(1);
     await h.getSplit(initiator.userId, 'not-a-uuid').expect(400);
+  });
+
+  it('writes nothing for a non-member, leaving a lost completion for a member read to repair', async () => {
+    const { initiator, participants, split, requestOf } = await seedSplit(1);
+    const stranger = await h.seedUser('stranger');
+    const completedAt = async () =>
+      (
+        await ctx.dataSource.query<{ completed_at: Date | null }[]>(
+          `SELECT completed_at FROM bill_splits WHERE id = $1`,
+          [split.id],
+        )
+      )[0].completed_at;
+    const queue = ctx.app.get<Queue>(getQueueToken(BILL_SPLIT_EVENTS_QUEUE));
+
+    await queue.pause();
+    try {
+      await h
+        .payRequest(participants[0].userId, requestOf(participants[0]))
+        .expect(201);
+
+      const res = await h.getSplit(stranger.userId, split.id).expect(404);
+      expect(errorOf(res).code).toBe('BILL_SPLIT_NOT_FOUND');
+      expect(await completedAt()).toBeNull();
+
+      await h.getSplit(initiator.userId, split.id).expect(200);
+      expect(await completedAt()).not.toBeNull();
+    } finally {
+      await queue.resume();
+    }
   });
 });

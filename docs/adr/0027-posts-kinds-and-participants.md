@@ -88,10 +88,13 @@ A transfer post has its sender as `author` and its recipient as `counterparty`. 
   - pagination is keyset on `(created_at, id)`, compared as text, as before.
 - **Interacting:**
   - reacting or commenting takes `lockPair` with every other participant, in sorted user id order, and then reads the post again;
-  - a block with any other participant is `INTERACTION_UNAVAILABLE`;
-  - at most 20 locks are taken.
-- **Hidden content:** a block by the viewer or by any participant hides the blocked user's comments and reactions on that post from everyone.
-- **Blocks between members:** members who have blocked each other may share a split. Rejecting them would tell the initiator, a third party, about a block between two other people. On the post, the two of them can't interact with each other's content, and each one's block hides the other's content.
+  - on a transfer post, a block with the other participant is `INTERACTION_UNAVAILABLE`;
+  - on a split post, only a block (in either direction) between the actor and the post's author is `INTERACTION_UNAVAILABLE`; blocks between two members refuse nothing;
+  - every pair is still locked, because a non-participant's read of a public post depends on their blocks with all participants, and at most 20 locks are taken.
+- **Hidden content:**
+  - on a transfer post, or when the blocker is a split's author, a block by the viewer or by any participant hides the blocked user's comments and reactions on that post from everyone;
+  - on a split post, a block by a member hides the blocked user's content only from that member, and each viewer's own blocks hide content from them, so the initiator and other members see both sides.
+- **Blocks between members:** members who have blocked each other may share a split. Rejecting them would tell the initiator, a third party, about a block between two other people. On the post, both can still comment and react, and each one's content is hidden only from the other (a one-way block hides the blocked member's content only from the blocker). Everyone else, including the initiator, sees both, so the initiator learns nothing about the block.
 
 **Notifications by kind.**
 - Transfer posts are unchanged: comments go to the other participant by push and in-app, and reactions in-app.

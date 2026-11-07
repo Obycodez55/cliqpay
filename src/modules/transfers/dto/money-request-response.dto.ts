@@ -3,7 +3,9 @@ import { MoneyDto } from '../../../common/dto/money-response.dto';
 import { IdentitySummaryDto } from '../../../common/dto/identity-summary.dto';
 import { Money } from '../../../shared/primitives/money';
 import {
+  MONEY_REQUEST_KINDS,
   MoneyRequest,
+  MoneyRequestKind,
   MoneyRequestStatus,
 } from '../entities/money-request.entity';
 
@@ -28,6 +30,13 @@ export class MoneyRequestResponseDto {
     enum: ['pending', 'paid', 'declined', 'cancelled', 'expired'],
   })
   status: MoneyRequestApiStatus;
+
+  @ApiProperty({
+    enum: MONEY_REQUEST_KINDS,
+    description:
+      'Which body paying this request takes: a direct request needs `visibility` in the pay body, a group_share request (one share of a bill split) must omit it and records no post.',
+  })
+  kind: MoneyRequestKind;
 
   @ApiProperty({
     type: String,
@@ -71,6 +80,7 @@ export function toMoneyRequestResponse(
       moneyRequest.expiresAt,
       now,
     ),
+    kind: moneyRequest.kind,
     transactionId: moneyRequest.transactionId,
     expiresAt: moneyRequest.expiresAt.toISOString(),
     createdAt: moneyRequest.createdAt.toISOString(),

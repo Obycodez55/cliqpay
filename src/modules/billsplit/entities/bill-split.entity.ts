@@ -18,10 +18,9 @@ const bigintTransformer = {
   from: (v: string) => BigInt(v),
 };
 
-// See docs/architecture.md §5 and ADR-0026. `initiatorUserId` is a
-// cross-module reference, so a plain column with no relation (ADR-0002). The
-// index also carries `created_at DESC, id DESC` in the migration; an entity
-// can't express descending columns.
+// `initiatorUserId` is a cross-module reference, so a plain column with no
+// relation. The index also carries `created_at DESC, id DESC` in the
+// migration; an entity can't express descending columns.
 @Entity('bill_splits')
 @Check('CHK_bill_splits_mode', inList('mode', BILL_SPLIT_MODES))
 @Unique('UQ_bill_splits_initiator_user_id_reference', [

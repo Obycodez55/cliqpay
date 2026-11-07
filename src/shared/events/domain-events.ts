@@ -131,6 +131,8 @@ export interface MoneyRequestCreatedEventPayload {
   // The money request's own id — the in-app channel's dedupe_key, same
   // reasoning as TransferSentEventPayload's reference.
   moneyRequestId: string;
+  // 'group_share' for one share of a bill split, otherwise 'direct'.
+  kind: 'direct' | 'group_share';
   // Whether the payer followed the requester when the request was created.
   fromFollowed: boolean;
 }

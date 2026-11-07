@@ -236,4 +236,57 @@ describe('GeneralisePostsToParticipants migration', () => {
     expect(await snapshotGeneralised()).toEqual(legacy);
     await expectGeneralisedFlags(seeds);
   });
+
+  describe('reverting bill splitting', () => {
+    async function undoNamed(name: string): Promise<void> {
+      for (;;) {
+        const [last]: { name: string }[] = await dataSource.query(
+          `SELECT name FROM migrations ORDER BY id DESC LIMIT 1`,
+        );
+        if (last.name.startsWith(name)) {
+          return;
+        }
+        await dataSource.undoLastMigration();
+      }
+    }
+
+    afterEach(async () => {
+      await dataSource.runMigrations();
+    });
+
+    it('refuses to drop the published_at migration while bill split posts exist', async () => {
+      await dataSource.runMigrations();
+      await dataSource.query(
+        `INSERT INTO posts (id, kind, author_user_id, visibility, requested_visibility, is_public)
+         VALUES ($1, 'bill_split', $2, 'private', 'private', false)`,
+        [randomUUID(), randomUUID()],
+      );
+
+      await expect(dataSource.undoLastMigration()).rejects.toThrow(
+        /AddPostPublishedAt: 1 bill_split post/,
+      );
+
+      await dataSource.query(`DELETE FROM posts WHERE kind = 'bill_split'`);
+      await expect(dataSource.undoLastMigration()).resolves.not.toThrow();
+    });
+
+    it('refuses to drop the bill splits migration while group share requests exist', async () => {
+      await dataSource.runMigrations();
+      await undoNamed('AddBillSplits');
+      await dataSource.query(
+        `INSERT INTO money_requests (requester_user_id, payer_user_id, amount, currency, status, kind, expires_at)
+         VALUES ($1, $2, 10000, 'NGN', 'pending', 'group_share', now() + interval '1 day')`,
+        [randomUUID(), randomUUID()],
+      );
+
+      await expect(dataSource.undoLastMigration()).rejects.toThrow(
+        /AddBillSplits: 1 group_share money request/,
+      );
+
+      await dataSource.query(
+        `DELETE FROM money_requests WHERE kind = 'group_share'`,
+      );
+      await expect(dataSource.undoLastMigration()).resolves.not.toThrow();
+    });
+  });
 });

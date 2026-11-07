@@ -144,14 +144,23 @@ export class BillSplitService {
     viewerId: string,
     splitId: string,
   ): Promise<BillSplitResponseDto> {
-    const view = await this.loadView(splitId);
-    const isMember =
-      view.initiator.userId === viewerId ||
-      view.participants.some((p) => p.userId === viewerId);
-    if (!isMember) {
+    if (!(await this.isMember(viewerId, splitId))) {
       throw new BillSplitNotFoundException();
     }
-    return view;
+    return this.loadView(splitId);
+  }
+
+  private async isMember(userId: string, splitId: string): Promise<boolean> {
+    if (
+      await this.dataSource
+        .getRepository(BillSplit)
+        .existsBy({ id: splitId, initiatorUserId: userId })
+    ) {
+      return true;
+    }
+    return this.dataSource
+      .getRepository(BillSplitParticipant)
+      .existsBy({ billSplitId: splitId, userId });
   }
 
   // Initiator only; anyone else, and a missing id, get the same 404. The
@@ -179,6 +188,7 @@ export class BillSplitService {
           .findBy({ billSplitId: splitId });
         const requests = await this.transfersService.findMoneyRequestsByIds(
           participants.map((p) => p.moneyRequestId),
+          manager,
         );
         if (
           deriveSplitStatus(
@@ -335,6 +345,7 @@ export class BillSplitService {
           .findBy({ billSplitId: splitId });
         const requests = await this.transfersService.findMoneyRequestsByIds(
           participants.map((p) => p.moneyRequestId),
+          manager,
         );
         const outcome =
           requests.length === participants.length
@@ -361,6 +372,15 @@ export class BillSplitService {
       await this.publishCompleted(recorded.split);
     }
     return recorded?.outcome ?? null;
+  }
+
+  async recordOutcomeForRequest(moneyRequestId: string): Promise<void> {
+    const participant = await this.dataSource
+      .getRepository(BillSplitParticipant)
+      .findOneBy({ moneyRequestId });
+    if (participant) {
+      await this.recordOutcome(participant.billSplitId);
+    }
   }
 
   private async publishCompleted(split: BillSplit): Promise<void> {
@@ -416,7 +436,7 @@ export class BillSplitService {
       requesterId: initiatorId,
       shares: computed.shares.map((share) => ({
         payerUserId: share.userId,
-        amount: Number(share.amount.amount),
+        amount: share.amount,
       })),
       note: dto.description,
       expiresAt: params.expiresAt,

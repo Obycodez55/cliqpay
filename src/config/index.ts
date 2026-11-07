@@ -98,7 +98,7 @@ const envSchema = z
       .positive()
       .default(3),
 
-    // Bill splits (ADR-0026) — participants exclude the initiator.
+    // Participants exclude the initiator.
     BILL_SPLIT_MAX_PARTICIPANTS: z.coerce.number().int().positive().default(20),
 
     WITHDRAWAL_MIN_AMOUNT: z.coerce

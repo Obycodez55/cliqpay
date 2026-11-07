@@ -23,16 +23,14 @@ export class AddPostPublishedAt1794071676605 implements MigrationInterface {
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(
-      `DELETE FROM "post_reactions" WHERE "post_id" IN (SELECT "id" FROM "posts" WHERE "kind" = 'bill_split')`,
-    );
-    await queryRunner.query(
-      `DELETE FROM "post_comments" WHERE "post_id" IN (SELECT "id" FROM "posts" WHERE "kind" = 'bill_split')`,
-    );
-    await queryRunner.query(
-      `DELETE FROM "post_participants" WHERE "post_id" IN (SELECT "id" FROM "posts" WHERE "kind" = 'bill_split')`,
-    );
-    await queryRunner.query(`DELETE FROM "posts" WHERE "kind" = 'bill_split'`);
+    const [{ count }] = (await queryRunner.query(
+      `SELECT count(*) FROM "posts" WHERE "kind" = 'bill_split'`,
+    )) as { count: string }[];
+    if (Number(count) > 0) {
+      throw new Error(
+        `Cannot revert AddPostPublishedAt: ${count} bill_split post(s) exist, and removing them would leave their bill splits without a post`,
+      );
+    }
     await queryRunner.query(
       `ALTER TABLE "post_participants" DROP CONSTRAINT "CHK_post_participants_role"`,
     );

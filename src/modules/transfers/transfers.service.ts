@@ -34,7 +34,10 @@ import {
   TransferSentEventPayload,
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
-import { MoneyRequest } from './entities/money-request.entity';
+import {
+  MoneyRequest,
+  MoneyRequestKind,
+} from './entities/money-request.entity';
 import {
   MoneyRequestApiStatus,
   computeMoneyRequestApiStatus,
@@ -87,7 +90,7 @@ export interface TransferPostDetails {
 
 export interface SplitRequestShare {
   payerUserId: string;
-  amount: number; // minor units
+  amount: Money;
 }
 
 export interface CreateSplitRequestsParams {
@@ -104,16 +107,13 @@ export interface SplitRequestRecord {
   amount: bigint;
   note: string | null;
   currency: string;
+  kind: MoneyRequestKind;
   fromFollowed: boolean;
 }
 
 export interface MoneyRequestSummary {
   id: string;
-  payerUserId: string;
-  amount: bigint;
   status: MoneyRequestApiStatus;
-  transactionId: string | null;
-  expiresAt: Date;
 }
 
 export interface CancelledRequestRecord {
@@ -479,7 +479,7 @@ export class TransfersService {
     params: CreateSplitRequestsParams,
   ): Promise<SplitRequestRecord[]> {
     const { requesterId, note, expiresAt, now } = params;
-    const { minAmount } = this.config.transfers;
+    const minAmount = Money.of(this.config.transfers.minAmount, NGN);
     const shares = [...params.shares].sort((a, b) =>
       a.payerUserId < b.payerUserId ? -1 : 1,
     );
@@ -488,23 +488,24 @@ export class TransfersService {
       if (share.payerUserId === requesterId) {
         throw new SelfMoneyRequestException();
       }
-      if (share.amount < minAmount) {
+      if (share.amount.lessThan(minAmount)) {
         throw new MoneyRequestAmountTooSmallException(
-          Money.of(minAmount, NGN).toDecimalString(),
+          minAmount.toDecimalString(),
         );
       }
     }
 
-    const total = shares.reduce((sum, share) => sum + BigInt(share.amount), 0n);
-    await this.kycService.checkCanReceive(
-      manager,
-      requesterId,
-      Money.of(total, NGN),
-      (m) => this.ledgerService.getBalanceAndPendingFunding(m, requesterId),
+    const total = shares.reduce(
+      (sum, share) => sum.add(share.amount),
+      Money.zero(NGN),
+    );
+    await this.kycService.checkCanReceive(manager, requesterId, total, (m) =>
+      this.ledgerService.getBalanceAndPendingFunding(m, requesterId),
     );
 
     const payers = await this.usersService.findByIds(
       shares.map((share) => share.payerUserId),
+      manager,
     );
     const payerById = new Map(payers.map((payer) => [payer.id, payer]));
     if (payerById.size !== shares.length) {
@@ -542,7 +543,7 @@ export class TransfersService {
         repo.create({
           requesterUserId: requesterId,
           payerUserId: share.payerUserId,
-          amount: BigInt(share.amount),
+          amount: share.amount.amount,
           currency: NGN,
           note,
           kind: 'group_share',
@@ -553,28 +554,32 @@ export class TransfersService {
       ),
     );
 
-    const followed = await Promise.all(
-      created.map((request) =>
-        this.socialService.isFollowing(request.payerUserId, requesterId),
-      ),
+    const followers = await this.socialService.followedBy(
+      requesterId,
+      created.map((request) => request.payerUserId),
+      manager,
     );
-    return created.map((request, i) => ({
+    return created.map((request) => ({
       id: request.id,
       payerUserId: request.payerUserId,
       amount: request.amount,
       note: request.note,
       currency: request.currency,
-      fromFollowed: followed[i],
+      kind: request.kind,
+      fromFollowed: followers.has(request.payerUserId),
     }));
   }
 
   // Live status of the given requests in one query. Ids that don't exist
   // are simply absent from the result.
-  async findMoneyRequestsByIds(ids: string[]): Promise<MoneyRequestSummary[]> {
+  async findMoneyRequestsByIds(
+    ids: string[],
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<MoneyRequestSummary[]> {
     if (ids.length === 0) {
       return [];
     }
-    const rows = await this.dataSource
+    const rows = await manager
       .getRepository(MoneyRequest)
       .createQueryBuilder('moneyRequest')
       .where('moneyRequest.id = ANY(:ids::uuid[])', { ids })
@@ -582,11 +587,7 @@ export class TransfersService {
     const now = new Date();
     return rows.map((row) => ({
       id: row.id,
-      payerUserId: row.payerUserId,
-      amount: row.amount,
       status: computeMoneyRequestApiStatus(row.status, row.expiresAt, now),
-      transactionId: row.transactionId,
-      expiresAt: row.expiresAt,
     }));
   }
 
@@ -686,6 +687,7 @@ export class TransfersService {
       amount: bigint;
       currency: string;
       note: string | null;
+      kind: MoneyRequestKind;
     },
     requester: TransferSender,
     payer: TransferSender,
@@ -706,6 +708,7 @@ export class TransfersService {
           currency: moneyRequest.currency,
           note: moneyRequest.note,
           moneyRequestId: moneyRequest.id,
+          kind: moneyRequest.kind,
           fromFollowed,
         },
         occurredAt: new Date(),
