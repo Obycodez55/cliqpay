@@ -41,3 +41,10 @@ export class BillSplitReferenceReusedException extends DomainException {
     );
   }
 }
+
+export class BillSplitNotOpenException extends DomainException {
+  readonly code = 'BILL_SPLIT_NOT_OPEN';
+  constructor() {
+    super('Only an open bill split can be cancelled', HttpStatus.CONFLICT);
+  }
+}

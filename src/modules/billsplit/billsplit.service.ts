@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager } from 'typeorm';
+import { DataSource, EntityManager, In, SelectQueryBuilder } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { Money } from '../../shared/primitives/money';
 import { toIdentitySummary } from '../../common/dto/identity-summary.dto';
@@ -19,17 +19,29 @@ import { UsersService } from '../users/users.service';
 import { CreateBillSplitDto } from './dto/create-bill-split.dto';
 import {
   BillSplitApiStatus,
+  BillSplitListItemDto,
   BillSplitResponseDto,
 } from './dto/bill-split-response.dto';
+import { ListBillSplitsQueryDto } from './dto/list-bill-splits-query.dto';
+import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
+import {
+  decodeCreatedAtIdCursor,
+  encodeCreatedAtIdCursor,
+} from '../../common/pagination/cursor';
 import { BillSplit } from './entities/bill-split.entity';
 import { BillSplitParticipant } from './entities/bill-split-participant.entity';
 import {
   BillSplitNotFoundException,
+  BillSplitNotOpenException,
   BillSplitParticipantsInvalidException,
   BillSplitReferenceReusedException,
 } from './internal/errors';
 import { ComputedShares, computeShares } from './internal/shares';
-import { SplitOutcome, deriveOutcome } from './internal/split-status';
+import {
+  SplitOutcome,
+  deriveOutcome,
+  deriveSplitStatus,
+} from './internal/split-status';
 
 const NGN = 'NGN';
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -140,6 +152,162 @@ export class BillSplitService {
     return view;
   }
 
+  // Initiator only; anyone else, and a missing id, get the same 404. The
+  // split row is locked first and the request rows second (in id order), so
+  // a concurrent payment either commits before the bulk cancel locks its
+  // request, and that share stays paid, or waits and then finds it cancelled.
+  async cancelSplit(
+    initiatorId: string,
+    splitId: string,
+  ): Promise<BillSplitResponseDto> {
+    const now = new Date();
+    const cancelled = await runInTransaction(
+      this.dataSource,
+      async (manager) => {
+        const splitRepo = manager.getRepository(BillSplit);
+        const split = await splitRepo.findOne({
+          where: { id: splitId, initiatorUserId: initiatorId },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!split) {
+          throw new BillSplitNotFoundException();
+        }
+        const participants = await manager
+          .getRepository(BillSplitParticipant)
+          .findBy({ billSplitId: splitId });
+        const requests = await this.transfersService.findMoneyRequestsByIds(
+          participants.map((p) => p.moneyRequestId),
+        );
+        if (
+          deriveSplitStatus(
+            split,
+            requests.map((r) => r.status),
+            now,
+          ) !== 'open'
+        ) {
+          throw new BillSplitNotOpenException();
+        }
+        const cancelledRequests =
+          await this.transfersService.cancelPendingRequests(
+            manager,
+            initiatorId,
+            participants.map((p) => p.moneyRequestId),
+            now,
+          );
+        if (cancelledRequests.length === 0) {
+          throw new BillSplitNotOpenException();
+        }
+        await splitRepo.update({ id: splitId }, { cancelledAt: now });
+        return cancelledRequests;
+      },
+    );
+
+    await this.transfersService.publishRequestsCancelled(cancelled);
+    return this.loadView(splitId);
+  }
+
+  async listSplits(
+    userId: string,
+    query: ListBillSplitsQueryDto,
+  ): Promise<PaginatedResult<BillSplitListItemDto>> {
+    const cursor = query.cursor ? decodeCreatedAtIdCursor(query.cursor) : null;
+
+    const qb = this.dataSource
+      .getRepository(BillSplit)
+      .createQueryBuilder('split')
+      .addSelect('"split"."created_at"::text', 'raw_created_at')
+      .orderBy('split.createdAt', 'DESC')
+      .addOrderBy('split.id', 'DESC')
+      .limit(query.limit + 1);
+
+    if (query.role === 'initiator') {
+      qb.where('split.initiatorUserId = :userId', { userId });
+    } else {
+      qb.innerJoin(
+        BillSplitParticipant,
+        'mine',
+        'mine.billSplitId = split.id AND mine.userId = :userId',
+        { userId },
+      );
+    }
+
+    this.applyStatusFilter(qb, query.status, new Date());
+
+    if (cursor) {
+      qb.andWhere(
+        '(split.createdAt, split.id) < (:cursorCreatedAt::timestamptz, :cursorId::uuid)',
+        { cursorCreatedAt: cursor.createdAt, cursorId: cursor.id },
+      );
+    }
+
+    const { entities, raw } = await qb.getRawAndEntities<{
+      raw_created_at: string;
+    }>();
+    const hasMore = entities.length > query.limit;
+    const page = hasMore ? entities.slice(0, query.limit) : entities;
+    const views = await this.buildViews(page);
+
+    const items = views.map((view) => {
+      const mine =
+        query.role === 'participant'
+          ? view.participants.find((p) => p.userId === userId)
+          : undefined;
+      return {
+        ...view,
+        moneyRequestId: mine?.moneyRequestId ?? null,
+        share: mine?.share ?? null,
+      };
+    });
+    return {
+      items,
+      nextCursor: hasMore
+        ? encodeCreatedAtIdCursor({
+            createdAt: raw[query.limit - 1].raw_created_at,
+            id: page[page.length - 1].id,
+          })
+        : null,
+    };
+  }
+
+  // The stored-column mirror of deriveSplitStatus: cancelled, then completed,
+  // then closed, then (nothing recorded) expired or open by expires_at.
+  private applyStatusFilter(
+    qb: SelectQueryBuilder<BillSplit>,
+    status: BillSplitApiStatus | undefined,
+    now: Date,
+  ): void {
+    switch (status) {
+      case 'cancelled':
+        qb.andWhere('split.cancelledAt IS NOT NULL');
+        return;
+      case 'completed':
+        qb.andWhere(
+          'split.cancelledAt IS NULL AND split.completedAt IS NOT NULL',
+        );
+        return;
+      case 'closed':
+        qb.andWhere(
+          'split.cancelledAt IS NULL AND split.completedAt IS NULL AND split.closedAt IS NOT NULL',
+        );
+        return;
+      case 'expired':
+      case 'open': {
+        qb.andWhere(
+          'split.cancelledAt IS NULL AND split.completedAt IS NULL AND split.closedAt IS NULL',
+        );
+        qb.andWhere(
+          status === 'expired'
+            ? 'split.expiresAt < :now'
+            : 'split.expiresAt >= :now',
+          { now },
+        );
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
   // The row lock serialises the event handler and read-repair, and the
   // timestamp is only written while still null, so exactly one caller records
   // the outcome and publishes the completion.
@@ -151,7 +319,12 @@ export class BillSplitService {
           where: { id: splitId },
           lock: { mode: 'pessimistic_write' },
         });
-        if (!split || split.completedAt || split.closedAt) {
+        if (
+          !split ||
+          split.cancelledAt ||
+          split.completedAt ||
+          split.closedAt
+        ) {
           return null;
         }
         const participants = await manager
@@ -295,69 +468,86 @@ export class BillSplitService {
     if (!split) {
       throw new BillSplitNotFoundException();
     }
-    const participants = await this.dataSource
+    const [view] = await this.buildViews([split]);
+    return view;
+  }
+
+  // One batched read of participants, requests and users for any number of
+  // splits, so a list page costs the same queries as a single view.
+  private async buildViews(
+    splits: BillSplit[],
+  ): Promise<BillSplitResponseDto[]> {
+    if (splits.length === 0) {
+      return [];
+    }
+    const allParticipants = await this.dataSource
       .getRepository(BillSplitParticipant)
-      .findBy({ billSplitId: splitId });
-    participants.sort((a, b) => (a.userId < b.userId ? -1 : 1));
+      .findBy({ billSplitId: In(splits.map((s) => s.id)) });
+    allParticipants.sort((a, b) => (a.userId < b.userId ? -1 : 1));
 
     const [requests, users] = await Promise.all([
       this.transfersService.findMoneyRequestsByIds(
-        participants.map((p) => p.moneyRequestId),
+        allParticipants.map((p) => p.moneyRequestId),
       ),
       this.usersService.findByIds([
-        split.initiatorUserId,
-        ...participants.map((p) => p.userId),
+        ...new Set([
+          ...splits.map((s) => s.initiatorUserId),
+          ...allParticipants.map((p) => p.userId),
+        ]),
       ]),
     ]);
     const requestById = new Map(requests.map((r) => [r.id, r]));
     const userById = new Map(users.map((u) => [u.id, u]));
+    const now = new Date();
 
-    const initiator = userById.get(split.initiatorUserId);
-    if (!initiator) {
-      throw new Error(
-        `BillSplitService.loadView: initiator ${split.initiatorUserId} not found for split ${split.id}`,
-      );
-    }
-
-    const rows = participants.map((participant) => {
-      const user = userById.get(participant.userId);
-      const request = requestById.get(participant.moneyRequestId);
-      if (!user || !request) {
+    const views: BillSplitResponseDto[] = [];
+    for (const split of splits) {
+      const initiator = userById.get(split.initiatorUserId);
+      if (!initiator) {
         throw new Error(
-          `BillSplitService.loadView: participant ${participant.userId} or request ${participant.moneyRequestId} not found for split ${split.id}`,
+          `BillSplitService.buildViews: initiator ${split.initiatorUserId} not found for split ${split.id}`,
         );
       }
-      return {
-        ...toIdentitySummary(user),
-        share: Money.of(participant.amount, split.currency).toJSON(),
-        moneyRequestId: participant.moneyRequestId,
-        status: request.status,
-      };
-    });
 
-    const outcome = deriveOutcome(rows.map((row) => row.status));
-    const anyUnpaid = rows.some((row) => row.status !== 'paid');
-    let status: BillSplitApiStatus = outcome ?? 'open';
-    if (!outcome && new Date() > split.expiresAt && anyUnpaid) {
-      status = 'expired';
-    }
-    const recorded =
-      outcome === 'completed' ? split.completedAt : split.closedAt;
-    if (outcome && !recorded) {
-      await this.repairOutcome(split.id);
-    }
+      const rows = allParticipants
+        .filter((p) => p.billSplitId === split.id)
+        .map((participant) => {
+          const user = userById.get(participant.userId);
+          const request = requestById.get(participant.moneyRequestId);
+          if (!user || !request) {
+            throw new Error(
+              `BillSplitService.buildViews: participant ${participant.userId} or request ${participant.moneyRequestId} not found for split ${split.id}`,
+            );
+          }
+          return {
+            ...toIdentitySummary(user),
+            share: Money.of(participant.amount, split.currency).toJSON(),
+            moneyRequestId: participant.moneyRequestId,
+            status: request.status,
+          };
+        });
 
-    return {
-      id: split.id,
-      description: split.description,
-      mode: split.mode,
-      total: Money.of(split.totalAmount, split.currency).toJSON(),
-      initiatorShare: Money.of(split.initiatorShare, split.currency).toJSON(),
-      initiator: toIdentitySummary(initiator),
-      status,
-      participants: rows,
-      expiresAt: split.expiresAt.toISOString(),
-      createdAt: split.createdAt.toISOString(),
-    };
+      const statuses = rows.map((row) => row.status);
+      const outcome = deriveOutcome(statuses);
+      const recorded =
+        outcome === 'completed' ? split.completedAt : split.closedAt;
+      if (outcome && !recorded && !split.cancelledAt) {
+        await this.repairOutcome(split.id);
+      }
+
+      views.push({
+        id: split.id,
+        description: split.description,
+        mode: split.mode,
+        total: Money.of(split.totalAmount, split.currency).toJSON(),
+        initiatorShare: Money.of(split.initiatorShare, split.currency).toJSON(),
+        initiator: toIdentitySummary(initiator),
+        status: deriveSplitStatus(split, statuses, now),
+        participants: rows,
+        expiresAt: split.expiresAt.toISOString(),
+        createdAt: split.createdAt.toISOString(),
+      });
+    }
+    return views;
   }
 }

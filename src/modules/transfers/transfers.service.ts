@@ -6,7 +6,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager, EntityNotFoundError } from 'typeorm';
+import { DataSource, EntityManager, EntityNotFoundError, In } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import {
   IdempotentReplay,
@@ -24,7 +24,9 @@ import { AuthService } from '../auth/auth.service';
 import { Money } from '../../shared/primitives/money';
 import { runInTransaction } from '../../database/transaction.util';
 import {
+  MONEY_REQUEST_CANCELLED_EVENT,
   MONEY_REQUEST_CREATED_EVENT,
+  MoneyRequestCancelledEventPayload,
   MoneyRequestCreatedEventPayload,
   TRANSFER_RECEIVED_EVENT,
   TRANSFER_SENT_EVENT,
@@ -37,7 +39,10 @@ import {
   MoneyRequestApiStatus,
   computeMoneyRequestApiStatus,
 } from './dto/money-request-response.dto';
-import { countEffectivelyPending } from './internal/money-request-queries';
+import {
+  countEffectivelyPending,
+  isEffectivelyPending,
+} from './internal/money-request-queries';
 import { SendTransferDto } from './dto/send-transfer.dto';
 import { SendTransferResponseDto } from './dto/send-transfer-response.dto';
 import {
@@ -109,6 +114,12 @@ export interface MoneyRequestSummary {
   status: MoneyRequestApiStatus;
   transactionId: string | null;
   expiresAt: Date;
+}
+
+export interface CancelledRequestRecord {
+  id: string;
+  requesterUserId: string;
+  payerUserId: string;
 }
 
 export interface ExecuteTransferParams {
@@ -577,6 +588,64 @@ export class TransfersService {
       transactionId: row.transactionId,
       expiresAt: row.expiresAt,
     }));
+  }
+
+  // Cancels whichever of the given requests are still effectively pending and
+  // returns those; paid, declined, cancelled and expired ones are left as
+  // they are. Rows are locked in ascending id order, so two bulk calls over
+  // overlapping sets can't deadlock, and each is re-checked after its lock
+  // because a payment may have committed since the caller last looked.
+  async cancelPendingRequests(
+    manager: EntityManager,
+    requesterId: string,
+    ids: string[],
+    now: Date,
+  ): Promise<CancelledRequestRecord[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    const repo = manager.getRepository(MoneyRequest);
+    const locked = await repo
+      .createQueryBuilder('moneyRequest')
+      .where('moneyRequest.id = ANY(:ids::uuid[])', { ids })
+      .andWhere('moneyRequest.requesterUserId = :requesterId', { requesterId })
+      .orderBy('moneyRequest.id', 'ASC')
+      .setLock('pessimistic_write')
+      .getMany();
+    const pending = locked.filter((row) => isEffectivelyPending(row, now));
+    if (pending.length > 0) {
+      await repo.update(
+        { id: In(pending.map((row) => row.id)) },
+        { status: 'cancelled' },
+      );
+    }
+    return pending.map((row) => ({
+      id: row.id,
+      requesterUserId: row.requesterUserId,
+      payerUserId: row.payerUserId,
+    }));
+  }
+
+  async publishRequestsCancelled(
+    requests: CancelledRequestRecord[],
+  ): Promise<void> {
+    for (const request of requests) {
+      try {
+        await this.eventBus.publish<string, MoneyRequestCancelledEventPayload>({
+          name: MONEY_REQUEST_CANCELLED_EVENT,
+          payload: {
+            moneyRequestId: request.id,
+            requesterUserId: request.requesterUserId,
+            payerUserId: request.payerUserId,
+          },
+          occurredAt: new Date(),
+        });
+      } catch (error) {
+        this.logger.error(
+          `publishRequestsCancelled: money request "${request.id}" cancelled successfully, but publishing the event failed (${(error as Error).message}) — this will not be retried`,
+        );
+      }
+    }
   }
 
   async publishSplitRequestsCreated(

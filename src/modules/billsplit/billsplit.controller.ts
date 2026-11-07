@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Param,
+  Query,
   ParseUUIDPipe,
   Post,
   Req,
@@ -15,7 +16,12 @@ import {
 } from '../../common/guards/jwt-auth.guard';
 import { BillSplitService } from './billsplit.service';
 import { CreateBillSplitDto } from './dto/create-bill-split.dto';
-import { BillSplitResponseDto } from './dto/bill-split-response.dto';
+import {
+  BillSplitListItemDto,
+  BillSplitResponseDto,
+} from './dto/bill-split-response.dto';
+import { ListBillSplitsQueryDto } from './dto/list-bill-splits-query.dto';
+import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
 
 @ApiTags('Bill splits')
 @ApiBearerAuth()
@@ -38,6 +44,17 @@ export class BillSplitController {
     return this.billSplitService.createSplit(req.user.userId, dto);
   }
 
+  @Get()
+  @ApiOperation({
+    summary: 'List bill splits you started or were asked to pay into',
+  })
+  async list(
+    @Req() req: AuthenticatedRequest,
+    @Query() query: ListBillSplitsQueryDto,
+  ): Promise<PaginatedResult<BillSplitListItemDto>> {
+    return this.billSplitService.listSplits(req.user.userId, query);
+  }
+
   @Get(':id')
   @ApiOperation({
     summary: 'View a bill split you started or were asked to pay into',
@@ -47,5 +64,18 @@ export class BillSplitController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<BillSplitResponseDto> {
     return this.billSplitService.getSplit(req.user.userId, id);
+  }
+
+  @Post(':id/cancel')
+  @ApiOperation({
+    summary: 'Cancel an open bill split, cancelling every share still pending',
+    description:
+      'Initiator only. Shares already paid or declined are untouched; participants are not notified.',
+  })
+  async cancel(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<BillSplitResponseDto> {
+    return this.billSplitService.cancelSplit(req.user.userId, id);
   }
 }

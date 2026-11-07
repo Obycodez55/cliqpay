@@ -67,6 +67,9 @@ export class BillSplit {
   @Column({ type: 'timestamptz', nullable: true })
   closedAt: Date | null;
 
+  @Column({ type: 'timestamptz', nullable: true })
+  cancelledAt: Date | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 
