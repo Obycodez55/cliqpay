@@ -413,6 +413,7 @@ money_requests
   amount            bigint              -- minor units
   currency          varchar
   note              varchar nullable
+  kind              enum (direct | group_share) default direct   -- [v16] group_share: one share of a bill split; paying it records no post and forbids visibility (ADR-0027)
   status            enum (pending | paid | declined | cancelled)
   expires_at        timestamptz         -- 'expired' is derived from this, never stored
   transaction_id    uuid FK nullable    -- set when paid; the transfer this produced
@@ -473,6 +474,7 @@ posts                                   -- [v16] replaces transaction_posts (ADR
   note                  varchar nullable    -- snapshot of transactions.metadata.note; safe because notes are immutable
   visibility            enum (public | private)   -- the author's choice; required on the transfer request, changeable later by the author
   requested_visibility  enum (public | private)   -- the visibility sent on the creating request; never updated, so an idempotent replay is compared against it, not the current visibility
+  origin                varchar nullable    -- CHECK money_request: the post came from paying a direct money request; null for a plain send
   is_public             boolean             -- visibility = public AND no participant has hidden; written only by refreshPublicity
   created_at            timestamptz
   updated_at            timestamptz

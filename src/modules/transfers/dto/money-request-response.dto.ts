@@ -34,7 +34,7 @@ export class MoneyRequestResponseDto {
     format: 'uuid',
     nullable: true,
     description:
-      "The payment's transaction id once paid, keying its post under /social/posts/{transactionId}; null otherwise",
+      "The payment's transaction id once paid, keying its post under /social/posts/{transactionId}; null otherwise. Paying a group-share request (one share of a bill split) records no post, so its transaction id has none.",
   })
   transactionId: string | null;
 

@@ -17,6 +17,11 @@ export const MONEY_REQUEST_STATUSES = [
 ] as const;
 export type MoneyRequestStatus = (typeof MONEY_REQUEST_STATUSES)[number];
 
+// How paying the request behaves: a group_share (one participant's share of
+// a group payment) records no post and takes no visibility.
+export const MONEY_REQUEST_KINDS = ['direct', 'group_share'] as const;
+export type MoneyRequestKind = (typeof MONEY_REQUEST_KINDS)[number];
+
 const bigintTransformer = {
   to: (v: bigint) => v,
   from: (v: string) => BigInt(v),
@@ -28,6 +33,7 @@ const bigintTransformer = {
 // ADR-0002.
 @Entity('money_requests')
 @Check('CHK_money_requests_status', inList('status', MONEY_REQUEST_STATUSES))
+@Check('CHK_money_requests_kind', inList('kind', MONEY_REQUEST_KINDS))
 @Index('IDX_money_requests_payer_user_id_created_at', [
   'payerUserId',
   'createdAt',
@@ -64,6 +70,9 @@ export class MoneyRequest {
   // derived from `expiresAt` wherever this status is read.
   @Column('varchar')
   status: MoneyRequestStatus;
+
+  @Column('varchar', { default: 'direct' })
+  kind: MoneyRequestKind;
 
   @Column({ type: 'timestamptz' })
   expiresAt: Date;

@@ -97,4 +97,59 @@ describe('Money', () => {
       '{"amount":"9007199254740993","currency":"NGN"}',
     );
   });
+  describe('allocate', () => {
+    it('splits evenly when the total divides', () => {
+      const shares = Money.of(900n, 'NGN').allocate(3);
+      expect(shares.map((s) => s.amount)).toEqual([300n, 300n, 300n]);
+    });
+
+    it('gives the whole leftover to the first share', () => {
+      const shares = Money.of(1000n, 'NGN').allocate(3);
+      expect(shares.map((s) => s.amount)).toEqual([334n, 333n, 333n]);
+    });
+
+    it('gives a leftover larger than one kobo to the first share', () => {
+      const shares = Money.of(109n, 'NGN').allocate(10);
+      expect(shares.map((s) => s.amount)).toEqual([
+        19n,
+        ...Array<bigint>(9).fill(10n),
+      ]);
+    });
+
+    it('returns the whole amount as a single share', () => {
+      expect(
+        Money.of(777n, 'NGN')
+          .allocate(1)
+          .map((s) => s.amount),
+      ).toEqual([777n]);
+    });
+
+    it('gives the first share everything when the total is below the part count', () => {
+      const shares = Money.of(2n, 'NGN').allocate(5);
+      expect(shares.map((s) => s.amount)).toEqual([2n, 0n, 0n, 0n, 0n]);
+    });
+
+    it('allocates zero as all zero shares', () => {
+      const shares = Money.zero('NGN').allocate(3);
+      expect(shares.map((s) => s.amount)).toEqual([0n, 0n, 0n]);
+    });
+
+    it('keeps the currency and loses no kobo', () => {
+      const total = Money.of(9_007_199_254_740_993n, 'NGN');
+      const shares = total.allocate(7);
+      expect(shares).toHaveLength(7);
+      expect(shares.every((s) => s.currency === 'NGN')).toBe(true);
+      expect(shares.reduce((sum, s) => sum + s.amount, 0n)).toBe(total.amount);
+    });
+
+    it.each([0, -1, 1.5, Number.NaN])('rejects %s parts', (parts) => {
+      expect(() => Money.of(100n, 'NGN').allocate(parts)).toThrow(
+        /positive integer/,
+      );
+    });
+
+    it('rejects a negative amount', () => {
+      expect(() => Money.of(-100n, 'NGN').allocate(2)).toThrow(/negative/);
+    });
+  });
 });

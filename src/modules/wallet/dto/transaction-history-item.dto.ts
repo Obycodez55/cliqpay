@@ -12,7 +12,7 @@ export class TransactionHistoryItemDto {
     format: 'uuid',
     nullable: true,
     description:
-      'The transaction id for a P2P transfer — the same id on both sides, and the key for /social/posts/{transactionId}. Null for every other type.',
+      'The transaction id for a P2P transfer — the same id on both sides, and the key for /social/posts/{transactionId}, except that a transfer paying a group-share money request (one share of a bill split) has no post. Null for every other type.',
   })
   transactionId: string | null;
 

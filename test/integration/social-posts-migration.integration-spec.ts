@@ -43,6 +43,20 @@ describe('GeneralisePostsToParticipants migration', () => {
     await dropTestDatabase(db);
   });
 
+  // Later migrations sit on top of this one, so undo until the legacy table
+  // is back.
+  async function undoUntilLegacy(): Promise<void> {
+    for (;;) {
+      const [{ t }]: { t: string | null }[] = await dataSource.query(
+        `SELECT to_regclass('transaction_posts') AS t`,
+      );
+      if (t !== null) {
+        return;
+      }
+      await dataSource.undoLastMigration();
+    }
+  }
+
   async function seedLegacyPosts(): Promise<Seed[]> {
     const seeds: Seed[] = [
       ['public', false, 3, 2],
@@ -197,7 +211,7 @@ describe('GeneralisePostsToParticipants migration', () => {
   }
 
   it('moves posts, reactions and comments through up, down and up without losing or re-homing any', async () => {
-    await dataSource.undoLastMigration();
+    await undoUntilLegacy();
     const seeds = await seedLegacyPosts();
     const legacy = await snapshotLegacy();
     expect(legacy.posts).toHaveLength(5);
@@ -212,7 +226,7 @@ describe('GeneralisePostsToParticipants migration', () => {
       await dataSource.query(`SELECT to_regclass('transaction_posts') AS t`),
     ).toEqual([{ t: null }]);
 
-    await dataSource.undoLastMigration();
+    await undoUntilLegacy();
     expect(await snapshotLegacy()).toEqual(legacy);
     expect(await dataSource.query(`SELECT to_regclass('posts') AS t`)).toEqual([
       { t: null },

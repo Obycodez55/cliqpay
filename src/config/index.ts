@@ -98,6 +98,9 @@ const envSchema = z
       .positive()
       .default(3),
 
+    // Bill splits (ADR-0026) — participants exclude the initiator.
+    BILL_SPLIT_MAX_PARTICIPANTS: z.coerce.number().int().positive().default(20),
+
     WITHDRAWAL_MIN_AMOUNT: z.coerce
       .number()
       .int()
@@ -269,6 +272,9 @@ function buildConfig(env: Env) {
     moneyRequests: {
       expiryDays: env.MONEY_REQUEST_EXPIRY_DAYS,
       maxPendingPerPair: env.MONEY_REQUEST_MAX_PENDING_PER_PAIR,
+    },
+    billSplits: {
+      maxParticipants: env.BILL_SPLIT_MAX_PARTICIPANTS,
     },
     withdrawals: {
       minAmount: env.WITHDRAWAL_MIN_AMOUNT,

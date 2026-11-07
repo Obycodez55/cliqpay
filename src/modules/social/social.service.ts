@@ -26,6 +26,7 @@ import {
   POST_VISIBILITIES,
   Post,
   PostKind,
+  PostOrigin,
   PostVisibility,
 } from './entities/post.entity';
 import {
@@ -68,7 +69,7 @@ const MAX_FOLLOWING = 5_000;
 const COMMENT_PAGE_SIZE = 20;
 
 export { POST_VISIBILITIES };
-export type { PostVisibility };
+export type { PostOrigin, PostVisibility };
 
 export interface CreatePostParams {
   kind: PostKind;
@@ -77,6 +78,7 @@ export interface CreatePostParams {
   participants: { userId: string; role: ParticipantRole }[];
   note: string | null;
   visibility: PostVisibility;
+  origin?: PostOrigin;
 }
 
 export interface RecordTransferPostParams {
@@ -85,6 +87,7 @@ export interface RecordTransferPostParams {
   recipientUserId: string;
   note: string | null;
   visibility: PostVisibility;
+  origin?: PostOrigin;
 }
 
 export interface SocialPagination {
@@ -161,6 +164,7 @@ interface PostRow {
   kind: PostKind;
   author_user_id: string;
   note: string | null;
+  origin: PostOrigin | null;
   created_at: Date;
   raw_created_at: string;
 }
@@ -170,7 +174,7 @@ interface ReadablePostRow extends PostRow {
   is_public: boolean;
 }
 
-const POST_COLUMNS = `p.id, p.kind, p.author_user_id, p.note, p.created_at,
+const POST_COLUMNS = `p.id, p.kind, p.author_user_id, p.note, p.origin, p.created_at,
   p.created_at::text AS raw_created_at`;
 
 function noBlockWithViewer(viewerParam: string): string {
@@ -227,6 +231,7 @@ export class SocialService {
       note: params.note,
       visibility: params.visibility,
       requestedVisibility: params.visibility,
+      origin: params.origin ?? null,
       isPublic: false,
     });
     const members = [
@@ -260,6 +265,7 @@ export class SocialService {
       participants: [{ userId: params.recipientUserId, role: 'counterparty' }],
       note: params.note,
       visibility: params.visibility,
+      origin: params.origin,
     });
   }
 
@@ -940,6 +946,7 @@ export class SocialService {
           },
           participants,
           note: row.note,
+          origin: row.origin,
           createdAt: row.created_at,
           ...(reactionsByPost.get(row.id) ?? emptyReactions()),
           commentCount: commentCounts.get(row.id) ?? 0,

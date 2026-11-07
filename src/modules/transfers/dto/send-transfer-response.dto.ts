@@ -5,7 +5,7 @@ export class SendTransferResponseDto {
   @ApiProperty({
     format: 'uuid',
     description:
-      "Keys this transfer's post under /social/posts/{transactionId}",
+      "Keys this transfer's post under /social/posts/{transactionId}. A transaction from paying a group-share money request (one share of a bill split) has no post.",
   })
   transactionId: string;
 

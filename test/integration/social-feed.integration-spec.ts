@@ -136,6 +136,7 @@ describe('Social feed and post view', () => {
       expect(item).toEqual({
         transactionId,
         kind: 'transfer',
+        origin: null,
         author: {
           userId: sender,
           username: expect.stringMatching(/^sender_feed_/) as string,

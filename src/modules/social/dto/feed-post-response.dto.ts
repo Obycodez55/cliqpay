@@ -3,8 +3,10 @@ import { IdentitySummaryDto } from '../../../common/dto/identity-summary.dto';
 import { REACTIONS, Reaction } from '../entities/post-reaction.entity';
 import {
   POST_KINDS,
+  POST_ORIGINS,
   POST_VISIBILITIES,
   PostKind,
+  PostOrigin,
   PostVisibility,
 } from '../entities/post.entity';
 import {
@@ -58,6 +60,14 @@ export class FeedPostResponseDto {
 
   @ApiProperty({ type: String, nullable: true })
   note: string | null;
+
+  @ApiProperty({
+    enum: POST_ORIGINS,
+    nullable: true,
+    description:
+      'What led to the post: money_request when it came from paying a direct money request, null for a plain send',
+  })
+  origin: PostOrigin | null;
 
   @ApiProperty()
   createdAt: Date;

@@ -78,6 +78,27 @@ export class Money {
     );
   }
 
+  /**
+   * Splits into `parts` shares that sum exactly to this amount. The
+   * indivisible leftover goes whole to the first share, so callers put the
+   * party that absorbs rounding there.
+   */
+  allocate(parts: number): Money[] {
+    if (!Number.isInteger(parts) || parts < 1) {
+      throw new Error('Money.allocate: parts must be a positive integer');
+    }
+    if (this.isNegative()) {
+      throw new Error('Money.allocate: cannot allocate a negative amount');
+    }
+    const count = BigInt(parts);
+    const base = this.minorUnits / count;
+    const leftover = this.minorUnits % count;
+    return Array.from(
+      { length: parts },
+      (_, i) => new Money(i === 0 ? base + leftover : base, this.currency),
+    );
+  }
+
   isNegative(): boolean {
     return this.minorUnits < 0n;
   }
