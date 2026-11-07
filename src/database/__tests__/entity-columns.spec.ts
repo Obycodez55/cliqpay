@@ -3,7 +3,20 @@ import { buildDataSourceOptions } from '../data-source.options';
 
 // Pure relationship tables keyed on the pair itself, where a surrogate id
 // would only add a second uniqueness rule to keep in step with the first.
-const COMPOSITE_KEY_TABLES = new Set(['follows', 'blocks', 'post_reactions']);
+const COMPOSITE_KEY_TABLES = new Set([
+  'follows',
+  'blocks',
+  'post_reactions',
+  'post_participants',
+]);
+
+// A post's id is its subject's id (the transaction id for a transfer post),
+// so a second post per subject can't exist and nothing generates it.
+const SUBJECT_KEYED_TABLES = new Set(['posts']);
+
+// Copies the post's own creation time (post_created_at) so the feed reads one
+// index; it has no timestamps of its own.
+const SNAPSHOT_TIMESTAMP_TABLES = new Set(['post_participants']);
 
 describe('entity base columns', () => {
   let metadatas: EntityMetadata[];
@@ -34,6 +47,17 @@ describe('entity base columns', () => {
         if (metadata.primaryColumns.length < 2 || id) {
           violations.push(`${table} should have a composite primary key`);
         }
+      } else if (SUBJECT_KEYED_TABLES.has(table)) {
+        if (
+          metadata.primaryColumns.length !== 1 ||
+          metadata.primaryColumns[0] !== id ||
+          id?.type !== 'uuid' ||
+          id.generationStrategy
+        ) {
+          violations.push(
+            `${table}.id is not a non-generated uuid primary key`,
+          );
+        }
       } else if (
         metadata.primaryColumns.length !== 1 ||
         metadata.primaryColumns[0] !== id ||
@@ -41,6 +65,9 @@ describe('entity base columns', () => {
         id.generationStrategy !== 'uuid'
       ) {
         violations.push(`${table}.id is not a generated uuid primary key`);
+      }
+      if (SNAPSHOT_TIMESTAMP_TABLES.has(table)) {
+        continue;
       }
       if (createdAt?.type !== 'timestamptz' || !createdAt.isCreateDate) {
         violations.push(`${table}.createdAt is not a timestamptz create-date`);

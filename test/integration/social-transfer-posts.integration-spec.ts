@@ -9,7 +9,8 @@ import {
   seedTransferUser,
 } from './support/transfers-test-context';
 import { dataOf, errorOf } from './support/api-response';
-import { TransactionPost } from '../../src/modules/social/entities/transaction-post.entity';
+import { Post } from '../../src/modules/social/entities/post.entity';
+import { PostParticipant } from '../../src/modules/social/entities/post-participant.entity';
 
 jest.setTimeout(180_000);
 
@@ -54,7 +55,21 @@ describe('Social posts for transfers', () => {
     jest.restoreAllMocks();
   });
 
-  const postRepo = () => ctx.dataSource.getRepository(TransactionPost);
+  const postRepo = () => ctx.dataSource.getRepository(Post);
+  const participantRepo = () => ctx.dataSource.getRepository(PostParticipant);
+
+  async function recipientState(
+    postId: string,
+  ): Promise<{ hidden: boolean; isPublic: boolean }> {
+    const participant = await participantRepo().findOneByOrFail({
+      postId,
+      role: 'counterparty',
+    });
+    return {
+      hidden: participant.hidden,
+      isPublic: participant.postIsPublic,
+    };
+  }
 
   function tokenFor(userId: string): string {
     return jwtService.sign({ sub: userId, sid: 'test-session' });
@@ -136,16 +151,22 @@ describe('Social posts for transfers', () => {
         reference: body.reference,
       });
       expect(transaction.metadata).toMatchObject({ note: 'Thanks for lunch' });
-      const post = await postRepo().findOneByOrFail({
-        transactionId: transaction.id,
-      });
+      const post = await postRepo().findOneByOrFail({ id: transaction.id });
       expect(post).toMatchObject({
-        senderUserId: sender.userId,
-        recipientUserId: recipient.userId,
+        kind: 'transfer',
+        authorUserId: sender.userId,
         note: 'Thanks for lunch',
         visibility: 'public',
-        hiddenByRecipient: false,
+        isPublic: true,
       });
+      const participants = await participantRepo().find({
+        where: { postId: transaction.id },
+        order: { role: 'ASC' },
+      });
+      expect(participants).toMatchObject([
+        { userId: sender.userId, role: 'author', hidden: false },
+        { userId: recipient.userId, role: 'counterparty', hidden: false },
+      ]);
     });
 
     it('writes a private post with a null note when no note is given', async () => {
@@ -159,9 +180,7 @@ describe('Social posts for transfers', () => {
         reference: body.reference,
       });
       expect(transaction.metadata).not.toHaveProperty('note');
-      const post = await postRepo().findOneByOrFail({
-        transactionId: transaction.id,
-      });
+      const post = await postRepo().findOneByOrFail({ id: transaction.id });
       expect(post).toMatchObject({ note: null, visibility: 'private' });
     });
 
@@ -212,7 +231,7 @@ describe('Social posts for transfers', () => {
       ).expect(400);
 
       const post = await postRepo().findOneByOrFail({
-        transactionId: await transactionIdOf(body.reference),
+        id: await transactionIdOf(body.reference),
       });
       expect(post.note).toBe(note);
     });
@@ -234,7 +253,7 @@ describe('Social posts for transfers', () => {
 
       const blankId = await transactionIdOf(blank.reference);
       expect(
-        (await postRepo().findOneByOrFail({ transactionId: blankId })).note,
+        (await postRepo().findOneByOrFail({ id: blankId })).note,
       ).toBeNull();
       const blankTx = await ctx.transactionRepo.findOneByOrFail({
         id: blankId,
@@ -245,7 +264,7 @@ describe('Social posts for transfers', () => {
       expect(
         (
           await postRepo().findOneByOrFail({
-            transactionId: await transactionIdOf(padded.reference),
+            id: await transactionIdOf(padded.reference),
           })
         ).note,
       ).toBe('rent 👨‍👩‍👧');
@@ -274,15 +293,18 @@ describe('Social posts for transfers', () => {
       expect(transaction.metadata).toMatchObject({
         note: 'For lunch yesterday',
       });
-      const post = await postRepo().findOneByOrFail({
-        transactionId: transaction.id,
-      });
+      const post = await postRepo().findOneByOrFail({ id: transaction.id });
       expect(post).toMatchObject({
-        senderUserId: payer.userId,
-        recipientUserId: requester.userId,
+        authorUserId: payer.userId,
         note: 'For lunch yesterday',
         visibility: 'public',
       });
+      expect(
+        await participantRepo().findOneByOrFail({
+          postId: transaction.id,
+          role: 'counterparty',
+        }),
+      ).toMatchObject({ userId: requester.userId });
     });
 
     it('rejects a missing or invalid visibility with 400, leaving the request pending', async () => {
@@ -317,9 +339,7 @@ describe('Social posts for transfers', () => {
 
       expect(dataOf(second)).toEqual(dataOf(first));
       expect(
-        await postRepo().countBy({
-          transactionId: await transactionIdOf(body.reference),
-        }),
+        await postRepo().countBy({ id: await transactionIdOf(body.reference) }),
       ).toBe(1);
     });
 
@@ -338,7 +358,7 @@ describe('Social posts for transfers', () => {
       const second = await send(sender.userId, body).expect(201);
 
       expect(dataOf(second)).toEqual(dataOf(first));
-      expect(await postRepo().countBy({ transactionId })).toBe(1);
+      expect(await postRepo().countBy({ id: transactionId })).toBe(1);
     });
 
     it('rejects a replay whose visibility differs from the one originally sent, even when it matches the toggled value', async () => {
@@ -369,7 +389,7 @@ describe('Social posts for transfers', () => {
 
       expect(dataOf(second)).toEqual(dataOf(first));
       const transactionId = await transactionIdOf(body.reference);
-      const post = await postRepo().findOneByOrFail({ transactionId });
+      const post = await postRepo().findOneByOrFail({ id: transactionId });
       expect(post.note).toBeNull();
       const tx = await ctx.transactionRepo.findOneByOrFail({
         id: transactionId,
@@ -398,7 +418,7 @@ describe('Social posts for transfers', () => {
 
       expect(
         await postRepo().countBy({
-          transactionId: await transactionIdOf(original.reference),
+          id: await transactionIdOf(original.reference),
         }),
       ).toBe(1);
     });
@@ -427,9 +447,7 @@ describe('Social posts for transfers', () => {
       }).expect(409);
 
       expect(
-        await postRepo().countBy({
-          transactionId: await transactionIdOf(reference),
-        }),
+        await postRepo().countBy({ id: await transactionIdOf(reference) }),
       ).toBe(1);
     });
   });
@@ -612,12 +630,12 @@ describe('Social posts for transfers', () => {
       ).expect(200);
       expect(dataOf(toPublic)).toMatchObject({ visibility: 'public' });
       expect(
-        (await postRepo().findOneByOrFail({ transactionId })).visibility,
+        (await postRepo().findOneByOrFail({ id: transactionId })).visibility,
       ).toBe('public');
 
       await setVisibility(sender.userId, transactionId, 'private').expect(200);
       expect(
-        (await postRepo().findOneByOrFail({ transactionId })).visibility,
+        (await postRepo().findOneByOrFail({ id: transactionId })).visibility,
       ).toBe('private');
     });
 
@@ -636,19 +654,25 @@ describe('Social posts for transfers', () => {
       );
       expect(dataOf(hidden)).toMatchObject({
         visibility: 'public',
-        hiddenByRecipient: true,
+        isPublic: false,
+        hidden: true,
       });
       await hide('put', recipient.userId, transactionId).expect(200);
 
       await setVisibility(sender.userId, transactionId, 'private').expect(200);
-      expect(
-        (await postRepo().findOneByOrFail({ transactionId })).hiddenByRecipient,
-      ).toBe(true);
+      expect(await recipientState(transactionId)).toEqual({
+        hidden: true,
+        isPublic: false,
+      });
 
       await hide('delete', recipient.userId, transactionId).expect(200);
-      expect(await postRepo().findOneByOrFail({ transactionId })).toMatchObject(
-        { hiddenByRecipient: false, visibility: 'private' },
-      );
+      expect(
+        await postRepo().findOneByOrFail({ id: transactionId }),
+      ).toMatchObject({ visibility: 'private', isPublic: false });
+      expect(await recipientState(transactionId)).toEqual({
+        hidden: false,
+        isPublic: false,
+      });
     });
 
     it('answers 404 to the wrong participant and to a non-participant, changing nothing', async () => {
@@ -669,9 +693,13 @@ describe('Social posts for transfers', () => {
         }
       }
 
-      expect(await postRepo().findOneByOrFail({ transactionId })).toMatchObject(
-        { visibility: 'public', hiddenByRecipient: false },
-      );
+      expect(
+        await postRepo().findOneByOrFail({ id: transactionId }),
+      ).toMatchObject({ visibility: 'public', isPublic: true });
+      expect(await recipientState(transactionId)).toEqual({
+        hidden: false,
+        isPublic: true,
+      });
     });
 
     it('answers 404 for an unknown transaction and 400 for a malformed id', async () => {
@@ -742,7 +770,7 @@ describe('Social posts for transfers', () => {
         expect(await feedIds(follower.userId)).toContain(transactionId);
         expect(
           dataOf(await getPost(recipient.userId, transactionId).expect(200)),
-        ).toMatchObject({ visibility: 'public', hiddenByRecipient: false });
+        ).toMatchObject({ visibility: 'public', hidden: false });
       });
 
       it('finds a post toggled private again through /wallet/transactions, for both participants', async () => {
@@ -774,7 +802,7 @@ describe('Social posts for transfers', () => {
         await hide('put', recipient.userId, recipientId!).expect(200);
         expect(
           dataOf(await getPost(recipient.userId, recipientId!).expect(200)),
-        ).toMatchObject({ visibility: 'public', hiddenByRecipient: true });
+        ).toMatchObject({ visibility: 'public', hidden: true });
       });
 
       it("makes a paid request's private post public with the transactionId from the pay response", async () => {

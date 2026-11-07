@@ -271,25 +271,25 @@ export default tseslint.config(
               from: { element: { type: 'ledger-module' } },
               disallow: { to: { element: { type: 'social-module' } } },
               message:
-                '`ledger` must never import from `social` — only `transfers` and `notifications` depend on it. See docs/adr/0025-social-layer.md.',
+                '`ledger` must never import from `social` — only `transfers`, `notifications` and `billsplit` depend on it. See docs/adr/0025-social-layer.md.',
             },
             {
               from: { element: { type: 'users-module' } },
               disallow: { to: { element: { type: 'social-module' } } },
               message:
-                '`users` must never import from `social` — only `transfers` and `notifications` depend on it. See docs/adr/0025-social-layer.md.',
+                '`users` must never import from `social` — only `transfers`, `notifications` and `billsplit` depend on it. See docs/adr/0025-social-layer.md.',
             },
             {
               from: { element: { type: 'payments-module' } },
               disallow: { to: { element: { type: 'social-module' } } },
               message:
-                '`payments` must never import from `social` — only `transfers` and `notifications` depend on it. See docs/adr/0025-social-layer.md.',
+                '`payments` must never import from `social` — only `transfers`, `notifications` and `billsplit` depend on it. See docs/adr/0025-social-layer.md.',
             },
             {
               from: { element: { type: 'wallet-module' } },
               disallow: { to: { element: { type: 'social-module' } } },
               message:
-                '`wallet` must never import from `social` — only `transfers` and `notifications` depend on it. See docs/adr/0025-social-layer.md.',
+                '`wallet` must never import from `social` — only `transfers`, `notifications` and `billsplit` depend on it. See docs/adr/0025-social-layer.md.',
             },
             {
               from: { element: { type: 'social-module' } },

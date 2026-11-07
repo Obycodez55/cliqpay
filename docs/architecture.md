@@ -266,7 +266,7 @@ DEBIT  sender_wallet     amount + platform_fee
 CREDIT recipient_wallet  amount
 CREDIT fee_income_ngn    platform_fee
 
-metadata: { note, platformFee }   -- [v15] note is immutable; visibility lives on social's transaction_posts, not here (ADR-0025)
+metadata: { note, platformFee }   -- [v15] note is immutable; visibility lives on social's posts, not here (ADR-0025, ADR-0027)
 transaction.provider: null   -- purely internal, no provider touches this
 
 ```
@@ -466,21 +466,27 @@ disputes
 
 -- [v15] Phase 7 — owned by `social` (see ADR-0025). Every user reference is
 -- cross-module (users), so no FK; post_id references are same-module FKs.
-transaction_posts
-  id                    uuid PK
-  transaction_id        uuid unique         -- cross-module reference into ledger's transactions, no FK
-  sender_user_id        uuid
-  recipient_user_id     uuid
+posts                                   -- [v16] replaces transaction_posts (ADR-0027)
+  id                    uuid PK             -- the subject's id (the transaction id for a transfer post); not generated
+  kind                  varchar             -- CHECK transfer (bill_split arrives with Phase 8 slice 6)
+  author_user_id        uuid
   note                  varchar nullable    -- snapshot of transactions.metadata.note; safe because notes are immutable
-  visibility            enum (public | private)   -- the sender's choice; required on the transfer request, changeable later by the sender
-  requested_visibility  enum (public | private)   -- the visibility sent on the transfer request; never updated, so an idempotent replay is compared against it, not the current visibility
-  hidden_by_recipient   boolean default false     -- the recipient's veto; public only while visibility = public AND NOT hidden_by_recipient
+  visibility            enum (public | private)   -- the author's choice; required on the transfer request, changeable later by the author
+  requested_visibility  enum (public | private)   -- the visibility sent on the creating request; never updated, so an idempotent replay is compared against it, not the current visibility
+  is_public             boolean             -- visibility = public AND no participant has hidden; written only by refreshPublicity
   created_at            timestamptz
   updated_at            timestamptz
 
-  -- partial indexes (sender_user_id, created_at DESC, id DESC) and
-  -- (recipient_user_id, created_at DESC, id DESC)
-  -- WHERE visibility = 'public' AND NOT hidden_by_recipient
+post_participants
+  post_id               uuid FK -> posts
+  user_id               uuid
+  role                  varchar             -- CHECK author | counterparty (member arrives with slice 6)
+  hidden                boolean default false     -- a non-author participant's veto
+  post_created_at       timestamptz         -- copied from posts so the feed reads one index
+  post_is_public        boolean             -- copied from posts.is_public, in the same transaction
+
+  -- PK (post_id, user_id)
+  -- partial index (user_id, post_created_at DESC, post_id DESC) WHERE post_is_public
 
 follows
   follower_user_id      uuid
@@ -497,7 +503,7 @@ blocks
   -- PK (blocker_user_id, blocked_user_id); CHECK blocker <> blocked
 
 post_reactions
-  post_id               uuid FK -> transaction_posts
+  post_id               uuid FK -> posts
   user_id               uuid
   reaction              varchar             -- CHECK against the fixed set (heart, laugh, wow, fire, clap, pray)
   created_at            timestamptz
@@ -507,11 +513,11 @@ post_reactions
 
 post_comments
   id                    uuid PK
-  post_id               uuid FK -> transaction_posts
+  post_id               uuid FK -> posts
   author_user_id        uuid
   body                  varchar(280)
   deleted_at            timestamptz nullable
-  deleted_by_user_id    uuid nullable       -- the author or either post participant
+  deleted_by_user_id    uuid nullable       -- the author or any post participant
   created_at            timestamptz
 
 -- [v16] Phase 8 — owned by `billsplit` (see ADR-0026). User and money-request
@@ -548,7 +554,7 @@ bill_split_participants
 
 > **[v16] Note on** `bill_split_participants`**:** there is no `status` column. A participant's paid/unpaid state is their money request's status, read live in one batched read per split or page; copying it through events would go wrong for good on a lost event, since the bus has no outbox. See [ADR-0026](adr/0026-bill-splitting.md).
 
-> **[v15] Note on** `transaction_posts`**:** one row per completed P2P transfer (including a paid money request), private ones included, because a private post can be made public later. Written by `social` inside the transfer's own DB transaction, so a post exists if and only if its transfer committed. Transfers made before Phase 7 have no row. Deleting a comment is soft (`deleted_at`) so a harassment complaint keeps its evidence; a deleted comment is simply absent from reads. See [ADR-0025](adr/0025-social-layer.md).
+> **[v15] Note on** `transaction_posts` **(now `posts`, [ADR-0027](adr/0027-posts-kinds-and-participants.md)):** one row per completed P2P transfer (including a paid money request), private ones included, because a private post can be made public later. Written by `social` inside the transfer's own DB transaction, so a post exists if and only if its transfer committed. Transfers made before Phase 7 have no row. Deleting a comment is soft (`deleted_at`) so a harassment complaint keeps its evidence; a deleted comment is simply absent from reads. See [ADR-0025](adr/0025-social-layer.md).
 
 > **[v15] Note on** `follows`**,** `blocks` **and** `post_reactions`**:** these are pure relationship tables, keyed on the pair itself with a composite PK and no surrogate `id`. A surrogate key would only add a second uniqueness rule to keep in step with the first. They are the only exception to the generated-uuid-PK rule, and `src/database/__tests__/entity-columns.spec.ts` lists them by name. A new table qualifies only if it's a relationship with no identity of its own; anything that's referenced, edited or soft-deleted (like `post_comments`) gets an `id`.
 
@@ -756,16 +762,18 @@ Each phase exits with a working, production-quality slice of the system. No phas
 
 **Goal:** The Venmo-style social feed works, private and safe by construction. See [ADR-0025](adr/0025-social-layer.md).
 
-- **[v15]** `social` is a **core** module by §10's removability criterion: blocking gates money requests and transfers synchronously. It owns `follows`, `blocks`, `transaction_posts`, `post_reactions` and `post_comments`; `transfers` imports `SocialService` directly
+> **[v16]** Phase 8 slice 2 generalises this phase's two-party `transaction_posts` into `posts` and `post_participants`, with no behaviour change: "sender" and "recipient" below read as the post's author and its other participant, and `hidden_by_recipient` is the participant's `hidden` flag. See [ADR-0027](adr/0027-posts-kinds-and-participants.md).
+
+- **[v15]** `social` is a **core** module by §10's removability criterion: blocking gates money requests and transfers synchronously. It owns `follows`, `blocks`, `posts` (ADR-0027, generalised from `transaction_posts`), `post_participants`, `post_reactions` and `post_comments`; `transfers` imports `SocialService` directly
 - Transaction notes — **[v15]** an optional `note` on `SendTransferDto`, stored on `transactions.metadata` and immutable (no editing, ever: a note must never be rewritten after the money moved). Paying a money request carries the request's note onto the transfer
 - Public/private toggle per transaction — **[v15]**
   - `visibility` (`public | private`) is **required** on every transfer request, including paying a money request; the server applies no default
-  - `note` and `visibility` are both part of the idempotency fingerprint (ADR-0010) — a replay with either changed is a 409. Neither goes in the ledger's own fingerprint: a match there is followed by a comparison against the stored note and `transaction_posts.requested_visibility`. Because `requested_visibility` is never updated, a replay still matches after the sender toggles the post
+  - `note` and `visibility` are both part of the idempotency fingerprint (ADR-0010) — a replay with either changed is a 409. Neither goes in the ledger's own fingerprint: a match there is followed by a comparison against the stored note and `posts.requested_visibility`. Because `requested_visibility` is never updated, a replay still matches after the sender toggles the post
   - The post is written by `socialService.recordTransferPost(manager, …)` inside the transfer's own transaction, never from the post-commit event
-  - Two independent flags: the sender can change `visibility` either way at any time; the recipient can set or clear `hidden_by_recipient` at any time. Public only while both allow it
+  - Two independent flags: the sender can change `visibility` either way at any time; every non-author participant can set or clear their own `hidden` flag at any time (ADR-0027). Public only while the author allows it and no participant has hidden
   - The feed never shows an amount, whatever the visibility
 - Follow/unfollow users — **[v15]** asymmetric, no consent; capped at 5,000 followed users. Follower and following counts are visible to any authenticated Tier 1+ user; the lists themselves are owner-only. A profile view returns the relationship (follows / followed-by / blocked)
-- Activity feed — **[v15]** public posts where either participant is followed by the viewer, plus the viewer's own; no per-user public timeline. Fan-out on read, keyset pagination on `(created_at, id)`, default 20 / max 50. Feed items carry the participants (username and display name only), note, time, per-reaction counts, the viewer's own reaction and the comment count
+- Activity feed — **[v15]** public posts where any participant is followed by the viewer, plus the viewer's own; no per-user public timeline. Fan-out on read, keyset pagination on `(created_at, id)`, default 20 / max 50. Feed items carry the participants (username and display name only), note, time, per-reaction counts, the viewer's own reaction and the comment count
 - Reactions and comments on transactions — **[v15]**
   - Reactions: a fixed set of six keys, one per user per post (changeable, removable). Anyone who can currently see the post may react
   - Comments: flat, plain text, 1–280 characters, no editing, throttled at about 10 a minute per user. Deleted (soft) by the author or either post participant. Read oldest first, keyset pages of 20
@@ -1025,7 +1033,7 @@ Rules that make this real rather than aspirational:
 - **Dependency direction is a rule, not just "modules shouldn't touch each other."** Core modules must never import from peripheral ones; peripheral modules may depend on core (Fraud reads balances via Ledger's service). Encode this in the same lint config as an explicit constraint, not a convention someone has to remember.
 - **[v15] What makes a module core.** Ask: *if this module disappeared, would money still move correctly and safely?* If not — it is on the money path, or a money-moving operation must consult it synchronously before committing — it is **core**. If it only reacts to money movement after commit, through events, and could be removed or extracted without the money path noticing, it is **peripheral**. Place every new module by this test, not by analogy. Today: `ledger`, `payments`, `auth`, `users`, `transfers`, `withdrawals`, `disputes`, `kyc` and `social` are core (`social` because blocking gates transfers and money requests, ADR-0025); `notifications` and **[v16]** `billsplit` are peripheral (`billsplit` only creates money requests through `TransfersService` and reacts to their events; every split request stays payable without it, ADR-0026). `fraud` and `scheduling` are placed by this test when their phase is designed — a fraud rule that blocks a transfer before it commits, for one, would make `fraud` core. Being peripheral is only worth keeping if it buys removability — wrapping a synchronous dependency in a port to keep the label doesn't.
 - **Cross-module references are plain UUIDs, never a DB-level foreign key.** Same-module references (e.g. `ledger_entries.account_id`) keep real FK constraints. Cross-module references (e.g. `bill_split_participants.money_request_id`, which points at something `transfers` owns) don't — a real FK can't survive the day that table moves to its own database, and the discipline costs nothing to build in now. See [ADR-0002](adr/0002-cross-module-references-and-relation-decorators.md) for the entity-modeling consequence — TypeORM relation decorators follow the same split, additive only where a real FK backs them.
-- **Cross-module side effects are async domain events, not direct synchronous calls.** A P2P transfer's ledger write is synchronous and atomic, inside the Ledger module (must be — it's the money). Everything downstream of it — feed updates, notifications, fraud-rule evaluation — reacts to a domain event published through the shared BullMQ-backed event bus. Critically, **the event publishes after the originating transaction commits, not during it** — publishing inside the transaction means a downstream reaction can fire for a transaction that then rolls back, which is a subtle, easy-to-introduce correctness bug. **[v15]** This rule governs *reactions* to a commit. Storing part of a request's own data in the core module that owns it is not a reaction: a transfer's `visibility` is written to `social`'s `transaction_posts` inside the transfer's transaction (`recordTransferPost(manager, …)`, the same shape as `kyc` calling `users.setKycTier(manager, …)`), because a lost post-commit event would silently drop the user's explicit choice (ADR-0025). This async seam is also exactly what becomes a real message broker (SQS/NATS/etc.) if a module is ever actually extracted into its own service — swapping the transport is small; retrofitting a synchronous call into an async boundary after the fact is not.
+- **Cross-module side effects are async domain events, not direct synchronous calls.** A P2P transfer's ledger write is synchronous and atomic, inside the Ledger module (must be — it's the money). Everything downstream of it — feed updates, notifications, fraud-rule evaluation — reacts to a domain event published through the shared BullMQ-backed event bus. Critically, **the event publishes after the originating transaction commits, not during it** — publishing inside the transaction means a downstream reaction can fire for a transaction that then rolls back, which is a subtle, easy-to-introduce correctness bug. **[v15]** This rule governs *reactions* to a commit. Storing part of a request's own data in the core module that owns it is not a reaction: a transfer's `visibility` is written to `social`'s `posts` inside the transfer's transaction (`recordTransferPost(manager, …)`, the same shape as `kyc` calling `users.setKycTier(manager, …)`), because a lost post-commit event would silently drop the user's explicit choice (ADR-0025). This async seam is also exactly what becomes a real message broker (SQS/NATS/etc.) if a module is ever actually extracted into its own service — swapping the transport is small; retrofitting a synchronous call into an async boundary after the fact is not.
 - **Shared primitives are the one deliberate exception to isolation.** `Money`, `TransactionType`, `KycTier`, and similar shared domain vocabulary — some pure types, some (like `Money`) small value objects with real behavior — live in `shared/primitives/` and any module may import them. `primitives/`, not `types/`, because the folder isn't just type declarations — the isolation rule being carved out here is about behavior and state living in a *module*, not about whether the shared thing itself has logic.
 
 Worth naming directly: the schema as it's evolved through this document already falls along these exact lines — Ledger, Auth, KYC, Fraud, Social, BillSplit, and Scheduling each own a clearly scoped set of tables. That's what happens when each phase's tables get scoped to what that phase actually needed; it wasn't a separate design exercise.

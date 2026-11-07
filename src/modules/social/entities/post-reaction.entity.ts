@@ -9,7 +9,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { inList } from '../../../database/check.util';
-import { TransactionPost } from './transaction-post.entity';
+import { Post } from './post.entity';
 
 export const REACTIONS = [
   'heart',
@@ -27,9 +27,9 @@ export class PostReaction {
   @PrimaryColumn('uuid')
   postId: string;
 
-  @ManyToOne(() => TransactionPost)
+  @ManyToOne(() => Post)
   @JoinColumn({ name: 'post_id' })
-  post: TransactionPost;
+  post: Post;
 
   @PrimaryColumn('uuid')
   userId: string;

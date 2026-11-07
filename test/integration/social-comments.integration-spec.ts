@@ -13,6 +13,10 @@ import {
 import { dataOf, errorOf } from './support/api-response';
 import { Follow } from '../../src/modules/social/entities/follow.entity';
 import { PostComment } from '../../src/modules/social/entities/post-comment.entity';
+import {
+  TestPostOptions,
+  insertTransferPost,
+} from './support/social-post-fixtures';
 import { KycTier } from '../../src/modules/users/users.service';
 import {
   DOMAIN_EVENTS_QUEUE,
@@ -106,29 +110,8 @@ describe('Social comments', () => {
     );
   }
 
-  async function insertPost(options: {
-    sender: string;
-    recipient: string;
-    visibility?: 'public' | 'private';
-  }): Promise<string> {
-    const transactionId = randomUUID();
-    const visibility = options.visibility ?? 'public';
-    await ctx.dataSource.query(
-      `INSERT INTO transaction_posts
-        (transaction_id, sender_user_id, recipient_user_id, note, visibility,
-         requested_visibility, hidden_by_recipient)
-       VALUES ($1, $2, $3, 'lunch', $4, $4, false)`,
-      [transactionId, options.sender, options.recipient, visibility],
-    );
-    return transactionId;
-  }
-
-  async function postIdOf(transactionId: string): Promise<string> {
-    const [row]: { id: string }[] = await ctx.dataSource.query(
-      'SELECT id FROM transaction_posts WHERE transaction_id = $1',
-      [transactionId],
-    );
-    return row.id;
+  function insertPost(options: TestPostOptions): Promise<string> {
+    return insertTransferPost(ctx.dataSource, options);
   }
 
   async function seedPublicPost() {
@@ -291,7 +274,7 @@ describe('Social comments', () => {
       ]);
       const stored = await storedComment(created.id);
       expect(stored).toMatchObject({
-        postId: await postIdOf(transactionId),
+        postId: transactionId,
         authorUserId: viewer,
         body: 'great lunch',
         deletedAt: null,
@@ -487,7 +470,7 @@ describe('Social comments', () => {
   describe('GET /social/posts/:transactionId/comments', () => {
     it('pages oldest first, 20 at a time, breaking timestamp ties by id', async () => {
       const { sender, recipient, transactionId } = await seedPublicPost();
-      const postId = await postIdOf(transactionId);
+      const postId = transactionId;
       // Pairs share a timestamp so a page boundary falls inside a tie.
       for (let i = 0; i < 45; i++) {
         await ctx.dataSource.query(

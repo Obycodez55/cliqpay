@@ -8,7 +8,7 @@ import {
   PrimaryGeneratedColumn,
   UpdateDateColumn,
 } from 'typeorm';
-import { TransactionPost } from './transaction-post.entity';
+import { Post } from './post.entity';
 
 export const COMMENT_MAX_LENGTH = 280;
 
@@ -23,9 +23,9 @@ export class PostComment {
   @Column('uuid')
   postId: string;
 
-  @ManyToOne(() => TransactionPost)
+  @ManyToOne(() => Post)
   @JoinColumn({ name: 'post_id' })
-  post: TransactionPost;
+  post: Post;
 
   @Column('uuid')
   authorUserId: string;

@@ -1,9 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsIn } from 'class-validator';
-import {
-  POST_VISIBILITIES,
-  PostVisibility,
-} from '../entities/transaction-post.entity';
+import { POST_VISIBILITIES, PostVisibility } from '../entities/post.entity';
 
 export class SetPostVisibilityDto {
   @IsIn(POST_VISIBILITIES)
