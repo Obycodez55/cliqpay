@@ -214,6 +214,7 @@ export interface NewFollowerPayload {
 export interface PostReactionPayload {
   userId: string;
   transactionId: string;
+  postKind: 'transfer' | 'bill_split';
   reactorUserId: string;
   reactorUsername: string;
 }
@@ -221,6 +222,7 @@ export interface PostReactionPayload {
 export interface PostCommentPayload {
   userId: string;
   transactionId: string;
+  postKind: 'transfer' | 'bill_split';
   commentId: string;
   commenterUserId: string;
   commenterUsername: string;

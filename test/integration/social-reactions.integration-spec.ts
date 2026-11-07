@@ -650,6 +650,7 @@ describe('Social reactions', () => {
             payload: {
               userId,
               transactionId: randomUUID(),
+              postKind: 'transfer',
               reactorUserId,
               reactorUsername: 'someone',
             },

@@ -50,6 +50,10 @@ export interface InAppContent {
   dedupeKey: string;
 }
 
+function postNoun(kind: PostCommentPayload['postKind']): string {
+  return kind === 'bill_split' ? 'bill split' : 'transaction';
+}
+
 /**
  * Code-defined, version-controlled templates — not managed in Brevo's
  * dashboard — so copy changes go through normal code review and fake
@@ -189,9 +193,10 @@ export const pushTemplates: {
   }),
   post_comment: (payload: PostCommentPayload) => ({
     title: 'New comment',
-    body: `${payload.commenterUsername} commented on your transaction.`,
+    body: `${payload.commenterUsername} commented on your ${postNoun(payload.postKind)}.`,
     data: {
       transactionId: payload.transactionId,
+      postKind: payload.postKind,
       commentId: payload.commentId,
     },
   }),
@@ -298,9 +303,10 @@ export const inAppTemplates: {
   }),
   post_reaction: (payload: PostReactionPayload) => ({
     title: 'New reaction',
-    body: `${payload.reactorUsername} reacted to your transaction.`,
+    body: `${payload.reactorUsername} reacted to your ${postNoun(payload.postKind)}.`,
     data: {
       transactionId: payload.transactionId,
+      postKind: payload.postKind,
       reactorUserId: payload.reactorUserId,
       reactorUsername: payload.reactorUsername,
     },
@@ -310,9 +316,10 @@ export const inAppTemplates: {
   }),
   post_comment: (payload: PostCommentPayload) => ({
     title: 'New comment',
-    body: `${payload.commenterUsername} commented on your transaction.`,
+    body: `${payload.commenterUsername} commented on your ${postNoun(payload.postKind)}.`,
     data: {
       transactionId: payload.transactionId,
+      postKind: payload.postKind,
       commentId: payload.commentId,
       commenterUserId: payload.commenterUserId,
       commenterUsername: payload.commenterUsername,

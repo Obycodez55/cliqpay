@@ -280,6 +280,7 @@ export const POST_REACTION_EVENT = 'post_reaction';
 export interface PostReactionEventPayload {
   userId: string; // the participant being notified
   transactionId: string;
+  postKind: 'transfer' | 'bill_split';
   reactorUserId: string;
   reactorUsername: string;
 }
@@ -289,6 +290,7 @@ export const POST_COMMENT_EVENT = 'post_comment';
 export interface PostCommentEventPayload {
   userId: string; // the participant being notified
   transactionId: string;
+  postKind: 'transfer' | 'bill_split';
   commentId: string;
   commenterUserId: string;
   commenterUsername: string;

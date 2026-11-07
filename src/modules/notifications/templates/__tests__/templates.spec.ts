@@ -1,4 +1,4 @@
-import { emailTemplates, inAppTemplates } from '../templates';
+import { emailTemplates, inAppTemplates, pushTemplates } from '../templates';
 
 describe('inAppTemplates', () => {
   it('derives funding_completed dedupe_key from the transaction reference', () => {
@@ -83,6 +83,44 @@ describe('inAppTemplates', () => {
     expect(inAppTemplates.funding_refunded!(base).dedupeKey).toBe(
       'cliqpay-ref-1',
     );
+  });
+});
+
+describe('post comment and reaction wording', () => {
+  const comment = {
+    userId: 'u1',
+    transactionId: 'p1',
+    commentId: 'c1',
+    commenterUserId: 'u2',
+    commenterUsername: 'tolu',
+  };
+  const reaction = {
+    userId: 'u1',
+    transactionId: 'p1',
+    reactorUserId: 'u2',
+    reactorUsername: 'tolu',
+  };
+
+  it('names a transfer post a transaction', () => {
+    expect(
+      inAppTemplates.post_comment!({ ...comment, postKind: 'transfer' }).body,
+    ).toBe('tolu commented on your transaction.');
+    expect(
+      inAppTemplates.post_reaction!({ ...reaction, postKind: 'transfer' }).body,
+    ).toBe('tolu reacted to your transaction.');
+  });
+
+  it('names a split post a bill split, in-app and in the push', () => {
+    expect(
+      inAppTemplates.post_comment!({ ...comment, postKind: 'bill_split' }).body,
+    ).toBe('tolu commented on your bill split.');
+    expect(
+      inAppTemplates.post_reaction!({ ...reaction, postKind: 'bill_split' })
+        .body,
+    ).toBe('tolu reacted to your bill split.');
+    expect(
+      pushTemplates.post_comment!({ ...comment, postKind: 'bill_split' }).body,
+    ).toBe('tolu commented on your bill split.');
   });
 });
 

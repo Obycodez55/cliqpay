@@ -1216,6 +1216,7 @@ export class SocialService {
           payload: {
             userId,
             transactionId: post.id,
+            postKind: post.kind,
             reactorUserId: reactorId,
             reactorUsername: reactor.username,
           },
@@ -1243,6 +1244,7 @@ export class SocialService {
           payload: {
             userId,
             transactionId: post.id,
+            postKind: post.kind,
             commentId,
             commenterUserId: commenterId,
             commenterUsername: commenter.username,

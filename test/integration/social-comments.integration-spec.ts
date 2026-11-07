@@ -825,6 +825,7 @@ describe('Social comments', () => {
             payload: {
               userId,
               transactionId: randomUUID(),
+              postKind: 'transfer',
               commentId: randomUUID(),
               commenterUserId,
               commenterUsername: 'someone',
