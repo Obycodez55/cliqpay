@@ -3,10 +3,12 @@ import { IdentitySummaryDto } from '../../../common/dto/identity-summary.dto';
 import { MoneyDto } from '../../../common/dto/money-response.dto';
 import { BILL_SPLIT_MODES, BillSplitMode } from '../entities/bill-split.entity';
 
-export type BillSplitApiStatus = 'open' | 'expired';
+export type BillSplitApiStatus = 'open' | 'expired' | 'completed' | 'closed';
 export const BILL_SPLIT_API_STATUSES: BillSplitApiStatus[] = [
   'open',
   'expired',
+  'completed',
+  'closed',
 ];
 
 export type ShareApiStatus =
@@ -58,7 +60,7 @@ export class BillSplitResponseDto {
   @ApiProperty({
     enum: BILL_SPLIT_API_STATUSES,
     description:
-      'expired once past expiresAt with any share unpaid, otherwise open. Completed, closed and cancelled arrive with later slices.',
+      'completed when every share is paid; closed when every share is settled and at least one was declined or cancelled; expired once past expiresAt with any share unpaid; otherwise open. Cancelled arrives with a later slice.',
   })
   status: BillSplitApiStatus;
 

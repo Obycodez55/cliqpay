@@ -167,6 +167,16 @@ export interface MoneyRequestPaidEventPayload {
   moneyRequestId: string;
 }
 
+export const BILL_SPLIT_COMPLETED_EVENT = 'bill_split_completed';
+
+export interface BillSplitCompletedEventPayload {
+  userId: string; // the initiator, notified every share was paid
+  billSplitId: string;
+  description: string;
+  total: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+}
+
 export const WITHDRAWAL_INITIATED_EVENT = 'withdrawal_initiated';
 
 export interface WithdrawalInitiatedEventPayload {

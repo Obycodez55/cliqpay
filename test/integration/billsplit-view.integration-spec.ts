@@ -196,7 +196,7 @@ describe('GET /bill-splits/:id — view', () => {
     const view = dataOf<SplitBody>(
       await h.getSplit(initiator.userId, split.id).expect(200),
     );
-    expect(view.status).toBe('open');
+    expect(view.status).toBe('completed');
   });
 
   it('rejects a malformed id', async () => {

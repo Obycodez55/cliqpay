@@ -61,6 +61,12 @@ export class BillSplit {
   @Column({ type: 'timestamptz' })
   expiresAt: Date;
 
+  @Column({ type: 'timestamptz', nullable: true })
+  completedAt: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  closedAt: Date | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 

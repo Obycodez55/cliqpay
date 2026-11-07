@@ -1,0 +1,13 @@
+import {
+  MONEY_REQUEST_CANCELLED_EVENT,
+  MONEY_REQUEST_DECLINED_EVENT,
+  MONEY_REQUEST_PAID_EVENT,
+} from '../../../shared/events/domain-events';
+
+export const BILL_SPLIT_EVENTS_QUEUE = 'bill-split-events';
+
+export const BILL_SPLIT_SUBSCRIBED_EVENTS = [
+  MONEY_REQUEST_PAID_EVENT,
+  MONEY_REQUEST_DECLINED_EVENT,
+  MONEY_REQUEST_CANCELLED_EVENT,
+] as const;

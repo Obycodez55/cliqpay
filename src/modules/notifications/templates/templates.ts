@@ -1,5 +1,6 @@
 import {
   AccountFrozenPayload,
+  BillSplitCompletedPayload,
   ChargebackReceivedPayload,
   EmailVerificationOtpPayload,
   FundingCompletedPayload,
@@ -176,6 +177,11 @@ export const pushTemplates: {
     title: 'Request paid',
     body: `${payload.counterpartyUsername} paid you ${payload.currency} ${payload.amount}.`,
   }),
+  bill_split_completed: (payload: BillSplitCompletedPayload) => ({
+    title: 'Split complete',
+    body: `Everyone has paid their share of "${payload.description}".`,
+    data: { billSplitId: payload.billSplitId },
+  }),
   new_follower: (payload: NewFollowerPayload) => ({
     title: 'New follower',
     body: `${payload.followerUsername} started following you.`,
@@ -268,6 +274,16 @@ export const inAppTemplates: {
       moneyRequestId: payload.moneyRequestId,
     },
     dedupeKey: payload.moneyRequestId,
+  }),
+  bill_split_completed: (payload: BillSplitCompletedPayload) => ({
+    title: 'Split complete',
+    body: `Everyone has paid their share of "${payload.description}".`,
+    data: {
+      billSplitId: payload.billSplitId,
+      total: payload.total,
+      currency: payload.currency,
+    },
+    dedupeKey: payload.billSplitId,
   }),
   new_follower: (payload: NewFollowerPayload) => ({
     title: 'New follower',

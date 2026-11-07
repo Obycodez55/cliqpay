@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, EntityManager } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
@@ -6,6 +6,11 @@ import { Money } from '../../shared/primitives/money';
 import { toIdentitySummary } from '../../common/dto/identity-summary.dto';
 import { isUniqueViolation } from '../../database/postgres-errors.util';
 import { runInTransaction } from '../../database/transaction.util';
+import {
+  BILL_SPLIT_COMPLETED_EVENT,
+  BillSplitCompletedEventPayload,
+} from '../../shared/events/domain-events';
+import { EventBusService } from '../../shared/events/event-bus.service';
 import {
   SplitRequestRecord,
   TransfersService,
@@ -24,6 +29,7 @@ import {
   BillSplitReferenceReusedException,
 } from './internal/errors';
 import { ComputedShares, computeShares } from './internal/shares';
+import { SplitOutcome, deriveOutcome } from './internal/split-status';
 
 const NGN = 'NGN';
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -39,12 +45,15 @@ interface WriteSplitParams {
 
 @Injectable()
 export class BillSplitService {
+  private readonly logger = new Logger(BillSplitService.name);
+
   constructor(
     // @InjectDataSource: creation writes the split, its participants and
     // all its money requests in one transaction.
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly transfersService: TransfersService,
     private readonly usersService: UsersService,
+    private readonly eventBus: EventBusService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
@@ -129,6 +138,80 @@ export class BillSplitService {
       throw new BillSplitNotFoundException();
     }
     return view;
+  }
+
+  // The row lock serialises the event handler and read-repair, and the
+  // timestamp is only written while still null, so exactly one caller records
+  // the outcome and publishes the completion.
+  async recordOutcome(splitId: string): Promise<SplitOutcome | null> {
+    const recorded = await runInTransaction(
+      this.dataSource,
+      async (manager) => {
+        const split = await manager.getRepository(BillSplit).findOne({
+          where: { id: splitId },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!split || split.completedAt || split.closedAt) {
+          return null;
+        }
+        const participants = await manager
+          .getRepository(BillSplitParticipant)
+          .findBy({ billSplitId: splitId });
+        const requests = await this.transfersService.findMoneyRequestsByIds(
+          participants.map((p) => p.moneyRequestId),
+        );
+        const outcome =
+          requests.length === participants.length
+            ? deriveOutcome(requests.map((r) => r.status))
+            : null;
+        if (!outcome) {
+          return null;
+        }
+        await manager
+          .getRepository(BillSplit)
+          .update(
+            { id: splitId },
+            outcome === 'completed'
+              ? { completedAt: new Date() }
+              : { closedAt: new Date() },
+          );
+        return { outcome, split };
+      },
+    );
+    if (recorded?.outcome === 'completed') {
+      await this.publishCompleted(recorded.split);
+    }
+    return recorded?.outcome ?? null;
+  }
+
+  private async publishCompleted(split: BillSplit): Promise<void> {
+    try {
+      await this.eventBus.publish<string, BillSplitCompletedEventPayload>({
+        name: BILL_SPLIT_COMPLETED_EVENT,
+        payload: {
+          userId: split.initiatorUserId,
+          billSplitId: split.id,
+          description: split.description,
+          total: Money.of(split.totalAmount, split.currency).toDecimalString(),
+          currency: split.currency,
+        },
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `publishCompleted: split ${split.id} was recorded as completed, but publishing bill_split_completed failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
+  }
+
+  private async repairOutcome(splitId: string): Promise<void> {
+    try {
+      await this.recordOutcome(splitId);
+    } catch (error) {
+      this.logger.error(
+        `repairOutcome: recording the outcome of split ${splitId} failed (${(error as Error).message})`,
+      );
+    }
   }
 
   private async writeSplit(
@@ -252,9 +335,17 @@ export class BillSplitService {
       };
     });
 
+    const outcome = deriveOutcome(rows.map((row) => row.status));
     const anyUnpaid = rows.some((row) => row.status !== 'paid');
-    const status: BillSplitApiStatus =
-      new Date() > split.expiresAt && anyUnpaid ? 'expired' : 'open';
+    let status: BillSplitApiStatus = outcome ?? 'open';
+    if (!outcome && new Date() > split.expiresAt && anyUnpaid) {
+      status = 'expired';
+    }
+    const recorded =
+      outcome === 'completed' ? split.completedAt : split.closedAt;
+    if (outcome && !recorded) {
+      await this.repairOutcome(split.id);
+    }
 
     return {
       id: split.id,
