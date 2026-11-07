@@ -26,6 +26,7 @@ export interface SplitBody {
   initiatorShare: { amount: string; currency: string };
   initiator: { userId: string };
   status: string;
+  visibility: string;
   expiresAt: string;
   participants: {
     userId: string;
@@ -87,6 +88,7 @@ export function createBillSplitHelpers(getCtx: () => TransfersTestContext) {
         description: 'Dinner',
         mode: 'equal',
         total: 100_000,
+        visibility: 'private',
         ...body,
       });
   }

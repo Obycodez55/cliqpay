@@ -108,6 +108,12 @@ export class PostResponseDto extends FeedPostResponseDto {
 
   @ApiPropertyOptional({
     description:
+      'Whether the post has been published. A bill split post is unpublished until the split completes. Present only when you are a participant',
+  })
+  published?: boolean;
+
+  @ApiPropertyOptional({
+    description:
       'Whether you have hidden this post from public view. Present only when you are a participant, and never says whether anyone else has',
   })
   hidden?: boolean;

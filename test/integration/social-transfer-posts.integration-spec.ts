@@ -159,6 +159,7 @@ describe('Social posts for transfers', () => {
         visibility: 'public',
         isPublic: true,
       });
+      expect(post.publishedAt).toEqual(post.createdAt);
       const participants = await participantRepo().find({
         where: { postId: transaction.id },
         order: { role: 'ASC' },

@@ -15,6 +15,7 @@ import {
   SplitRequestRecord,
   TransfersService,
 } from '../transfers/transfers.service';
+import { SocialService } from '../social/social.service';
 import { UsersService } from '../users/users.service';
 import { CreateBillSplitDto } from './dto/create-bill-split.dto';
 import {
@@ -60,11 +61,12 @@ export class BillSplitService {
   private readonly logger = new Logger(BillSplitService.name);
 
   constructor(
-    // @InjectDataSource: creation writes the split, its participants and
-    // all its money requests in one transaction.
+    // @InjectDataSource: creation writes the split, its participants, its
+    // money requests and its post in one transaction.
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly transfersService: TransfersService,
     private readonly usersService: UsersService,
+    private readonly socialService: SocialService,
     private readonly eventBus: EventBusService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
@@ -310,7 +312,8 @@ export class BillSplitService {
 
   // The row lock serialises the event handler and read-repair, and the
   // timestamp is only written while still null, so exactly one caller records
-  // the outcome and publishes the completion.
+  // the outcome and publishes the completion. The post is published in the
+  // same transaction, taking its row lock after the split's.
   async recordOutcome(splitId: string): Promise<SplitOutcome | null> {
     const recorded = await runInTransaction(
       this.dataSource,
@@ -348,6 +351,9 @@ export class BillSplitService {
               ? { completedAt: new Date() }
               : { closedAt: new Date() },
           );
+        if (outcome === 'completed') {
+          await this.socialService.publishPost(manager, splitId);
+        }
         return { outcome, split };
       },
     );
@@ -425,6 +431,19 @@ export class BillSplitService {
         moneyRequestId: request.id,
       })),
     );
+
+    await this.socialService.createPost(manager, {
+      kind: 'bill_split',
+      id: split.id,
+      authorUserId: initiatorId,
+      participants: requests.map((request) => ({
+        userId: request.payerUserId,
+        role: 'member' as const,
+      })),
+      note: dto.description,
+      visibility: dto.visibility,
+      published: false,
+    });
     return { splitId: split.id, requests };
   }
 
@@ -446,11 +465,15 @@ export class BillSplitService {
     const stored = await this.dataSource
       .getRepository(BillSplitParticipant)
       .findBy({ billSplitId: existing.id });
+    const postVisibility = (
+      await this.socialService.getVisibilities([existing.id])
+    ).get(existing.id);
     const storedShares = new Map(stored.map((p) => [p.userId, p.amount]));
     const same =
       existing.mode === dto.mode &&
       existing.totalAmount === BigInt(dto.total) &&
       existing.description === dto.description &&
+      postVisibility?.requested === dto.visibility &&
       storedShares.size === computed.shares.length &&
       computed.shares.every(
         (share) => storedShares.get(share.userId) === share.amount.amount,
@@ -496,6 +519,9 @@ export class BillSplitService {
         ]),
       ]),
     ]);
+    const visibilities = await this.socialService.getVisibilities(
+      splits.map((s) => s.id),
+    );
     const requestById = new Map(requests.map((r) => [r.id, r]));
     const userById = new Map(users.map((u) => [u.id, u]));
     const now = new Date();
@@ -535,6 +561,13 @@ export class BillSplitService {
         await this.repairOutcome(split.id);
       }
 
+      const postVisibility = visibilities.get(split.id);
+      if (!postVisibility) {
+        throw new Error(
+          `BillSplitService.buildViews: post not found for split ${split.id}`,
+        );
+      }
+
       views.push({
         id: split.id,
         description: split.description,
@@ -543,6 +576,7 @@ export class BillSplitService {
         initiatorShare: Money.of(split.initiatorShare, split.currency).toJSON(),
         initiator: toIdentitySummary(initiator),
         status: deriveSplitStatus(split, statuses, now),
+        visibility: postVisibility.visibility,
         participants: rows,
         expiresAt: split.expiresAt.toISOString(),
         createdAt: split.createdAt.toISOString(),

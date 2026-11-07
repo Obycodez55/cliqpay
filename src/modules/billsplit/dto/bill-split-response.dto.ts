@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IdentitySummaryDto } from '../../../common/dto/identity-summary.dto';
 import { MoneyDto } from '../../../common/dto/money-response.dto';
+import { POST_VISIBILITIES, PostVisibility } from '../../social/social.service';
 import { BILL_SPLIT_MODES, BillSplitMode } from '../entities/bill-split.entity';
 
 export const BILL_SPLIT_API_STATUSES = [
@@ -64,6 +65,13 @@ export class BillSplitResponseDto {
       'cancelled once the initiator cancels it; otherwise completed when every share is paid; closed when every share is settled and at least one was declined or cancelled; expired once past expiresAt with any share unpaid; otherwise open.',
   })
   status: BillSplitApiStatus;
+
+  @ApiProperty({
+    enum: POST_VISIBILITIES,
+    description:
+      "The initiator's choice for the split's feed post, which is published only if the split completes. Every member can hide it.",
+  })
+  visibility: PostVisibility;
 
   @ApiProperty({ type: [BillSplitParticipantDto] })
   participants: BillSplitParticipantDto[];

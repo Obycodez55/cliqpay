@@ -11,7 +11,7 @@ import { inList } from '../../../database/check.util';
 export const POST_VISIBILITIES = ['public', 'private'] as const;
 export type PostVisibility = (typeof POST_VISIBILITIES)[number];
 
-export const POST_KINDS = ['transfer'] as const;
+export const POST_KINDS = ['transfer', 'bill_split'] as const;
 export type PostKind = (typeof POST_KINDS)[number];
 
 export const POST_ORIGINS = ['money_request'] as const;
@@ -46,6 +46,9 @@ export class Post {
 
   @Column({ type: 'varchar', nullable: true })
   origin: PostOrigin | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  publishedAt: Date | null;
 
   @Column('boolean')
   isPublic: boolean;

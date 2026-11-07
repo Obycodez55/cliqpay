@@ -3,6 +3,7 @@ import { BullModule, InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { EventBusModule } from '../../shared/events/event-bus.module';
 import { EventBusService } from '../../shared/events/event-bus.service';
+import { SocialModule } from '../social/social.module';
 import { TransfersModule } from '../transfers/transfers.module';
 import { UsersModule } from '../users/users.module';
 import { BillSplitController } from './billsplit.controller';
@@ -16,6 +17,7 @@ import {
 @Module({
   imports: [
     TransfersModule,
+    SocialModule,
     UsersModule,
     EventBusModule,
     BullModule.registerQueue({

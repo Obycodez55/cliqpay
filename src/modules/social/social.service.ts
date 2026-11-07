@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager, Not } from 'typeorm';
+import { DataSource, EntityManager, In, Not } from 'typeorm';
 import { UsersService } from '../users/users.service';
 import { EventBusService } from '../../shared/events/event-bus.service';
 import {
@@ -78,6 +78,7 @@ export interface CreatePostParams {
   participants: { userId: string; role: ParticipantRole }[];
   note: string | null;
   visibility: PostVisibility;
+  published: boolean;
   origin?: PostOrigin;
 }
 
@@ -172,6 +173,7 @@ interface PostRow {
 interface ReadablePostRow extends PostRow {
   visibility: PostVisibility;
   is_public: boolean;
+  published_at: Date | null;
 }
 
 const POST_COLUMNS = `p.id, p.kind, p.author_user_id, p.note, p.origin, p.created_at,
@@ -232,6 +234,7 @@ export class SocialService {
       visibility: params.visibility,
       requestedVisibility: params.visibility,
       origin: params.origin ?? null,
+      publishedAt: params.published ? () => 'now()' : null,
       isPublic: false,
     });
     const members = [
@@ -265,8 +268,34 @@ export class SocialService {
       participants: [{ userId: params.recipientUserId, role: 'counterparty' }],
       note: params.note,
       visibility: params.visibility,
+      published: true,
       origin: params.origin,
     });
+  }
+
+  async publishPost(manager: EntityManager, postId: string): Promise<void> {
+    await manager.query(
+      `UPDATE posts SET published_at = now() WHERE id = $1 AND published_at IS NULL`,
+      [postId],
+    );
+    await this.refreshPublicity(manager, postId);
+  }
+
+  async getVisibilities(
+    postIds: string[],
+  ): Promise<
+    Map<string, { visibility: PostVisibility; requested: PostVisibility }>
+  > {
+    const posts = await this.dataSource.getRepository(Post).find({
+      where: { id: In(postIds) },
+      select: { id: true, visibility: true, requestedVisibility: true },
+    });
+    return new Map(
+      posts.map((post) => [
+        post.id,
+        { visibility: post.visibility, requested: post.requestedVisibility },
+      ]),
+    );
   }
 
   async getRequestedVisibility(
@@ -331,7 +360,7 @@ export class SocialService {
       postId,
     ]);
     const [row]: { is_public: boolean }[] = await manager.query(
-      `SELECT p.visibility = 'public' AND NOT EXISTS (
+      `SELECT p.published_at IS NOT NULL AND p.visibility = 'public' AND NOT EXISTS (
         SELECT 1 FROM post_participants pp
         WHERE pp.post_id = p.id AND pp.hidden
       ) AS is_public
@@ -661,6 +690,7 @@ export class SocialService {
       ...item,
       visibility: post.visibility,
       isPublic: post.is_public,
+      published: post.published_at !== null,
       hidden: mine.hidden,
     };
   }
@@ -883,7 +913,7 @@ export class SocialService {
     manager: EntityManager = this.dataSource.manager,
   ): Promise<ReadablePostRow> {
     const [post]: ReadablePostRow[] = await manager.query(
-      `SELECT ${POST_COLUMNS}, p.visibility, p.is_public
+      `SELECT ${POST_COLUMNS}, p.visibility, p.is_public, p.published_at
       FROM posts p
       WHERE p.id = $2 AND ${readableBy('$1::uuid')}`,
       [viewerId, transactionId],
@@ -1133,14 +1163,23 @@ export class SocialService {
     }
   }
 
+  private async notificationRecipients(
+    post: PostRow,
+    actorId: string,
+  ): Promise<string[]> {
+    const candidates =
+      post.kind === 'bill_split'
+        ? [post.author_user_id]
+        : await this.loadParticipantIds(this.dataSource.manager, post.id);
+    return candidates.filter((id) => id !== actorId);
+  }
+
   private async publishPostReaction(
     reactorId: string,
     post: PostRow,
   ): Promise<void> {
     try {
-      const recipients = (
-        await this.loadParticipantIds(this.dataSource.manager, post.id)
-      ).filter((id) => id !== reactorId);
+      const recipients = await this.notificationRecipients(post, reactorId);
       const reactor = await this.usersService.findById(reactorId);
       for (const userId of recipients) {
         await this.eventBus.publish<string, PostReactionEventPayload>({
@@ -1167,9 +1206,7 @@ export class SocialService {
     commentId: string,
   ): Promise<void> {
     try {
-      const recipients = (
-        await this.loadParticipantIds(this.dataSource.manager, post.id)
-      ).filter((id) => id !== commenterId);
+      const recipients = await this.notificationRecipients(post, commenterId);
       const commenter = await this.usersService.findById(commenterId);
       for (const userId of recipients) {
         await this.eventBus.publish<string, PostCommentEventPayload>({

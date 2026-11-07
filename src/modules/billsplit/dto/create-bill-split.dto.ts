@@ -14,6 +14,7 @@ import {
   MaxLength,
   ValidateNested,
 } from 'class-validator';
+import { POST_VISIBILITIES, PostVisibility } from '../../social/social.service';
 import { BILL_SPLIT_MODES, BillSplitMode } from '../entities/bill-split.entity';
 
 export class BillSplitParticipantInputDto {
@@ -71,6 +72,14 @@ export class CreateBillSplitDto {
     description: 'The whole bill in minor units (kobo)',
   })
   total: number;
+
+  @IsIn(POST_VISIBILITIES)
+  @ApiProperty({
+    enum: POST_VISIBILITIES,
+    description:
+      "Whether the split's feed post may reach your followers once the split completes. Required, no default. Participants see it before they pay and can each hide the post.",
+  })
+  visibility: PostVisibility;
 
   @IsArray()
   @ArrayMinSize(1)

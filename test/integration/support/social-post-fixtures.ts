@@ -21,8 +21,8 @@ export async function insertTransferPost(
   await dataSource.query(
     `WITH post AS (
       INSERT INTO posts
-        (id, kind, author_user_id, note, visibility, requested_visibility, is_public, created_at)
-      VALUES ($1, 'transfer', $2, $4, $5, $5, $6, COALESCE($7::timestamptz, clock_timestamp()))
+        (id, kind, author_user_id, note, visibility, requested_visibility, is_public, created_at, published_at)
+      VALUES ($1, 'transfer', $2, $4, $5, $5, $6, COALESCE($7::timestamptz, clock_timestamp()), COALESCE($7::timestamptz, clock_timestamp()))
       RETURNING id, created_at
     )
     INSERT INTO post_participants (post_id, user_id, role, hidden, post_created_at, post_is_public)

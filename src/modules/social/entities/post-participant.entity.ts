@@ -10,7 +10,7 @@ import {
 import { inList } from '../../../database/check.util';
 import { Post } from './post.entity';
 
-export const PARTICIPANT_ROLES = ['author', 'counterparty'] as const;
+export const PARTICIPANT_ROLES = ['author', 'counterparty', 'member'] as const;
 export type ParticipantRole = (typeof PARTICIPANT_ROLES)[number];
 
 // The feed index also carries `post_created_at DESC, post_id DESC` in the
