@@ -49,9 +49,12 @@ needs a hand-written migration for no gain.
 
 **`billsplit` is peripheral.** If it disappeared, every split request would
 still be payable and money would still move correctly. It owns `bill_splits`
-and `bill_split_participants`. It depends on `transfers` and `users` through
-their exported services, and `transfers` never learns that splits exist: no
-column on `money_requests`, no call back into `billsplit`.
+and `bill_split_participants`. It depends on `transfers`, `users` and
+`social` through their exported services, and `transfers` never learns that
+splits exist: no reference to a split on `money_requests`, no call back into
+`billsplit`. The one thing `transfers` is told is the request's own `kind`
+(`direct` | `group_share`), a core-owned description of how paying it behaves
+(see Feed below), which names no split.
 
 **Paid/unpaid is read live, never copied.** Each participant row stores its
 `money_request_id` (cross-module, no FK, unique). A split view loads its
@@ -136,6 +139,22 @@ name. Each subscriber retries on its own, so a billsplit failure never
 re-sends a notification. `billsplit` subscribes to `money_request_paid`,
 `money_request_declined` and a new `money_request_cancelled`, which has no
 notification catalog entry and exists only so `closed_at` lands promptly.
+
+**Feed.** A split reaches the feed as one post, never as one post per share
+payment. Posts are generalised to kinds and participants for this (ADR-0027).
+- Share requests are created with `kind = 'group_share'`. Paying one records
+  no post, forbids `visibility` (400), and its replay check compares the note
+  only. A paid share's transaction id therefore has no post.
+- `POST /bill-splits` requires the initiator's `visibility`, with no default,
+  and it joins the creation fingerprint. The split view shows it to
+  participants before they pay.
+- The split's post (`id` = the split id, the initiator as author, the
+  participants as members) is created unpublished in the creation
+  transaction, and published by `socialService.publishPost(manager, splitId)`
+  in the same transaction that records `completed_at`, from both the event
+  handler and read-repair. A split that closes, expires or is cancelled never
+  publishes. Every member can hide it at any time.
+- Comments and reactions on a split post notify the initiator only.
 
 ## Alternatives considered
 
