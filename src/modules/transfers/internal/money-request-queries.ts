@@ -3,7 +3,7 @@ import { MoneyRequest } from '../entities/money-request.entity';
 
 // Applied to every query that treats a request as still actionable — a
 // `pending` row whose `expiresAt` has passed presents as expired but is
-// never rewritten (ADR-0012), so `status = 'pending'` alone is wrong
+// never rewritten, so `status = 'pending'` alone is wrong
 // everywhere: the pair cap, cancel, and decline all go through this one
 // helper instead of separately-reasoned-about WHERE clauses that could
 // drift.

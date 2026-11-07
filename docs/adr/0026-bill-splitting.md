@@ -54,7 +54,9 @@ and `bill_split_participants`. It depends on `transfers`, `users` and
 splits exist: no reference to a split on `money_requests`, no call back into
 `billsplit`. The one thing `transfers` is told is the request's own `kind`
 (`direct` | `group_share`), a core-owned description of how paying it behaves
-(see Feed below), which names no split.
+(see Feed below), which names no split. `kind` is on the money-request
+response and the `MoneyRequestCreated` event payload, because a client needs
+it to know which pay body to send.
 
 **Paid/unpaid is read live, never copied.** Each participant row stores its
 `money_request_id` (cross-module, no FK, unique). A split view loads its
@@ -197,6 +199,20 @@ payment. Posts are generalised to kinds and participants for this (ADR-0027).
 - A split's displayed status is always correct, because it is read live. The
   stored `completed_at`/`closed_at` can lag the last payment by the event
   delay, or longer if the event was lost, until the next read repairs it.
+- Lock order: the `bill_splits` row first, then the money-request rows in id
+  ascending order (bulk cancel, outcome recording), and the `bill_splits` row
+  before the `posts` row (publishing). Nothing in `transfers` or `social`
+  locks `bill_splits`, so the order can't invert.
+- Repair-on-read covers a lost `money_request_paid`/declined/cancelled event
+  for any split that gets viewed or listed. Feed reads don't repair, so a
+  completed split nobody opens stays unpublished until someone does.
+- Reads made inside a transaction go through that transaction's manager
+  (`findMoneyRequestsByIds`, `UsersService.findByIds`,
+  `SocialService.isFollowing`/`followedBy` all take a `manager`). A nested read
+  on the pool would borrow a second connection while holding the first, and
+  enough concurrent transactions then exhaust the pool and wait on each other
+  forever. The pool also sets `connectionTimeoutMillis` to 10 000 so any such
+  wait fails instead of hanging.
 - `TransfersService` gains manager-accepting methods for creating a split's
   requests, reading requests by id, and cancelling a set of requests.
 - A lost `money_request_paid` still loses a notification, as for every other

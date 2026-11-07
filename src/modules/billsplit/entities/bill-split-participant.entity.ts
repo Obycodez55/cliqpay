@@ -16,9 +16,9 @@ const bigintTransformer = {
 };
 
 // `userId` and `moneyRequestId` are cross-module references (users and
-// transfers' money_requests): plain columns, no FK, no relation (ADR-0002).
+// transfers' money_requests): plain columns, no FK, no relation.
 // There is deliberately no status column: paid/unpaid is read live from the
-// money request (ADR-0026). The user index also carries `created_at DESC` in
+// money request. The user index also carries `created_at DESC` in
 // the migration.
 @Entity('bill_split_participants')
 @Unique('UQ_bill_split_participants_bill_split_id_user_id', [

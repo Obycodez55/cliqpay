@@ -72,6 +72,7 @@ A transfer post has its sender as `author` and its recipient as `counterparty`. 
 
 **Group payments don't post individually.**
 - Money requests gain a core-owned `kind`: `direct` or `group_share`. It describes the request, not the split.
+- The `MoneyRequestCreated` event payload carries `kind` too, so a client or subscriber can tell which pay body a request takes.
 - Paying a `group_share` request records no post.
 - Its payment forbids `visibility`: sending it is a 400. A `direct` payment still requires it.
 - Its idempotency check compares the note only.
@@ -94,7 +95,7 @@ A transfer post has its sender as `author` and its recipient as `counterparty`. 
 - **Hidden content:**
   - on a transfer post, or when the blocker is a split's author, a block by the viewer or by any participant hides the blocked user's comments and reactions on that post from everyone;
   - on a split post, a block by a member hides the blocked user's content only from that member, and each viewer's own blocks hide content from them, so the initiator and other members see both sides.
-- **Blocks between members:** members who have blocked each other may share a split. Rejecting them would tell the initiator, a third party, about a block between two other people. On the post, both can still comment and react, and each one's content is hidden only from the other (a one-way block hides the blocked member's content only from the blocker). Everyone else, including the initiator, sees both, so the initiator learns nothing about the block.
+- **Blocks between members:** members who have blocked each other may share a split. Rejecting them would tell the initiator, a third party, about a block between two other people. On the post, both can still comment and react, and each one's content is hidden only from the other (a one-way block hides the blocked member's content only from the blocker, and the blocked member still sees the blocker's content). Everyone else, including the initiator, sees both, so the initiator learns nothing about the block.
 
 **Notifications by kind.**
 - Transfer posts are unchanged: comments go to the other participant by push and in-app, and reactions in-app.
