@@ -221,3 +221,37 @@ describe('reconciliation_mismatch', () => {
     expect(email.html).toContain('Refunds in flight');
   });
 });
+
+describe('mfa_challenge_otp email', () => {
+  const base = {
+    userId: 'u1',
+    email: 'a@example.com',
+    code: '123456',
+    expiresInMinutes: 10,
+  };
+
+  it('keeps the sign-in wording for a login challenge', () => {
+    const email = emailTemplates.mfa_challenge_otp!({
+      ...base,
+      action: 'sign_in',
+    });
+    expect(email.subject).toBe('Your Cliqpay sign-in code');
+    expect(email.text).toContain('Your Cliqpay sign-in code is: 123456');
+  });
+
+  it.each([
+    ['set_pin', 'set your transaction PIN'],
+    ['change_pin', 'change your transaction PIN'],
+    ['reset_pin', 'reset your transaction PIN'],
+    ['change_password', 'change your password'],
+    ['change_email', 'change your email address'],
+    ['change_phone', 'change your phone number'],
+    ['enroll_totp', 'set up an authenticator app'],
+    ['save_bank_account', 'save a bank account'],
+  ] as const)('names the action for a %s step-up', (action, purpose) => {
+    const email = emailTemplates.mfa_challenge_otp!({ ...base, action });
+    expect(email.subject).toBe(`Your Cliqpay code to ${purpose}`);
+    expect(email.text).toContain(`Your Cliqpay code to ${purpose} is: 123456`);
+    expect(email.text).not.toContain('sign-in');
+  });
+});

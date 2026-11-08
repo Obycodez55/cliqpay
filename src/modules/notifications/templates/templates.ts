@@ -25,6 +25,7 @@ import {
   WithdrawalFailedPayload,
   WithdrawalInitiatedPayload,
 } from '../notification-catalog';
+import { StepUpAction } from '../../../shared/events/domain-events';
 import { renderEmail } from './render-email';
 
 export interface EmailContent {
@@ -50,6 +51,23 @@ export interface InAppContent {
   dedupeKey: string;
 }
 
+const STEP_UP_PURPOSES: Record<StepUpAction, string> = {
+  set_pin: 'set your transaction PIN',
+  change_pin: 'change your transaction PIN',
+  reset_pin: 'reset your transaction PIN',
+  change_password: 'change your password',
+  change_email: 'change your email address',
+  change_phone: 'change your phone number',
+  enroll_totp: 'set up an authenticator app',
+  save_bank_account: 'save a bank account',
+};
+
+function mfaCodeName(action: MfaChallengeOtpPayload['action']): string {
+  return action === 'sign_in'
+    ? 'Cliqpay sign-in code'
+    : `Cliqpay code to ${STEP_UP_PURPOSES[action]}`;
+}
+
 function postNoun(kind: PostCommentPayload['postKind']): string {
   return kind === 'bill_split' ? 'bill split' : 'transaction';
 }
@@ -72,10 +90,13 @@ export const emailTemplates: {
     subject: 'Reset your Cliqpay password',
     ...renderEmail('password_reset_otp', payload),
   }),
-  mfa_challenge_otp: (payload: MfaChallengeOtpPayload) => ({
-    subject: 'Your Cliqpay sign-in code',
-    ...renderEmail('mfa_challenge_otp', payload),
-  }),
+  mfa_challenge_otp: (payload: MfaChallengeOtpPayload) => {
+    const name = mfaCodeName(payload.action);
+    return {
+      subject: `Your ${name}`,
+      ...renderEmail('mfa_challenge_otp', { ...payload, name }),
+    };
+  },
   security_alert: (payload: SecurityAlertPayload) => ({
     subject: 'Security alert on your Cliqpay account',
     ...renderEmail('security_alert', payload),

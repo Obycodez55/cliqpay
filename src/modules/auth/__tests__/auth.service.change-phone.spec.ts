@@ -151,6 +151,7 @@ describe('AuthService — change phone', () => {
       expect(usersService.findById).toHaveBeenCalledWith('user-1');
       expect(mfaService.createStepUpChallenge).toHaveBeenCalledWith(
         buildUser(),
+        'change_phone',
       );
       expect(result.challengeId).toBe('challenge-1');
       expect(result.method).toBe('email');

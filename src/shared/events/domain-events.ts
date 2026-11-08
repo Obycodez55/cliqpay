@@ -23,11 +23,24 @@ export interface SecurityAlertEventPayload {
 
 export const MFA_CHALLENGE_OTP_EVENT = 'mfa_challenge_otp';
 
+export type StepUpAction =
+  | 'set_pin'
+  | 'change_pin'
+  | 'reset_pin'
+  | 'change_password'
+  | 'change_email'
+  | 'change_phone'
+  | 'enroll_totp'
+  | 'save_bank_account';
+
+export type MfaChallengeAction = 'sign_in' | StepUpAction;
+
 export interface MfaChallengeOtpEventPayload {
   userId: string;
   email: string;
   code: string;
   expiresInMinutes: number;
+  action: MfaChallengeAction;
 }
 
 // Carries a link, not a bare code — the token is long and opaque, meant to

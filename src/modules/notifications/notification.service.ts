@@ -111,6 +111,10 @@ export class NotificationService {
     );
   }
 
+  async removePushToken(userId: string, token: string): Promise<void> {
+    await this.pushTokens.delete({ userId, token });
+  }
+
   // Payload shape varies per notification type (email vs phone vs
   // userId-for-push); the public `send<T>` above stays fully typed via
   // NotificationPayloadMap, these internal handlers work generically across

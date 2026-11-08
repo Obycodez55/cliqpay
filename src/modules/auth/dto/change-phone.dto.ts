@@ -1,13 +1,13 @@
 import { Transform } from 'class-transformer';
-import { IsString, IsUUID, Length, Matches } from 'class-validator';
+import { IsString, IsUUID, Length } from 'class-validator';
+import {
+  IsNigerianMobile,
+  normalizeNigerianMobile,
+} from '../../../common/validation/phone';
 
 export class ChangePhoneDto {
-  @Transform(({ value }: { value: unknown }) =>
-    typeof value === 'string' ? value.trim() : value,
-  )
-  @Matches(/^\+?[1-9]\d{6,14}$/, {
-    message: 'newPhone must be a valid phone number',
-  })
+  @Transform(({ value }: { value: unknown }) => normalizeNigerianMobile(value))
+  @IsNigerianMobile()
   newPhone: string;
 
   @IsUUID()

@@ -13,6 +13,7 @@ import {
   PhoneVerificationOtpEventPayload,
   SECURITY_ALERT_EVENT,
   SecurityAlertEventPayload,
+  StepUpAction,
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
 import { LedgerService } from '../ledger/ledger.service';
@@ -318,7 +319,7 @@ export class AuthService {
     userId: string,
   ): Promise<StepUpChallengeResponseDto> {
     const user = await this.usersService.findById(userId);
-    return this.mfaService.createStepUpChallenge(user);
+    return this.mfaService.createStepUpChallenge(user, 'change_password');
   }
 
   // Step 2 of 2 — verifies the step-up challenge and the current password,
@@ -372,7 +373,7 @@ export class AuthService {
     userId: string,
   ): Promise<StepUpChallengeResponseDto> {
     const user = await this.usersService.findById(userId);
-    return this.mfaService.createStepUpChallenge(user);
+    return this.mfaService.createStepUpChallenge(user, 'enroll_totp');
   }
 
   // Gates MfaService.enrollTotp behind the step-up challenge above — a
@@ -404,7 +405,7 @@ export class AuthService {
     userId: string,
   ): Promise<StepUpChallengeResponseDto> {
     const user = await this.usersService.findById(userId);
-    return this.mfaService.createStepUpChallenge(user);
+    return this.mfaService.createStepUpChallenge(user, 'change_email');
   }
 
   // Step 2 of 3 — verifies the step-up challenge, stashes newEmail as
@@ -493,7 +494,7 @@ export class AuthService {
     userId: string,
   ): Promise<StepUpChallengeResponseDto> {
     const user = await this.usersService.findById(userId);
-    return this.mfaService.createStepUpChallenge(user);
+    return this.mfaService.createStepUpChallenge(user, 'change_phone');
   }
 
   // Step 2 of 3 — verifies the step-up challenge, stashes newPhone as
@@ -586,13 +587,16 @@ export class AuthService {
   // class lives under auth/dto and isn't an importable cross-module entry
   // point (docs/architecture.md §10); callers outside this module get the
   // same shape without needing to import anything from here to type it.
-  async initiateStepUp(userId: string): Promise<{
+  async initiateStepUp(
+    userId: string,
+    action: StepUpAction,
+  ): Promise<{
     challengeId: string;
     method: 'email' | 'totp';
     expiresAt: Date;
   }> {
     const user = await this.usersService.findById(userId);
-    return this.mfaService.createStepUpChallenge(user);
+    return this.mfaService.createStepUpChallenge(user, action);
   }
 
   // Verifies a step-up challenge was created for, and answered by, this

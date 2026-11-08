@@ -5,6 +5,8 @@ import { DataSource, EntityManager } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import {
   MFA_CHALLENGE_OTP_EVENT,
+  MfaChallengeAction,
+  StepUpAction,
   MfaChallengeOtpEventPayload,
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
@@ -94,7 +96,7 @@ export class MfaService {
     method: 'email' | 'totp';
     expiresAt: Date;
   }> {
-    return this.buildChallenge(user);
+    return this.buildChallenge(user, 'sign_in');
   }
 
   // Step-up — re-proving MFA on an already-authenticated session before a
@@ -105,15 +107,21 @@ export class MfaService {
   // consulting TrustedDevice before calling this, not by anything in here.
   // Shares createChallengeForLogin's method-picking/dispatch machinery
   // rather than duplicating it.
-  async createStepUpChallenge(user: { id: string; email: string }): Promise<{
+  async createStepUpChallenge(
+    user: { id: string; email: string },
+    action: StepUpAction,
+  ): Promise<{
     challengeId: string;
     method: 'email' | 'totp';
     expiresAt: Date;
   }> {
-    return this.buildChallenge(user);
+    return this.buildChallenge(user, action);
   }
 
-  private async buildChallenge(user: { id: string; email: string }): Promise<{
+  private async buildChallenge(
+    user: { id: string; email: string },
+    action: MfaChallengeAction,
+  ): Promise<{
     challengeId: string;
     method: 'email' | 'totp';
     expiresAt: Date;
@@ -122,7 +130,7 @@ export class MfaService {
       .getRepository(MfaMethod)
       .find({ where: { userId: user.id } });
     const method = this.pickChallengeMethod(methods);
-    const challenge = await this.createChallenge(user, method);
+    const challenge = await this.createChallenge(user, method, action);
     return {
       challengeId: challenge.id,
       method: method.type,
@@ -156,6 +164,7 @@ export class MfaService {
   private async createChallenge(
     user: { id: string; email: string },
     method: MfaMethod,
+    action: MfaChallengeAction,
   ): Promise<MfaChallenge> {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + CHALLENGE_TTL_MS);
@@ -186,6 +195,7 @@ export class MfaService {
             email: user.email,
             code: plainCode,
             expiresInMinutes: CHALLENGE_TTL_MS / 60_000,
+            action,
           },
           occurredAt: now,
         },

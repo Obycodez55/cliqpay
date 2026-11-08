@@ -1,7 +1,11 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
+  Param,
   Post,
   Query,
   Req,
@@ -25,6 +29,7 @@ import { NotificationListQueryDto } from './dto/notification-list-query.dto';
 import { NotificationItemDto } from './dto/notification-item.dto';
 import { MarkNotificationsReadDto } from './dto/mark-notifications-read.dto';
 import { UnreadCountResponseDto } from './dto/unread-count-response.dto';
+import { RegisterPushTokenDto } from './dto/register-push-token.dto';
 
 @ApiTags('Notifications')
 @ApiBearerAuth()
@@ -79,5 +84,31 @@ export class NotificationsController {
       ids: dto.ids,
       all: dto.all,
     });
+  }
+
+  @Post('push-tokens')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: "Register this device's push token" })
+  async registerPushToken(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: RegisterPushTokenDto,
+  ): Promise<void> {
+    await this.notificationService.registerPushToken(
+      req.user.userId,
+      dto.platform,
+      dto.token,
+    );
+  }
+
+  // Always 204, so the response never reveals whether a token belongs to
+  // someone else.
+  @Delete('push-tokens/:token')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiOperation({ summary: "Remove one of your devices' push tokens" })
+  async removePushToken(
+    @Req() req: AuthenticatedRequest,
+    @Param('token') token: string,
+  ): Promise<void> {
+    await this.notificationService.removePushToken(req.user.userId, token);
   }
 }
