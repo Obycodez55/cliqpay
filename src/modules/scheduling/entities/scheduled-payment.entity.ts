@@ -11,7 +11,7 @@ import {
 import { inList } from '../../../database/check.util';
 import { IntervalUnit } from '../internal/run-time';
 
-export const SCHEDULE_TARGET_TYPES = ['user'] as const;
+export const SCHEDULE_TARGET_TYPES = ['user', 'bank_account'] as const;
 export type ScheduleTargetType = (typeof SCHEDULE_TARGET_TYPES)[number];
 
 export const SCHEDULE_STATUSES = [
@@ -25,12 +25,16 @@ export type ScheduleStatus = (typeof SCHEDULE_STATUSES)[number];
 export const SCHEDULE_VISIBILITIES = ['public', 'private'] as const;
 export type ScheduleVisibility = (typeof SCHEDULE_VISIBILITIES)[number];
 
+// Exactly the target column matching `target_type` is set, and visibility
+// exists only for a user target: a bank payout is never in the feed.
+export const TARGET_COLUMNS_CHECK = `("target_type" = 'user' AND "recipient_user_id" IS NOT NULL AND "bank_account_id" IS NULL AND "visibility" IS NOT NULL) OR ("target_type" = 'bank_account' AND "bank_account_id" IS NOT NULL AND "recipient_user_id" IS NULL AND "visibility" IS NULL)`;
+
 export const bigintTransformer = {
   to: (v: bigint) => v,
   from: (v: string) => BigInt(v),
 };
 
-// `userId` and `recipientUserId` are cross-module references: plain columns,
+// `userId`, `recipientUserId` and `bankAccountId` are cross-module references: plain columns,
 // no FK, no relation. `startDate` and `endDate` are Lagos calendar dates, kept
 // as the 'YYYY-MM-DD' strings Postgres returns; `startDate` is the date of run
 // `anchorRunNumber`. `nextRunAt` is null once no further
@@ -40,6 +44,7 @@ export const bigintTransformer = {
   'CHK_scheduled_payments_target_type',
   inList('target_type', SCHEDULE_TARGET_TYPES),
 )
+@Check('CHK_scheduled_payments_target', TARGET_COLUMNS_CHECK)
 @Check('CHK_scheduled_payments_status', inList('status', SCHEDULE_STATUSES))
 @Check(
   'CHK_scheduled_payments_visibility',
@@ -79,8 +84,11 @@ export class ScheduledPayment {
   @Column('varchar')
   targetType: ScheduleTargetType;
 
-  @Column('uuid')
-  recipientUserId: string;
+  @Column({ type: 'uuid', nullable: true })
+  recipientUserId: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  bankAccountId: string | null;
 
   @Column('bigint', { transformer: bigintTransformer })
   amount: bigint;
@@ -91,8 +99,8 @@ export class ScheduledPayment {
   @Column('varchar', { length: 500, nullable: true })
   note: string | null;
 
-  @Column('varchar')
-  visibility: ScheduleVisibility;
+  @Column({ type: 'varchar', nullable: true })
+  visibility: ScheduleVisibility | null;
 
   @Column('date')
   startDate: string;

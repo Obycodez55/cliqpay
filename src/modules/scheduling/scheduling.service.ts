@@ -27,20 +27,31 @@ import { KycService } from '../kyc/kyc.service';
 import { SocialService } from '../social/social.service';
 import { TransfersService } from '../transfers/transfers.service';
 import { UsersService } from '../users/users.service';
+import { WithdrawalsService } from '../withdrawals/withdrawals.service';
 import { CreateScheduledPaymentDto } from './dto/create-scheduled-payment.dto';
 import { ListScheduledPaymentRunsQueryDto } from './dto/list-scheduled-payment-runs-query.dto';
 import { ListScheduledPaymentsQueryDto } from './dto/list-scheduled-payments-query.dto';
 import { ResumeScheduledPaymentDto } from './dto/resume-scheduled-payment.dto';
 import { UpdateScheduledPaymentDto } from './dto/update-scheduled-payment.dto';
 import { ScheduledPaymentRunResponseDto } from './dto/scheduled-payment-run-response.dto';
-import { ScheduledPaymentResponseDto } from './dto/scheduled-payment-response.dto';
-import { ScheduledPayment } from './entities/scheduled-payment.entity';
+import {
+  ScheduleFeesDto,
+  ScheduledPaymentResponseDto,
+} from './dto/scheduled-payment-response.dto';
+import {
+  ScheduleTargetType,
+  ScheduledPayment,
+} from './entities/scheduled-payment.entity';
 import { ScheduledPaymentRun } from './entities/scheduled-payment-run.entity';
 import { ScheduledPaymentAttempt } from './entities/scheduled-payment-attempt.entity';
 import { ScheduledPaymentChange } from './entities/scheduled-payment-change.entity';
 import {
   ScheduleAlreadyCompletedException,
   ScheduleAmountExceedsDailyLimitException,
+  ScheduleAmountTooSmallException,
+  ScheduleBankAccountNotFoundException,
+  ScheduleSenderEmailNotVerifiedException,
+  ScheduleTargetInvalidException,
   ScheduleLimitReachedException,
   ScheduleNothingToResumeException,
   SchedulePinRequiredException,
@@ -60,6 +71,7 @@ import {
   startDateBounds,
 } from './internal/run-time';
 import { RunEngine } from './internal/run-engine.service';
+import { targetLabel } from './internal/target-label';
 import { needsPin, pinGatedChanged, planEdit } from './internal/schedule-edit';
 
 const NGN = 'NGN';
@@ -80,6 +92,7 @@ export class SchedulingService {
     // under a lock in one transaction.
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly transfersService: TransfersService,
+    private readonly withdrawalsService: WithdrawalsService,
     private readonly usersService: UsersService,
     private readonly kycService: KycService,
     private readonly socialService: SocialService,
@@ -93,12 +106,12 @@ export class SchedulingService {
     userId: string,
     dto: CreateScheduledPaymentDto,
   ): Promise<ScheduledPaymentResponseDto> {
+    assertTargetShape(dto);
     const replayed = await this.findReplay(userId, dto);
     if (replayed) {
       return this.respond(replayed);
     }
 
-    const recipientUserId = dto.target.userId;
     const { min, max } = startDateBounds(new Date());
     if (
       !isValidIsoDate(dto.startDate) ||
@@ -109,16 +122,31 @@ export class SchedulingService {
     }
     assertRecurrenceValid(dto);
 
-    const prepared = await this.transfersService.prepareTransfer(
-      userId,
-      recipientUserId,
-      dto.amount,
-    );
-    if (prepared.sender.isFrozen) {
-      throw new ScheduleSenderFrozenException();
+    const bank = dto.target.type === 'bank_account';
+    let senderEmail: string;
+    let amountMinor: bigint;
+    if (bank) {
+      const sender = await this.assertBankPaymentAllowed(
+        userId,
+        dto.target.bankAccountId!,
+        dto.amount,
+      );
+      senderEmail = sender.email;
+      amountMinor = BigInt(dto.amount);
+    } else {
+      const prepared = await this.transfersService.prepareTransfer(
+        userId,
+        dto.target.userId!,
+        dto.amount,
+      );
+      if (prepared.sender.isFrozen) {
+        throw new ScheduleSenderFrozenException();
+      }
+      await this.assertWithinDailyLimit(userId, prepared.amount);
+      await this.assertRecipientCanReceive(userId, prepared);
+      senderEmail = prepared.sender.email;
+      amountMinor = prepared.amount.amount;
     }
-    await this.assertWithinDailyLimit(userId, prepared.amount);
-    await this.assertRecipientCanReceive(userId, prepared);
     await this.authService.verifyTransactionPin(userId, dto.pin);
 
     const { windowStart, windowMinutes } = this.config.scheduledPayments;
@@ -134,12 +162,13 @@ export class SchedulingService {
           repo.create({
             userId,
             reference: dto.reference,
-            targetType: 'user',
-            recipientUserId,
-            amount: prepared.amount.amount,
+            targetType: dto.target.type,
+            recipientUserId: bank ? null : dto.target.userId!,
+            bankAccountId: bank ? dto.target.bankAccountId! : null,
+            amount: amountMinor,
             currency: NGN,
             note: dto.note ?? null,
-            visibility: dto.visibility,
+            visibility: bank ? null : dto.visibility!,
             startDate: dto.startDate,
             anchorRunNumber: 1,
             intervalUnit: dto.interval?.unit ?? null,
@@ -173,8 +202,8 @@ export class SchedulingService {
       throw error;
     }
 
-    await this.publishCreated(schedule, prepared.sender.email);
-    return toResponse(schedule, 0);
+    await this.publishCreated(schedule, senderEmail);
+    return this.toResponse(schedule, 0);
   }
 
   async get(
@@ -227,7 +256,7 @@ export class SchedulingService {
     const runsUsed = await this.runsCreated(page.map((s) => s.id));
     return {
       items: page.map((schedule) =>
-        toResponse(schedule, runsUsed.get(schedule.id) ?? 0),
+        this.toResponse(schedule, runsUsed.get(schedule.id) ?? 0),
       ),
       nextCursor: hasMore
         ? encodeCreatedAtIdCursor({
@@ -381,6 +410,11 @@ export class SchedulingService {
       throw new ScheduledPaymentNotFoundException();
     }
     assertEditable(current);
+    if (current.targetType === 'bank_account' && dto.visibility !== undefined) {
+      throw new ScheduleTargetInvalidException(
+        'visibility cannot be set on a bank account payment',
+      );
+    }
     const pinNeeded = needsPin(dto);
     if (pinNeeded && dto.pin === undefined) {
       throw new SchedulePinRequiredException();
@@ -396,11 +430,7 @@ export class SchedulingService {
       windowStart,
     );
     if (preview.changes.amount) {
-      await this.assertAmountAllowed(
-        userId,
-        current.recipientUserId,
-        dto.amount!,
-      );
+      await this.assertAmountAllowed(userId, current, dto.amount!);
     }
     if (pinNeeded) {
       await this.authService.verifyTransactionPin(userId, dto.pin!);
@@ -466,7 +496,7 @@ export class SchedulingService {
     const attempts = page.length
       ? await this.dataSource.getRepository(ScheduledPaymentAttempt).find({
           where: { runId: In(page.map((run) => run.id)) },
-          order: { attemptNumber: 'ASC' },
+          order: { attemptNumber: 'ASC', createdAt: 'ASC' },
         })
       : [];
     return {
@@ -478,6 +508,7 @@ export class SchedulingService {
         amount: Money.of(run.amount, NGN).toJSON(),
         nextAttemptAt: run.nextAttemptAt?.toISOString() ?? null,
         transactionId: run.transactionId,
+        fees: this.feesOf(run.targetType),
         attempts: attempts
           .filter((attempt) => attempt.runId === run.id)
           .map((attempt) => ({
@@ -551,7 +582,7 @@ export class SchedulingService {
     schedule: ScheduledPayment,
   ): Promise<ScheduledPaymentResponseDto> {
     const runsUsed = await this.runsCreated([schedule.id]);
-    return toResponse(schedule, runsUsed.get(schedule.id) ?? 0);
+    return this.toResponse(schedule, runsUsed.get(schedule.id) ?? 0);
   }
 
   private async findReplay(
@@ -565,7 +596,9 @@ export class SchedulingService {
       return null;
     }
     const same =
-      existing.recipientUserId === dto.target.userId &&
+      existing.targetType === dto.target.type &&
+      existing.recipientUserId === (dto.target.userId ?? null) &&
+      existing.bankAccountId === (dto.target.bankAccountId ?? null) &&
       existing.amount === BigInt(dto.amount) &&
       existing.startDate === dto.startDate &&
       existing.intervalUnit === (dto.interval?.unit ?? null) &&
@@ -573,7 +606,7 @@ export class SchedulingService {
       existing.endDate === (dto.endDate ?? null) &&
       existing.maxRuns === (dto.maxRuns ?? null) &&
       existing.note === (dto.note ?? null) &&
-      existing.visibility === dto.visibility;
+      existing.visibility === (dto.visibility ?? null);
     if (!same) {
       throw new ScheduleReferenceReusedException();
     }
@@ -582,12 +615,16 @@ export class SchedulingService {
 
   private async assertAmountAllowed(
     userId: string,
-    recipientUserId: string,
+    schedule: ScheduledPayment,
     amount: number,
   ): Promise<void> {
+    if (schedule.targetType === 'bank_account') {
+      await this.assertBankAmountAllowed(userId, amount);
+      return;
+    }
     const prepared = await this.transfersService.prepareTransfer(
       userId,
-      recipientUserId,
+      schedule.recipientUserId!,
       amount,
     );
     if (prepared.sender.isFrozen) {
@@ -595,6 +632,45 @@ export class SchedulingService {
     }
     await this.assertWithinDailyLimit(userId, prepared.amount);
     await this.assertRecipientCanReceive(userId, prepared);
+  }
+
+  // The account has to be saved and the sender's, and the amount something
+  // a withdrawal would accept on the day; the run checks it all again.
+  private async assertBankPaymentAllowed(
+    userId: string,
+    bankAccountId: string,
+    amount: number,
+  ): Promise<Awaited<ReturnType<UsersService['findById']>>> {
+    if (
+      (await this.withdrawalsService.getBankAccountLabel(
+        userId,
+        bankAccountId,
+      )) === null
+    ) {
+      throw new ScheduleBankAccountNotFoundException();
+    }
+    return this.assertBankAmountAllowed(userId, amount);
+  }
+
+  private async assertBankAmountAllowed(
+    userId: string,
+    amount: number,
+  ): Promise<Awaited<ReturnType<UsersService['findById']>>> {
+    const { minAmount } = this.config.withdrawals;
+    if (amount < minAmount) {
+      throw new ScheduleAmountTooSmallException(
+        Money.of(minAmount, NGN).toDecimalString(),
+      );
+    }
+    const sender = await this.usersService.findById(userId);
+    if (!sender.emailVerifiedAt) {
+      throw new ScheduleSenderEmailNotVerifiedException();
+    }
+    if (sender.isFrozen) {
+      throw new ScheduleSenderFrozenException();
+    }
+    await this.assertWithinDailyLimit(userId, Money.of(amount, NGN));
+    return sender;
   }
 
   private async assertWithinDailyLimit(
@@ -680,8 +756,10 @@ export class SchedulingService {
     senderEmail: string,
   ): Promise<void> {
     try {
-      const recipient = await this.usersService.findById(
-        schedule.recipientUserId,
+      const counterpartyLabel = await targetLabel(
+        this.usersService,
+        this.withdrawalsService,
+        schedule,
       );
       await this.eventBus.publish<string, ScheduledPaymentCreatedEventPayload>({
         name: SCHEDULED_PAYMENT_CREATED_EVENT,
@@ -689,7 +767,7 @@ export class SchedulingService {
           userId: schedule.userId,
           email: senderEmail,
           scheduledPaymentId: schedule.id,
-          counterpartyUsername: recipient.username,
+          counterpartyLabel,
           amount: Money.of(
             schedule.amount,
             schedule.currency,
@@ -712,9 +790,9 @@ export class SchedulingService {
     changedFields: string[],
   ): Promise<void> {
     try {
-      const [sender, recipient] = await Promise.all([
+      const [sender, counterpartyLabel] = await Promise.all([
         this.usersService.findById(schedule.userId),
-        this.usersService.findById(schedule.recipientUserId),
+        targetLabel(this.usersService, this.withdrawalsService, schedule),
       ]);
       await this.eventBus.publish<string, ScheduledPaymentUpdatedEventPayload>({
         name: SCHEDULED_PAYMENT_UPDATED_EVENT,
@@ -723,7 +801,7 @@ export class SchedulingService {
           email: sender.email,
           scheduledPaymentId: schedule.id,
           changeId,
-          counterpartyUsername: recipient.username,
+          counterpartyLabel,
           amount: Money.of(
             schedule.amount,
             schedule.currency,
@@ -738,6 +816,76 @@ export class SchedulingService {
         `update: scheduled payment "${schedule.id}" updated, but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
       );
     }
+  }
+
+  private toResponse(
+    schedule: ScheduledPayment,
+    runsUsed: number,
+  ): ScheduledPaymentResponseDto {
+    return {
+      id: schedule.id,
+      target:
+        schedule.targetType === 'bank_account'
+          ? { type: 'bank_account', bankAccountId: schedule.bankAccountId! }
+          : { type: 'user', userId: schedule.recipientUserId! },
+      amount: Money.of(schedule.amount, schedule.currency).toJSON(),
+      note: schedule.note,
+      visibility: schedule.visibility,
+      fees: this.feesOf(schedule.targetType),
+      interval:
+        schedule.intervalUnit && schedule.intervalCount
+          ? { unit: schedule.intervalUnit, count: schedule.intervalCount }
+          : null,
+      endDate: schedule.endDate,
+      maxRuns: schedule.maxRuns,
+      runsUsed,
+      status: schedule.status,
+      consecutiveFailures: schedule.consecutiveFailures,
+      pausedReason: schedule.pausedReason,
+      nextRunDate: schedule.nextRunAt ? lagosToday(schedule.nextRunAt) : null,
+      nextRunAt: schedule.nextRunAt?.toISOString() ?? null,
+      createdAt: schedule.createdAt.toISOString(),
+    };
+  }
+
+  private feesOf(targetType: ScheduleTargetType): ScheduleFeesDto | null {
+    if (targetType !== 'bank_account') {
+      return null;
+    }
+    const { platformFee, providerFee } = this.config.withdrawals;
+    return {
+      platform: Money.of(platformFee, NGN).toJSON(),
+      provider: Money.of(providerFee, NGN).toJSON(),
+    };
+  }
+}
+
+// A user target needs a userId and a visibility; a bank account target a
+// bankAccountId and no visibility, since a bank payout is never in the feed.
+function assertTargetShape(dto: CreateScheduledPaymentDto): void {
+  const { target } = dto;
+  if (target.type === 'user') {
+    if (target.bankAccountId !== undefined) {
+      throw new ScheduleTargetInvalidException(
+        'bankAccountId cannot be set on a user target',
+      );
+    }
+    if (dto.visibility === undefined) {
+      throw new ScheduleTargetInvalidException(
+        'visibility is required for a user target',
+      );
+    }
+    return;
+  }
+  if (target.userId !== undefined) {
+    throw new ScheduleTargetInvalidException(
+      'userId cannot be set on a bank account target',
+    );
+  }
+  if (dto.visibility !== undefined) {
+    throw new ScheduleTargetInvalidException(
+      'visibility cannot be set on a bank account target',
+    );
   }
 }
 
@@ -802,30 +950,4 @@ function decodeRunNumberCursor(raw: string): number {
     // falls through to the 400 below
   }
   throw new BadRequestException('Invalid cursor');
-}
-
-function toResponse(
-  schedule: ScheduledPayment,
-  runsUsed: number,
-): ScheduledPaymentResponseDto {
-  return {
-    id: schedule.id,
-    target: { type: 'user', userId: schedule.recipientUserId },
-    amount: Money.of(schedule.amount, schedule.currency).toJSON(),
-    note: schedule.note,
-    visibility: schedule.visibility,
-    interval:
-      schedule.intervalUnit && schedule.intervalCount
-        ? { unit: schedule.intervalUnit, count: schedule.intervalCount }
-        : null,
-    endDate: schedule.endDate,
-    maxRuns: schedule.maxRuns,
-    runsUsed,
-    status: schedule.status,
-    consecutiveFailures: schedule.consecutiveFailures,
-    pausedReason: schedule.pausedReason,
-    nextRunDate: schedule.nextRunAt ? lagosToday(schedule.nextRunAt) : null,
-    nextRunAt: schedule.nextRunAt?.toISOString() ?? null,
-    createdAt: schedule.createdAt.toISOString(),
-  };
 }

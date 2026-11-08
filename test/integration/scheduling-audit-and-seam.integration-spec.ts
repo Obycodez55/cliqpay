@@ -12,6 +12,7 @@ import {
 } from './support/scheduling-test-context';
 import { dataOf } from './support/api-response';
 import { TransfersService } from '../../src/modules/transfers/transfers.service';
+import { WithdrawalsService } from '../../src/modules/withdrawals/withdrawals.service';
 
 jest.setTimeout(180_000);
 
@@ -149,6 +150,58 @@ describe('Scheduled payment audit tables and the standing-authorisation seam', (
           amount: 100_000,
         });
       expect(request.status).toBeLessThan(500);
+
+      expect(spy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('executeScheduledWithdrawal', () => {
+    it('is not called by any controller', () => {
+      const offenders = controllerFiles(join(__dirname, '../../src')).filter(
+        (file) =>
+          readFileSync(file, 'utf8').includes('executeScheduledWithdrawal'),
+      );
+
+      expect(offenders).toEqual([]);
+    });
+
+    it('is not reached by any request to the withdrawal or scheduling routes', async () => {
+      const spy = jest.spyOn(
+        ctx.app.get(WithdrawalsService, { strict: false }),
+        'executeScheduledWithdrawal',
+      );
+      const sender = await h.seedUser('sender', { balanceMinor: 5_000_000n });
+      const bank = await h.seedBank(sender.userId);
+      const auth = { Authorization: `Bearer ${h.tokenFor(sender.userId)}` };
+
+      await h
+        .http()
+        .post('/withdrawals')
+        .set(auth)
+        .send({
+          bankAccountId: bank.id,
+          amount: 100_000,
+          reference: `live-${randomUUID()}`,
+          pin: '1234',
+        })
+        .expect(201);
+      const schedule = dataOf<ScheduleBody>(
+        await h.createBankSchedule(sender.userId, bank.id).expect(201),
+      );
+      await h.getSchedule(sender.userId, schedule.id).expect(200);
+      await h.cancelSchedule(sender.userId, schedule.id).expect(201);
+      const forged = await h
+        .http()
+        .post('/withdrawals')
+        .set(auth)
+        .send({
+          bankAccountId: bank.id,
+          amount: 100_000,
+          reference: `live-${randomUUID()}`,
+          scheduleId: schedule.id,
+          runNumber: 1,
+        });
+      expect(forged.status).toBe(400);
 
       expect(spy).not.toHaveBeenCalled();
     });

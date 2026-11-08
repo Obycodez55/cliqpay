@@ -141,7 +141,7 @@ export interface ScheduledPaymentCreatedPayload {
   email: string;
   // The schedule's id: the in-app channel's dedupe_key.
   scheduledPaymentId: string;
-  counterpartyUsername: string;
+  counterpartyLabel: string;
   amount: string;
   currency: string;
   startDate: string;
@@ -154,7 +154,7 @@ export interface ScheduledPaymentUpdatedPayload {
   // The edit's change row: a schedule can be edited many times, so the
   // schedule's own id can't be the in-app channel's dedupe_key.
   changeId: string;
-  counterpartyUsername: string;
+  counterpartyLabel: string;
   amount: string;
   currency: string;
   changedFields: string[];
@@ -165,7 +165,7 @@ export interface ScheduledPaymentRunFailedPayload {
   // The run's id: the in-app channel's dedupe_key.
   runId: string;
   scheduledPaymentId: string;
-  counterpartyUsername: string;
+  counterpartyLabel: string;
   amount: string;
   currency: string;
   runDate: string;
@@ -177,7 +177,7 @@ export interface ScheduledPaymentRunsMissedPayload {
   // The batch's first missed run: the in-app channel's dedupe_key.
   runId: string;
   scheduledPaymentId: string;
-  counterpartyUsername: string;
+  counterpartyLabel: string;
   amount: string;
   currency: string;
   runDates: string[];
@@ -186,9 +186,11 @@ export interface ScheduledPaymentRunsMissedPayload {
 export interface ScheduledPaymentUpcomingPayload {
   userId: string;
   scheduledPaymentId: string;
-  counterpartyUsername: string;
+  counterpartyLabel: string;
   amount: string;
   balance: string;
+  // A bank run's fees, debited on top of the amount.
+  fee?: string;
   currency: string;
   runDate: string;
 }
@@ -200,7 +202,7 @@ export interface ScheduledPaymentPausedPayload {
   // The pause's change row: a schedule can be paused more than once, so the
   // schedule's own id can't be the in-app channel's dedupe_key.
   changeId: string;
-  counterpartyUsername: string;
+  counterpartyLabel: string;
   amount: string;
   currency: string;
   reason: string;

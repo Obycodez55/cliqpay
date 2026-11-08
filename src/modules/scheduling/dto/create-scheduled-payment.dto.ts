@@ -1,7 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
-  Equals,
   IsIn,
   IsInt,
   IsOptional,
@@ -12,6 +11,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateIf,
   ValidateNested,
   ValidationArguments,
   registerDecorator,
@@ -23,7 +23,9 @@ import {
 import { IsNotReservedReference } from '../../../common/validation/reference';
 import { INTERVAL_UNITS, IntervalUnit } from '../internal/run-time';
 import {
+  SCHEDULE_TARGET_TYPES,
   SCHEDULE_VISIBILITIES,
+  ScheduleTargetType,
   ScheduleVisibility,
 } from '../entities/scheduled-payment.entity';
 
@@ -68,13 +70,26 @@ export class ScheduleIntervalDto {
 }
 
 export class ScheduleTargetDto {
-  @Equals('user')
-  @ApiProperty({ enum: ['user'] })
-  type: 'user';
+  @IsIn(SCHEDULE_TARGET_TYPES)
+  @ApiProperty({ enum: SCHEDULE_TARGET_TYPES })
+  type: ScheduleTargetType;
 
+  @ValidateIf((target: ScheduleTargetDto) => target.type !== 'bank_account')
   @IsUUID()
-  @ApiProperty({ description: "The recipient's user id" })
-  userId: string;
+  @ApiProperty({
+    required: false,
+    description: "The recipient's user id. Required for a `user` target.",
+  })
+  userId?: string;
+
+  @ValidateIf((target: ScheduleTargetDto) => target.type !== 'user')
+  @IsUUID()
+  @ApiProperty({
+    required: false,
+    description:
+      'One of your saved bank accounts. Required for a `bank_account` target.',
+  })
+  bankAccountId?: string;
 }
 
 export class CreateScheduledPaymentDto {
@@ -155,13 +170,15 @@ export class CreateScheduledPaymentDto {
   @ApiProperty({ required: false, example: 'Rent' })
   note?: string;
 
+  @IsOptional()
   @IsIn(SCHEDULE_VISIBILITIES)
   @ApiProperty({
+    required: false,
     enum: SCHEDULE_VISIBILITIES,
     description:
-      'Whether the transfer made on the run date may appear in the activity feed. Required; there is no default.',
+      'Whether the transfer made on the run date may appear in the activity feed. Required for a `user` target, with no default; forbidden for a `bank_account` target.',
   })
-  visibility: ScheduleVisibility;
+  visibility?: ScheduleVisibility;
 
   @Matches(/^\d{4}$/, { message: 'pin must be exactly 4 digits' })
   @ApiProperty({

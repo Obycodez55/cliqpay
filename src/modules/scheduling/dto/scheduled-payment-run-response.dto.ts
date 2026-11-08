@@ -8,6 +8,7 @@ import {
   FAILURE_CODES,
   FailureCode,
 } from '../entities/scheduled-payment-attempt.entity';
+import { ScheduleFeesDto } from './scheduled-payment-response.dto';
 import {
   RUN_STATUSES,
   RunStatus,
@@ -61,6 +62,13 @@ export class ScheduledPaymentRunResponseDto {
 
   @ApiProperty({ nullable: true })
   transactionId: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    type: ScheduleFeesDto,
+    description: 'Fees debited on top of the amount; null for a user target',
+  })
+  fees: ScheduleFeesDto | null;
 
   @ApiProperty({ type: [ScheduledPaymentAttemptResponseDto] })
   attempts: ScheduledPaymentAttemptResponseDto[];

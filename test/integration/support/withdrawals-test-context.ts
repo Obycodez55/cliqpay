@@ -307,7 +307,7 @@ export async function fundWallet(
 // and tests need the plaintext to assert against API responses without
 // each one reaching for the encryption key itself.
 export async function seedBankAccount(
-  ctx: WithdrawalsTestContext,
+  ctx: Pick<WithdrawalsTestContext, 'bankAccountRepo'>,
   args: {
     userId: string;
     bankCode?: string;

@@ -17,6 +17,7 @@ import {
   SCHEDULE_TARGET_TYPES,
   SCHEDULE_VISIBILITIES,
   ScheduledPayment,
+  TARGET_COLUMNS_CHECK,
   bigintTransformer,
 } from './scheduled-payment.entity';
 
@@ -26,6 +27,8 @@ export const RUN_STATUSES = [
   'failed',
   'cancelled',
   'missed',
+  'settling',
+  'reversed',
 ] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 
@@ -34,6 +37,7 @@ export type RunStatus = (typeof RUN_STATUSES)[number];
 // `transactionId` is ledger's transactions.id: cross-module, no FK.
 @Entity('scheduled_payment_runs')
 @Check('CHK_scheduled_payment_runs_status', inList('status', RUN_STATUSES))
+@Check('CHK_scheduled_payment_runs_target', TARGET_COLUMNS_CHECK)
 @Check(
   'CHK_scheduled_payment_runs_target_type',
   inList('target_type', SCHEDULE_TARGET_TYPES),
@@ -75,14 +79,17 @@ export class ScheduledPaymentRun {
   @Column('varchar')
   targetType: ScheduleTargetType;
 
-  @Column('uuid')
-  recipientUserId: string;
+  @Column({ type: 'uuid', nullable: true })
+  recipientUserId: string | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  bankAccountId: string | null;
 
   @Column('varchar', { length: 500, nullable: true })
   note: string | null;
 
-  @Column('varchar')
-  visibility: ScheduleVisibility;
+  @Column({ type: 'varchar', nullable: true })
+  visibility: ScheduleVisibility | null;
 
   @Column('int', { default: 0 })
   attemptCount: number;

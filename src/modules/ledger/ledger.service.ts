@@ -257,6 +257,7 @@ export interface PostWithdrawalParams {
   platformFee: Money;
   providerFee: Money;
   bankAccount: WithdrawalBankAccountSnapshot;
+  extraMetadata?: Record<string, unknown>;
 }
 
 export interface PostWithdrawalResult {
@@ -474,6 +475,20 @@ export class LedgerService {
       : null;
   }
 
+  async findTransactionRefForUser(
+    reference: string,
+    userId: string,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<{ id: string; status: string } | null> {
+    const transaction = await manager
+      .getRepository(Transaction)
+      .findOneBy({ reference });
+    return transaction &&
+      (await this.transactionBelongsToUser(transaction, userId, manager))
+      ? { id: transaction.id, status: transaction.status }
+      : null;
+  }
+
   // `transactions` has no user_id column (ADR-0010 rejected adding one) —
   // participants live only in the denormalized sender/recipient wallet
   // columns, so ownership resolves by checking whether either wallet on the
@@ -481,6 +496,7 @@ export class LedgerService {
   private async transactionBelongsToUser(
     transaction: Transaction,
     userId: string,
+    manager: EntityManager = this.dataSource.manager,
   ): Promise<boolean> {
     const walletIds = [
       transaction.senderWalletId,
@@ -489,7 +505,7 @@ export class LedgerService {
     if (walletIds.length === 0) {
       return false;
     }
-    const count = await this.dataSource
+    const count = await manager
       .getRepository(Account)
       .count({ where: { id: In(walletIds), userId } });
     return count > 0;
@@ -1975,6 +1991,7 @@ export class LedgerService {
         senderWalletId: wallet.id,
         recipientWalletId: null,
         metadata: {
+          ...params.extraMetadata,
           bankAccount: params.bankAccount,
           netAmount: params.amount.toJSON(),
           platformFee: params.platformFee.toJSON(),

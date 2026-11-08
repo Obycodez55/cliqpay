@@ -151,3 +151,37 @@ export class ScheduleEditLeavesNoRunException extends DomainException {
     );
   }
 }
+
+export class ScheduleBankAccountNotFoundException extends DomainException {
+  readonly code = 'BANK_ACCOUNT_NOT_FOUND';
+  constructor() {
+    super('Bank account not found', HttpStatus.NOT_FOUND);
+  }
+}
+
+export class ScheduleAmountTooSmallException extends DomainException {
+  readonly code = 'WITHDRAWAL_AMOUNT_TOO_SMALL';
+  constructor(minAmount: string) {
+    super(
+      `Withdrawal amount is below the minimum of ${minAmount}`,
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
+export class ScheduleSenderEmailNotVerifiedException extends DomainException {
+  readonly code = 'SENDER_EMAIL_NOT_VERIFIED';
+  constructor() {
+    super(
+      'Your email must be verified before you can send money',
+      HttpStatus.FORBIDDEN,
+    );
+  }
+}
+
+export class ScheduleTargetInvalidException extends DomainException {
+  readonly code = 'SCHEDULE_TARGET_INVALID';
+  constructor(message: string) {
+    super(message, HttpStatus.BAD_REQUEST);
+  }
+}

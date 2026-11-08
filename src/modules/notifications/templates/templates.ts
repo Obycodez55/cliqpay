@@ -41,6 +41,8 @@ const SCHEDULE_FAILURE_REASONS: Record<string, string> = {
   blocked: "you or the recipient can't send or receive from the other",
   recipient_unavailable: "the recipient can't receive money right now",
   sender_frozen: 'your account is frozen',
+  bank_account_removed: 'the bank account is no longer saved',
+  payout_rejected: 'the bank rejected the payment',
   infrastructure: 'of a problem on our side',
   consecutive_failures: 'its last 3 payments failed',
 };
@@ -69,11 +71,14 @@ function missedDates(dates: string[]): string {
 
 function missedBody(payload: ScheduledPaymentRunsMissedPayload): string {
   const count = payload.runDates.length;
-  return `We couldn't run your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} on ${missedDates(payload.runDates)} because of a problem on our side, so ${count === 1 ? 'it was' : 'they were'} skipped and not paid.`;
+  return `We couldn't run your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyLabel} on ${missedDates(payload.runDates)} because of a problem on our side, so ${count === 1 ? 'it was' : 'they were'} skipped and not paid.`;
 }
 
 function upcomingBody(payload: ScheduledPaymentUpcomingPayload): string {
-  return `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} is scheduled for tomorrow (${payload.runDate}), but your wallet balance is ${payload.currency} ${payload.balance}. Add funds so it goes through.`;
+  const fee = payload.fee
+    ? ` plus ${payload.currency} ${payload.fee} in fees`
+    : '';
+  return `Your ${payload.currency} ${payload.amount}${fee} payment to ${payload.counterpartyLabel} is scheduled for tomorrow (${payload.runDate}), but your wallet balance is ${payload.currency} ${payload.balance}. Add funds so it goes through.`;
 }
 
 export interface EmailContent {
@@ -190,14 +195,14 @@ export const emailTemplates: {
     ...renderEmail('scheduled_payment_created', payload),
   }),
   scheduled_payment_updated: (payload: ScheduledPaymentUpdatedPayload) => ({
-    subject: `Your scheduled payment to ${payload.counterpartyUsername} was changed`,
+    subject: `Your scheduled payment to ${payload.counterpartyLabel} was changed`,
     ...renderEmail('scheduled_payment_updated', {
       ...payload,
       changedText: changedLabels(payload.changedFields),
     }),
   }),
   scheduled_payment_paused: (payload: ScheduledPaymentPausedPayload) => ({
-    subject: `Your scheduled payment to ${payload.counterpartyUsername} was paused`,
+    subject: `Your scheduled payment to ${payload.counterpartyLabel} was paused`,
     ...renderEmail('scheduled_payment_paused', {
       ...payload,
       reasonText: scheduleReason(payload.reason),
@@ -277,7 +282,7 @@ export const pushTemplates: {
     payload: ScheduledPaymentRunFailedPayload,
   ) => ({
     title: 'Scheduled payment failed',
-    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} on ${payload.runDate} failed because ${scheduleReason(payload.reason)}.`,
+    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyLabel} on ${payload.runDate} failed because ${scheduleReason(payload.reason)}.`,
     data: { scheduledPaymentId: payload.scheduledPaymentId },
   }),
   scheduled_payment_runs_missed: (
@@ -294,7 +299,7 @@ export const pushTemplates: {
   }),
   scheduled_payment_paused: (payload: ScheduledPaymentPausedPayload) => ({
     title: 'Scheduled payment paused',
-    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} was paused because ${scheduleReason(payload.reason)}.`,
+    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyLabel} was paused because ${scheduleReason(payload.reason)}.`,
     data: { scheduledPaymentId: payload.scheduledPaymentId },
   }),
   new_follower: (payload: NewFollowerPayload) => ({
@@ -403,24 +408,24 @@ export const inAppTemplates: {
   }),
   scheduled_payment_created: (payload: ScheduledPaymentCreatedPayload) => ({
     title: 'Payment scheduled',
-    body: `${payload.currency} ${payload.amount} will be sent to ${payload.counterpartyUsername} on ${payload.startDate}.`,
+    body: `${payload.currency} ${payload.amount} will be sent to ${payload.counterpartyLabel} on ${payload.startDate}.`,
     data: {
       scheduledPaymentId: payload.scheduledPaymentId,
       amount: payload.amount,
       currency: payload.currency,
-      counterpartyUsername: payload.counterpartyUsername,
+      counterpartyLabel: payload.counterpartyLabel,
       startDate: payload.startDate,
     },
     dedupeKey: payload.scheduledPaymentId,
   }),
   scheduled_payment_updated: (payload: ScheduledPaymentUpdatedPayload) => ({
     title: 'Scheduled payment changed',
-    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} was changed (${changedLabels(payload.changedFields)}).`,
+    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyLabel} was changed (${changedLabels(payload.changedFields)}).`,
     data: {
       scheduledPaymentId: payload.scheduledPaymentId,
       amount: payload.amount,
       currency: payload.currency,
-      counterpartyUsername: payload.counterpartyUsername,
+      counterpartyLabel: payload.counterpartyLabel,
       changedFields: payload.changedFields,
     },
     dedupeKey: payload.changeId,
@@ -429,14 +434,14 @@ export const inAppTemplates: {
     payload: ScheduledPaymentRunFailedPayload,
   ) => ({
     title: 'Scheduled payment failed',
-    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} on ${payload.runDate} failed because ${scheduleReason(payload.reason)}.`,
+    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyLabel} on ${payload.runDate} failed because ${scheduleReason(payload.reason)}.`,
     data: {
       scheduledPaymentId: payload.scheduledPaymentId,
       runId: payload.runId,
       reason: payload.reason,
       amount: payload.amount,
       currency: payload.currency,
-      counterpartyUsername: payload.counterpartyUsername,
+      counterpartyLabel: payload.counterpartyLabel,
       runDate: payload.runDate,
     },
     dedupeKey: payload.runId,
@@ -452,7 +457,7 @@ export const inAppTemplates: {
       runDates: payload.runDates,
       amount: payload.amount,
       currency: payload.currency,
-      counterpartyUsername: payload.counterpartyUsername,
+      counterpartyLabel: payload.counterpartyLabel,
     },
     dedupeKey: payload.runId,
   }),
@@ -465,19 +470,19 @@ export const inAppTemplates: {
       amount: payload.amount,
       balance: payload.balance,
       currency: payload.currency,
-      counterpartyUsername: payload.counterpartyUsername,
+      counterpartyLabel: payload.counterpartyLabel,
     },
     dedupeKey: `${payload.scheduledPaymentId}:${payload.runDate}`,
   }),
   scheduled_payment_paused: (payload: ScheduledPaymentPausedPayload) => ({
     title: 'Scheduled payment paused',
-    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} was paused because ${scheduleReason(payload.reason)}. Resume it in the app when you're ready.`,
+    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyLabel} was paused because ${scheduleReason(payload.reason)}. Resume it in the app when you're ready.`,
     data: {
       scheduledPaymentId: payload.scheduledPaymentId,
       reason: payload.reason,
       amount: payload.amount,
       currency: payload.currency,
-      counterpartyUsername: payload.counterpartyUsername,
+      counterpartyLabel: payload.counterpartyLabel,
     },
     dedupeKey: payload.changeId,
   }),

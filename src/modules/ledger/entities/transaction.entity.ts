@@ -111,6 +111,8 @@ export interface WithdrawalTransactionMetadata {
   netAmount: { amount: string; currency: string };
   platformFee: { amount: string; currency: string };
   providerFee: { amount: string; currency: string };
+  scheduleId?: string;
+  runNumber?: number;
 }
 
 export interface WithdrawalReversalTransactionMetadata {

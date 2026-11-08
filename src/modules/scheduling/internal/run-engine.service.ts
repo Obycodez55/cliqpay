@@ -9,6 +9,10 @@ import {
   ScheduledTransferRejectedError,
   TransfersService,
 } from '../../transfers/transfers.service';
+import {
+  ScheduledWithdrawalRejectedError,
+  WithdrawalsService,
+} from '../../withdrawals/withdrawals.service';
 import { LedgerService } from '../../ledger/ledger.service';
 import { Money } from '../../../shared/primitives/money';
 import {
@@ -30,6 +34,7 @@ import { ScheduledPaymentAttempt } from '../entities/scheduled-payment-attempt.e
 import { ScheduledPaymentChange } from '../entities/scheduled-payment-change.entity';
 import type { FailureCode } from '../entities/scheduled-payment-attempt.entity';
 import { RunJobData, SCHEDULED_PAYMENT_RUNS_QUEUE, runJobId } from './queues';
+import { targetLabel } from './target-label';
 
 // A pending first attempt this old with no result is assumed to have lost its
 // job.
@@ -41,7 +46,10 @@ const PERMANENT_FAILURES: readonly FailureCode[] = [
   'blocked',
   'recipient_unavailable',
   'sender_frozen',
+  'bank_account_removed',
 ];
+
+const SCHED_REFERENCE = /^sched_([0-9a-f-]{36})_(\d+)_(\d+)$/;
 
 interface RunToEnqueue {
   runId: string;
@@ -70,7 +78,7 @@ interface ClaimResult {
 }
 
 interface AttemptResult {
-  outcome: 'succeeded' | 'failed';
+  outcome: 'succeeded' | 'failed' | 'settling';
   failureCode: FailureCode | null;
   transactionId: string | null;
 }
@@ -88,6 +96,7 @@ export class RunEngine {
     @InjectQueue(SCHEDULED_PAYMENT_RUNS_QUEUE)
     private readonly runsQueue: Queue<RunJobData>,
     private readonly transfersService: TransfersService,
+    private readonly withdrawalsService: WithdrawalsService,
     private readonly usersService: UsersService,
     private readonly ledgerService: LedgerService,
     private readonly eventBus: EventBusService,
@@ -200,6 +209,7 @@ export class RunEngine {
         amount: schedule.amount,
         targetType: schedule.targetType,
         recipientUserId: schedule.recipientUserId,
+        bankAccountId: schedule.bankAccountId,
         note: schedule.note,
         visibility: schedule.visibility,
       }),
@@ -277,24 +287,14 @@ export class RunEngine {
 
     let result: AttemptResult;
     try {
-      const posted = await this.transfersService.executeScheduledTransfer(
-        schedule.userId,
-        {
-          recipientUserId: run.recipientUserId,
-          amount: Number(run.amount),
-          reference,
-          details: { note: run.note, visibility: run.visibility },
-          scheduleId: schedule.id,
-          runNumber: run.runNumber,
-        },
-      );
-      result = {
-        outcome: 'succeeded',
-        failureCode: null,
-        transactionId: posted.transactionId,
-      };
+      result = await this.pay(schedule, run, reference);
     } catch (error) {
-      if (!(error instanceof ScheduledTransferRejectedError)) {
+      if (
+        !(
+          error instanceof ScheduledTransferRejectedError ||
+          error instanceof ScheduledWithdrawalRejectedError
+        )
+      ) {
         throw error;
       }
       result = {
@@ -309,6 +309,46 @@ export class RunEngine {
       startedAt,
       result,
     });
+  }
+
+  private async pay(
+    schedule: ScheduledPayment,
+    run: ScheduledPaymentRun,
+    reference: string,
+  ): Promise<AttemptResult> {
+    if (run.targetType === 'bank_account') {
+      const payout = await this.withdrawalsService.executeScheduledWithdrawal(
+        schedule.userId,
+        {
+          bankAccountId: run.bankAccountId!,
+          amount: Number(run.amount),
+          reference,
+          scheduleId: schedule.id,
+          runNumber: run.runNumber,
+        },
+      );
+      return {
+        outcome: 'settling',
+        failureCode: null,
+        transactionId: payout.transactionId,
+      };
+    }
+    const posted = await this.transfersService.executeScheduledTransfer(
+      schedule.userId,
+      {
+        recipientUserId: run.recipientUserId!,
+        amount: Number(run.amount),
+        reference,
+        details: { note: run.note, visibility: run.visibility! },
+        scheduleId: schedule.id,
+        runNumber: run.runNumber,
+      },
+    );
+    return {
+      outcome: 'succeeded',
+      failureCode: null,
+      transactionId: posted.transactionId,
+    };
   }
 
   // Called once the queue has given up. The payment may have posted before
@@ -326,22 +366,155 @@ export class RunEngine {
       .findOneByOrFail({ id: run.scheduledPaymentId });
     const attemptNumber = run.attemptCount + 1;
     const reference = `sched_${schedule.id}_${run.runNumber}_${attemptNumber}`;
-    const transactionId = await this.transfersService.findTransferIdByReference(
-      schedule.userId,
-      reference,
-    );
+    const result = await this.infrastructureResult(schedule, run, reference);
     await this.recordResult(run, schedule.id, {
       attemptNumber,
       reference,
       startedAt: new Date(),
-      result: transactionId
-        ? { outcome: 'succeeded', failureCode: null, transactionId }
-        : {
-            outcome: 'failed',
-            failureCode: 'infrastructure',
-            transactionId: null,
-          },
+      result,
     });
+  }
+
+  // The payout of a bank run resolved. Only a run still `settling` on the
+  // very transaction this attempt created moves; anything else (a duplicate,
+  // a stray event, the reference of an attempt that was reversed
+  // synchronously and retried) is ignored.
+  async recordSettlement(
+    result: 'completed' | 'failed',
+    reference: string,
+  ): Promise<void> {
+    const match = SCHED_REFERENCE.exec(reference);
+    if (!match) {
+      return;
+    }
+    const [, scheduleId, runNumber] = match;
+    const settled = await runInTransaction(this.dataSource, async (manager) => {
+      const schedule = await manager
+        .getRepository(ScheduledPayment)
+        .createQueryBuilder('schedule')
+        .where('schedule.id = :scheduleId', { scheduleId })
+        .setLock('pessimistic_write')
+        .getOne();
+      if (!schedule) {
+        return null;
+      }
+      const run = await manager.getRepository(ScheduledPaymentRun).findOneBy({
+        scheduledPaymentId: scheduleId,
+        runNumber: Number(runNumber),
+      });
+      const attempt = run
+        ? await manager.getRepository(ScheduledPaymentAttempt).findOneBy({
+            runId: run.id,
+            kind: 'attempt',
+            reference,
+            outcome: 'settling',
+          })
+        : null;
+      if (
+        !run ||
+        !attempt ||
+        run.status !== 'settling' ||
+        run.transactionId !== attempt.transactionId
+      ) {
+        return null;
+      }
+      const outcome: RecordedOutcome = {
+        runFailedReason: null,
+        pause: null,
+        missed: false,
+      };
+      await this.applySettlement(manager, schedule, result, outcome, {
+        runId: run.id,
+        attemptNumber: attempt.attemptNumber,
+        reference,
+        transactionId: attempt.transactionId,
+      });
+      return { run, outcome };
+    });
+    if (settled?.outcome.pause) {
+      await this.publishOutcome(
+        settled.run,
+        settled.run.scheduledPaymentId,
+        settled.outcome,
+      );
+    }
+  }
+
+  // Moves a `settling` run to its final state. Callers hold the schedule
+  // lock, so the event path and the recording path can't both apply it.
+  private async applySettlement(
+    manager: EntityManager,
+    schedule: ScheduledPayment,
+    result: 'completed' | 'failed',
+    outcome: RecordedOutcome,
+    attempt: {
+      runId: string;
+      attemptNumber: number | null;
+      reference: string;
+      transactionId: string | null;
+    },
+  ): Promise<boolean> {
+    const status = result === 'completed' ? 'succeeded' : 'reversed';
+    const updated = await manager
+      .getRepository(ScheduledPaymentRun)
+      .createQueryBuilder()
+      .update()
+      .set({ status })
+      .where('id = :id', { id: attempt.runId })
+      .andWhere(`status = 'settling'`)
+      .execute();
+    if (!updated.affected) {
+      return false;
+    }
+    await manager.getRepository(ScheduledPaymentAttempt).save({
+      runId: attempt.runId,
+      kind: result === 'completed' ? 'settled' : 'reversed',
+      attemptNumber: attempt.attemptNumber,
+      reference: attempt.reference,
+      outcome: result === 'completed' ? 'succeeded' : 'failed',
+      transactionId: attempt.transactionId,
+    });
+    await this.settleSchedule(manager, schedule, status, null, outcome);
+    return true;
+  }
+
+  // A transfer that posted is a success. A withdrawal that posted is still
+  // settling, unless it was already reversed, in which case no money moved
+  // and the payout was rejected.
+  private async infrastructureResult(
+    schedule: ScheduledPayment,
+    run: ScheduledPaymentRun,
+    reference: string,
+  ): Promise<AttemptResult> {
+    if (run.targetType === 'bank_account') {
+      const found = await this.withdrawalsService.findScheduledWithdrawal(
+        schedule.userId,
+        reference,
+      );
+      if (found && found.status !== 'reversed') {
+        return {
+          outcome: 'settling',
+          failureCode: null,
+          transactionId: found.transactionId,
+        };
+      }
+      return {
+        outcome: 'failed',
+        failureCode: found ? 'payout_rejected' : 'infrastructure',
+        transactionId: null,
+      };
+    }
+    const transactionId = await this.transfersService.findTransferIdByReference(
+      schedule.userId,
+      reference,
+    );
+    return transactionId
+      ? { outcome: 'succeeded', failureCode: null, transactionId }
+      : {
+          outcome: 'failed',
+          failureCode: 'infrastructure',
+          transactionId: null,
+        };
   }
 
   private async recordResult(
@@ -407,12 +580,15 @@ export class RunEngine {
     const status =
       result.outcome === 'succeeded'
         ? 'succeeded'
-        : nextAttemptAt
-          ? 'pending'
-          : 'failed';
+        : result.outcome === 'settling'
+          ? 'settling'
+          : nextAttemptAt
+            ? 'pending'
+            : 'failed';
 
     // A cancel or pause that landed while the attempt was executing leaves
-    // the run `cancelled`; money that did move is still recorded as succeeded.
+    // the run `cancelled`; money that did move is still recorded, as
+    // succeeded or settling.
     const runRepo = manager.getRepository(ScheduledPaymentRun);
     const updated = await runRepo
       .createQueryBuilder()
@@ -425,13 +601,39 @@ export class RunEngine {
       })
       .where('id = :id', { id: run.id })
       .andWhere(
-        result.outcome === 'succeeded'
-          ? `status IN ('pending', 'cancelled')`
-          : `status = 'pending'`,
+        result.outcome === 'failed'
+          ? `status = 'pending'`
+          : `status IN ('pending', 'cancelled')`,
       )
       .execute();
     if (!updated.affected) {
       return outcome;
+    }
+
+    // The settlement event may have been handled before this ran, finding
+    // the run still pending and ignoring it; no second event will come, so
+    // the withdrawal's state is read here, under the schedule lock.
+    if (status === 'settling' && run.targetType === 'bank_account') {
+      const withdrawal = await this.withdrawalsService.findScheduledWithdrawal(
+        schedule.userId,
+        attempt.reference,
+        manager,
+      );
+      if (withdrawal && withdrawal.status !== 'pending') {
+        await this.applySettlement(
+          manager,
+          schedule,
+          withdrawal.status === 'completed' ? 'completed' : 'failed',
+          outcome,
+          {
+            runId: run.id,
+            attemptNumber: attempt.attemptNumber,
+            reference: attempt.reference,
+            transactionId: result.transactionId,
+          },
+        );
+        return outcome;
+      }
     }
 
     await this.settleSchedule(
@@ -449,15 +651,16 @@ export class RunEngine {
   private async settleSchedule(
     manager: EntityManager,
     schedule: ScheduledPayment,
-    status: 'pending' | 'succeeded' | 'failed',
+    status: 'pending' | 'settling' | 'succeeded' | 'failed' | 'reversed',
     failureCode: FailureCode | null,
     outcome: RecordedOutcome,
   ): Promise<void> {
     if (status === 'succeeded') {
       schedule.consecutiveFailures = 0;
-    } else if (status === 'failed') {
+    } else if (status === 'failed' || status === 'reversed') {
       schedule.consecutiveFailures += 1;
-      outcome.runFailedReason = failureCode;
+      // A reversed payout was already reported by withdrawal_failed.
+      outcome.runFailedReason = status === 'failed' ? failureCode : null;
       const pauseReason = PERMANENT_FAILURES.includes(failureCode!)
         ? failureCode
         : schedule.consecutiveFailures >= CONSECUTIVE_FAILURE_LIMIT
@@ -621,7 +824,7 @@ export class RunEngine {
         const low: { schedule: ScheduledPayment; balance: Money }[] = [];
         for (const schedule of candidates) {
           const balance = balances.get(schedule.userId);
-          if (balance && balance.amount < schedule.amount) {
+          if (balance && balance.amount < this.requiredBalance(schedule)) {
             schedule.lastRemindedRunDate = runDate;
             await repo.save(schedule);
             low.push({ schedule, balance });
@@ -632,9 +835,12 @@ export class RunEngine {
     );
     for (const { schedule, balance } of reminders) {
       try {
-        const recipient = await this.usersService.findById(
-          schedule.recipientUserId,
+        const counterpartyLabel = await targetLabel(
+          this.usersService,
+          this.withdrawalsService,
+          schedule,
         );
+        const fees = this.feesOf(schedule);
         await this.eventBus.publish<
           string,
           ScheduledPaymentUpcomingEventPayload
@@ -643,11 +849,12 @@ export class RunEngine {
           payload: {
             userId: schedule.userId,
             scheduledPaymentId: schedule.id,
-            counterpartyUsername: recipient.username,
+            counterpartyLabel,
             amount: Money.of(
               schedule.amount,
               schedule.currency,
             ).toDecimalString(),
+            ...(fees && { fee: fees.toDecimalString() }),
             balance: balance.toDecimalString(),
             currency: schedule.currency,
             runDate,
@@ -662,14 +869,29 @@ export class RunEngine {
     }
   }
 
+  // A bank run debits its fees from the wallet on top of the amount.
+  private feesOf(schedule: ScheduledPayment): Money | null {
+    if (schedule.targetType !== 'bank_account') {
+      return null;
+    }
+    const { platformFee, providerFee } = this.config.withdrawals;
+    return Money.of(platformFee + providerFee, schedule.currency);
+  }
+
+  private requiredBalance(schedule: ScheduledPayment): bigint {
+    return schedule.amount + (this.feesOf(schedule)?.amount ?? 0n);
+  }
+
   private async publishRunsMissed(
     schedule: ScheduledPayment,
     firstRunId: string,
     runDates: string[],
   ): Promise<void> {
     try {
-      const recipient = await this.usersService.findById(
-        schedule.recipientUserId,
+      const counterpartyLabel = await targetLabel(
+        this.usersService,
+        this.withdrawalsService,
+        schedule,
       );
       await this.eventBus.publish<
         string,
@@ -680,7 +902,7 @@ export class RunEngine {
           userId: schedule.userId,
           scheduledPaymentId: schedule.id,
           runId: firstRunId,
-          counterpartyUsername: recipient.username,
+          counterpartyLabel,
           amount: Money.of(
             schedule.amount,
             schedule.currency,
@@ -706,9 +928,13 @@ export class RunEngine {
       const schedule = await this.dataSource
         .getRepository(ScheduledPayment)
         .findOneByOrFail({ id: scheduleId });
-      const [sender, recipient] = await Promise.all([
+      const [sender, counterpartyLabel] = await Promise.all([
         this.usersService.findById(schedule.userId),
-        this.usersService.findById(run.recipientUserId),
+        targetLabel(this.usersService, this.withdrawalsService, {
+          userId: schedule.userId,
+          recipientUserId: run.recipientUserId,
+          bankAccountId: run.bankAccountId,
+        }),
       ]);
       const amount = Money.of(run.amount, schedule.currency).toDecimalString();
       if (outcome.missed) {
@@ -724,7 +950,7 @@ export class RunEngine {
             userId: schedule.userId,
             scheduledPaymentId: schedule.id,
             runId: run.id,
-            counterpartyUsername: recipient.username,
+            counterpartyLabel,
             amount,
             currency: schedule.currency,
             runDate: lagosToday(run.dueAt),
@@ -742,7 +968,7 @@ export class RunEngine {
               email: sender.email,
               scheduledPaymentId: schedule.id,
               changeId: outcome.pause.changeId,
-              counterpartyUsername: recipient.username,
+              counterpartyLabel,
               amount,
               currency: schedule.currency,
               reason: outcome.pause.reason,

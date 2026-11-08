@@ -23,6 +23,13 @@ import {
   lagosToday,
 } from '../../../src/modules/scheduling/internal/run-time';
 import { waitFor } from './social-blocks-test-helpers';
+import { createHmac } from 'crypto';
+import { PaymentsService } from '../../../src/modules/payments/payments.service';
+import { PAYMENT_PROVIDER_ADAPTER } from '../../../src/modules/payments/adapters/payment-provider.interface';
+import { FakeAdapter } from '../../../src/modules/payments/adapters/fake.adapter';
+import { BankAccount } from '../../../src/modules/withdrawals/entities/bank-account.entity';
+import { seedBankAccount } from './withdrawals-test-context';
+import { Money } from '../../../src/shared/primitives/money';
 
 const JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
 
@@ -35,10 +42,14 @@ export interface ScheduleUser {
 
 export interface ScheduleBody {
   id: string;
-  target: { type: string; userId: string };
+  target: { type: string; userId?: string; bankAccountId?: string };
   amount: { amount: string; currency: string };
   note: string | null;
-  visibility: string;
+  visibility: string | null;
+  fees: {
+    platform: { amount: string; currency: string };
+    provider: { amount: string; currency: string };
+  } | null;
   interval: { unit: string; count: number } | null;
   endDate: string | null;
   maxRuns: number | null;
@@ -142,6 +153,69 @@ export function createSchedulingHelpers(getCtx: () => TransfersTestContext) {
       });
   }
 
+  function createBankSchedule(
+    userId: string,
+    bankAccountId: string,
+    body: Record<string, unknown> = {},
+  ): request.Test {
+    return http()
+      .post('/scheduled-payments')
+      .set('Authorization', `Bearer ${tokenFor(userId)}`)
+      .send({
+        reference: `sched-ref-${randomUUID()}`,
+        target: { type: 'bank_account', bankAccountId },
+        amount: 100_000,
+        startDate: tomorrow(),
+        pin: '1234',
+        ...body,
+      });
+  }
+
+  let bankSeq = 0;
+  function seedBank(
+    userId: string,
+    overrides: { bankName?: string; accountNumber?: string } = {},
+  ) {
+    bankSeq += 1;
+    return seedBankAccount(
+      { bankAccountRepo: getCtx().dataSource.getRepository(BankAccount) },
+      {
+        userId,
+        accountNumber:
+          overrides.accountNumber ?? `0123${String(bankSeq).padStart(6, '0')}`,
+        bankName: overrides.bankName,
+      },
+    );
+  }
+
+  const fakeAdapter = () =>
+    getCtx().app.get<FakeAdapter>(PAYMENT_PROVIDER_ADAPTER, { strict: false });
+
+  // Delivers Kora's payout webhook for a withdrawal reference, so the
+  // settlement runs through the real completion and reversal paths.
+  async function settlePayout(
+    reference: string,
+    status: 'success' | 'failed',
+    amountMinor: bigint,
+  ): Promise<void> {
+    const data = {
+      reference,
+      status,
+      amount: Money.of(amountMinor, 'NGN').toDecimalString(),
+      ...(status === 'failed' ? { message: 'Bank declined' } : {}),
+    };
+    const event = status === 'failed' ? 'transfer.failed' : 'transfer.success';
+    const signature = createHmac('sha256', 'fake-kora-secret-key')
+      .update(JSON.stringify(data))
+      .digest('hex');
+    await getCtx()
+      .app.get(PaymentsService, { strict: false })
+      .handleKoraWebhook(
+        Buffer.from(JSON.stringify({ event, data })),
+        signature,
+      );
+  }
+
   const getSchedule = (userId: string, id: string) =>
     http()
       .get(`/scheduled-payments/${id}`)
@@ -234,6 +308,10 @@ export function createSchedulingHelpers(getCtx: () => TransfersTestContext) {
     http,
     seedUser,
     createSchedule,
+    createBankSchedule,
+    seedBank,
+    fakeAdapter,
+    settlePayout,
     getSchedule,
     listSchedules,
     cancelSchedule,

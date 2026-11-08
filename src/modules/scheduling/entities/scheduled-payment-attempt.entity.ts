@@ -10,10 +10,15 @@ import {
 import { inList } from '../../../database/check.util';
 import { ScheduledPaymentRun } from './scheduled-payment-run.entity';
 
-export const ATTEMPT_KINDS = ['attempt', 'missed'] as const;
+export const ATTEMPT_KINDS = [
+  'attempt',
+  'missed',
+  'settled',
+  'reversed',
+] as const;
 export type AttemptKind = (typeof ATTEMPT_KINDS)[number];
 
-export const ATTEMPT_OUTCOMES = ['succeeded', 'failed'] as const;
+export const ATTEMPT_OUTCOMES = ['succeeded', 'failed', 'settling'] as const;
 export type AttemptOutcome = (typeof ATTEMPT_OUTCOMES)[number];
 
 export const FAILURE_CODES = [
@@ -23,6 +28,8 @@ export const FAILURE_CODES = [
   'blocked',
   'recipient_unavailable',
   'sender_frozen',
+  'bank_account_removed',
+  'payout_rejected',
   'infrastructure',
 ] as const;
 export type FailureCode = (typeof FAILURE_CODES)[number];
@@ -31,6 +38,8 @@ export type FailureCode = (typeof FAILURE_CODES)[number];
 // outcome is known, so an attempt that crashed mid-flight leaves no row and
 // is retried under the same number and reference. A `missed` row records a
 // run that was never tried, so it has no number, reference, outcome or start.
+// A bank run's payout settles later: the attempt row says `settling`, and a
+// `settled` or `reversed` row follows with the same number and reference.
 @Entity('scheduled_payment_attempts')
 @Check('CHK_scheduled_payment_attempts_kind', inList('kind', ATTEMPT_KINDS))
 @Check(
