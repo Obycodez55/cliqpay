@@ -341,15 +341,15 @@ describe('Recurring scheduled payments', () => {
       expect(await h.runsOf(schedule.id)).toHaveLength(1);
     });
 
-    it('stops at max_runs, counting runs that failed', async () => {
-      const { sender, schedule } = await seedSchedule(
-        { interval: { unit: 'day', count: 1 }, maxRuns: 3 },
-        0n,
-      );
+    it('stops at max_runs', async () => {
+      const { sender, schedule } = await seedSchedule({
+        interval: { unit: 'day', count: 1 },
+        maxRuns: 3,
+      });
 
       await sweepOnce(schedule.id);
       await h.waitForRunEnd(schedule.id);
-      expect((await h.runsOf(schedule.id))[0].status).toBe('failed');
+      expect((await h.runsOf(schedule.id))[0].status).toBe('succeeded');
       expect(
         (await h.scheduleRepo().findOneByOrFail({ id: schedule.id })).status,
       ).toBe('active');
@@ -573,7 +573,7 @@ describe('Recurring scheduled payments', () => {
     it('rejects a bad filter, a limit over 50, and a forged cursor', async () => {
       const { sender } = await seedOwner(1);
 
-      await h.listSchedules(sender.userId, '?status=paused').expect(400);
+      await h.listSchedules(sender.userId, '?status=bogus').expect(400);
       await h.listSchedules(sender.userId, '?limit=51').expect(400);
       await h.listSchedules(sender.userId, '?limit=0').expect(400);
       await h.listSchedules(sender.userId, '?cursor=garbage').expect(400);

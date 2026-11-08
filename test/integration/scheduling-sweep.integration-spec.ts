@@ -82,7 +82,7 @@ describe('Scheduled payment sweep', () => {
     expect(addBulk.mock.calls[0][0]).toEqual([
       expect.objectContaining({
         data: { runId: runs[0].id },
-        opts: { jobId: `${schedule.id}_1` },
+        opts: { jobId: `${schedule.id}_1_1` },
       }),
     ]);
   });
@@ -133,7 +133,7 @@ describe('Scheduled payment sweep', () => {
       jobs.map((job) => job.opts?.jobId),
     );
     expect(enqueued.sort()).toEqual(
-      seeded.map(({ schedule }) => `${schedule.id}_1`).sort(),
+      seeded.map(({ schedule }) => `${schedule.id}_1_1`).sort(),
     );
     for (const { schedule } of seeded) {
       await h.waitForRunEnd(schedule.id);

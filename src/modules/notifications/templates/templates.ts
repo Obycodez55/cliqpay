@@ -17,6 +17,8 @@ import {
   PostCommentPayload,
   PostReactionPayload,
   ScheduledPaymentCreatedPayload,
+  ScheduledPaymentPausedPayload,
+  ScheduledPaymentRunFailedPayload,
   ReconciliationMismatchPayload,
   RefundAttentionRequiredPayload,
   SecurityAlertPayload,
@@ -28,6 +30,21 @@ import {
 } from '../notification-catalog';
 import { StepUpAction } from '../../../shared/events/domain-events';
 import { renderEmail } from './render-email';
+
+const SCHEDULE_FAILURE_REASONS: Record<string, string> = {
+  insufficient_balance: 'your wallet balance was too low',
+  daily_limit_exceeded: 'it would have gone over your daily limit',
+  recipient_cap: "the recipient can't receive this amount right now",
+  blocked: "you or the recipient can't send or receive from the other",
+  recipient_unavailable: "the recipient can't receive money right now",
+  sender_frozen: 'your account is frozen',
+  infrastructure: 'of a problem on our side',
+  consecutive_failures: 'its last 3 payments failed',
+};
+
+function scheduleReason(reason: string): string {
+  return SCHEDULE_FAILURE_REASONS[reason] ?? 'it could not be completed';
+}
 
 export interface EmailContent {
   subject: string;
@@ -142,6 +159,13 @@ export const emailTemplates: {
     subject: `You scheduled ${payload.currency} ${payload.amount} for ${payload.startDate}`,
     ...renderEmail('scheduled_payment_created', payload),
   }),
+  scheduled_payment_paused: (payload: ScheduledPaymentPausedPayload) => ({
+    subject: `Your scheduled payment to ${payload.counterpartyUsername} was paused`,
+    ...renderEmail('scheduled_payment_paused', {
+      ...payload,
+      reasonText: scheduleReason(payload.reason),
+    }),
+  }),
   withdrawal_completed: (payload: WithdrawalCompletedPayload) => ({
     subject: `Your withdrawal of ${payload.currency} ${payload.amount} is complete`,
     ...renderEmail('withdrawal_completed', payload),
@@ -211,6 +235,18 @@ export const pushTemplates: {
     title: 'Split complete',
     body: `Everyone has paid their share of "${payload.description}".`,
     data: { billSplitId: payload.billSplitId },
+  }),
+  scheduled_payment_run_failed: (
+    payload: ScheduledPaymentRunFailedPayload,
+  ) => ({
+    title: 'Scheduled payment failed',
+    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} on ${payload.runDate} failed because ${scheduleReason(payload.reason)}.`,
+    data: { scheduledPaymentId: payload.scheduledPaymentId },
+  }),
+  scheduled_payment_paused: (payload: ScheduledPaymentPausedPayload) => ({
+    title: 'Scheduled payment paused',
+    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} was paused because ${scheduleReason(payload.reason)}.`,
+    data: { scheduledPaymentId: payload.scheduledPaymentId },
   }),
   new_follower: (payload: NewFollowerPayload) => ({
     title: 'New follower',
@@ -327,6 +363,34 @@ export const inAppTemplates: {
       startDate: payload.startDate,
     },
     dedupeKey: payload.scheduledPaymentId,
+  }),
+  scheduled_payment_run_failed: (
+    payload: ScheduledPaymentRunFailedPayload,
+  ) => ({
+    title: 'Scheduled payment failed',
+    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} on ${payload.runDate} failed because ${scheduleReason(payload.reason)}.`,
+    data: {
+      scheduledPaymentId: payload.scheduledPaymentId,
+      runId: payload.runId,
+      reason: payload.reason,
+      amount: payload.amount,
+      currency: payload.currency,
+      counterpartyUsername: payload.counterpartyUsername,
+      runDate: payload.runDate,
+    },
+    dedupeKey: payload.runId,
+  }),
+  scheduled_payment_paused: (payload: ScheduledPaymentPausedPayload) => ({
+    title: 'Scheduled payment paused',
+    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} was paused because ${scheduleReason(payload.reason)}. Resume it in the app when you're ready.`,
+    data: {
+      scheduledPaymentId: payload.scheduledPaymentId,
+      reason: payload.reason,
+      amount: payload.amount,
+      currency: payload.currency,
+      counterpartyUsername: payload.counterpartyUsername,
+    },
+    dedupeKey: payload.changeId,
   }),
   new_follower: (payload: NewFollowerPayload) => ({
     title: 'New follower',

@@ -43,6 +43,8 @@ export interface ScheduleBody {
   maxRuns: number | null;
   runsUsed: number;
   status: string;
+  consecutiveFailures: number;
+  pausedReason: string | null;
   nextRunDate: string | null;
   nextRunAt: string | null;
 }
@@ -122,6 +124,26 @@ export function createSchedulingHelpers(getCtx: () => TransfersTestContext) {
       .post(`/scheduled-payments/${id}/cancel`)
       .set('Authorization', `Bearer ${tokenFor(userId)}`);
 
+  const pauseSchedule = (userId: string, id: string) =>
+    http()
+      .post(`/scheduled-payments/${id}/pause`)
+      .set('Authorization', `Bearer ${tokenFor(userId)}`);
+
+  const resumeSchedule = (
+    userId: string,
+    id: string,
+    body: Record<string, unknown> = { pin: '1234' },
+  ) =>
+    http()
+      .post(`/scheduled-payments/${id}/resume`)
+      .set('Authorization', `Bearer ${tokenFor(userId)}`)
+      .send(body);
+
+  const listRuns = (userId: string, id: string, query = '') =>
+    http()
+      .get(`/scheduled-payments/${id}/runs${query}`)
+      .set('Authorization', `Bearer ${tokenFor(userId)}`);
+
   const engine = () => getCtx().app.get(RunEngine, { strict: false });
 
   const scheduleRepo = () =>
@@ -182,6 +204,9 @@ export function createSchedulingHelpers(getCtx: () => TransfersTestContext) {
     getSchedule,
     listSchedules,
     cancelSchedule,
+    pauseSchedule,
+    resumeSchedule,
+    listRuns,
     engine,
     scheduleRepo,
     runRepo,

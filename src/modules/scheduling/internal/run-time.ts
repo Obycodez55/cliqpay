@@ -99,3 +99,63 @@ export function computeDueAt(
       offsetMinutes * MINUTE_MS,
   );
 }
+
+// The first instant after the given Lagos calendar date.
+export function lagosDayEnd(isoDate: string): Date {
+  return computeDueAt(addDays(isoDate, 1), '00:00', 0);
+}
+
+export interface RunCursor {
+  startDate: string;
+  anchorRunNumber: number;
+  intervalUnit: IntervalUnit | null;
+  intervalCount: number | null;
+  endDate: string | null;
+  maxRuns: number | null;
+  nextRunNumber: number;
+  runOffsetMinutes: number;
+}
+
+// The first run at or after `nextRunNumber` that the end condition still
+// allows and, when `notBefore` is given, that falls after it. `runsCreated`
+// counts the runs that exist, not run numbers: resuming skips dates, which
+// leaves gaps in the numbering.
+export function findNextRun(
+  cursor: RunCursor,
+  runsCreated: number,
+  windowStart: string,
+  notBefore?: Date,
+): { runNumber: number; dueAt: Date } | null {
+  if (cursor.maxRuns !== null && runsCreated >= cursor.maxRuns) {
+    return null;
+  }
+  if (!cursor.intervalUnit || !cursor.intervalCount) {
+    if (cursor.nextRunNumber !== cursor.anchorRunNumber) {
+      return null;
+    }
+    const dueAt = computeDueAt(
+      cursor.startDate,
+      windowStart,
+      cursor.runOffsetMinutes,
+    );
+    return notBefore && dueAt <= notBefore
+      ? null
+      : { runNumber: cursor.nextRunNumber, dueAt };
+  }
+  const interval = { unit: cursor.intervalUnit, count: cursor.intervalCount };
+  for (let runNumber = cursor.nextRunNumber; ; runNumber++) {
+    const date = runDate(
+      cursor.startDate,
+      cursor.anchorRunNumber,
+      interval,
+      runNumber,
+    );
+    if (cursor.endDate !== null && date > cursor.endDate) {
+      return null;
+    }
+    const dueAt = computeDueAt(date, windowStart, cursor.runOffsetMinutes);
+    if (!notBefore || dueAt > notBefore) {
+      return { runNumber, dueAt };
+    }
+  }
+}

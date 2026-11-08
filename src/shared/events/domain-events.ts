@@ -204,6 +204,33 @@ export interface ScheduledPaymentCreatedEventPayload {
   startDate: string; // Lagos calendar date, YYYY-MM-DD
 }
 
+export const SCHEDULED_PAYMENT_RUN_FAILED_EVENT =
+  'scheduled_payment_run_failed';
+
+export interface ScheduledPaymentRunFailedEventPayload {
+  userId: string;
+  scheduledPaymentId: string;
+  runId: string;
+  counterpartyUsername: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  runDate: string; // Lagos calendar date, YYYY-MM-DD
+  reason: string; // the last attempt's failure code
+}
+
+export const SCHEDULED_PAYMENT_PAUSED_EVENT = 'scheduled_payment_paused';
+
+export interface ScheduledPaymentPausedEventPayload {
+  userId: string;
+  email: string;
+  scheduledPaymentId: string;
+  changeId: string;
+  counterpartyUsername: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  reason: string; // a failure code, or 'consecutive_failures'
+}
+
 export const WITHDRAWAL_INITIATED_EVENT = 'withdrawal_initiated';
 
 export interface WithdrawalInitiatedEventPayload {

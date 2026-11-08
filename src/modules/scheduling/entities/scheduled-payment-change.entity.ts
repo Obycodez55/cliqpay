@@ -10,7 +10,13 @@ import {
 import { inList } from '../../../database/check.util';
 import { ScheduledPayment } from './scheduled-payment.entity';
 
-export const CHANGE_KINDS = ['created', 'cancelled', 'completed'] as const;
+export const CHANGE_KINDS = [
+  'created',
+  'paused',
+  'resumed',
+  'cancelled',
+  'completed',
+] as const;
 export type ChangeKind = (typeof CHANGE_KINDS)[number];
 
 export const CHANGE_ACTORS = ['user', 'system'] as const;
@@ -36,6 +42,9 @@ export class ScheduledPaymentChange {
 
   @Column('varchar')
   actor: ChangeActor;
+
+  @Column({ type: 'varchar', nullable: true })
+  reason: string | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;

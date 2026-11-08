@@ -1,0 +1,58 @@
+import { ApiProperty } from '@nestjs/swagger';
+import { MoneyDto } from '../../../common/dto/money-response.dto';
+import {
+  ATTEMPT_OUTCOMES,
+  AttemptOutcome,
+  FAILURE_CODES,
+  FailureCode,
+} from '../entities/scheduled-payment-attempt.entity';
+import {
+  RUN_STATUSES,
+  RunStatus,
+} from '../entities/scheduled-payment-run.entity';
+
+export class ScheduledPaymentAttemptResponseDto {
+  @ApiProperty()
+  attemptNumber: number;
+
+  @ApiProperty({ enum: ATTEMPT_OUTCOMES })
+  outcome: AttemptOutcome;
+
+  @ApiProperty({ enum: FAILURE_CODES, nullable: true })
+  failureCode: FailureCode | null;
+
+  @ApiProperty({ nullable: true })
+  transactionId: string | null;
+
+  @ApiProperty()
+  startedAt: string;
+}
+
+export class ScheduledPaymentRunResponseDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty()
+  runNumber: number;
+
+  @ApiProperty({ example: '2026-12-01', description: 'Lagos date of the run' })
+  dueDate: string;
+
+  @ApiProperty({ enum: RUN_STATUSES })
+  status: RunStatus;
+
+  @ApiProperty({ type: MoneyDto })
+  amount: MoneyDto;
+
+  @ApiProperty({
+    nullable: true,
+    description: 'When the next attempt is due, for a run waiting to retry',
+  })
+  nextAttemptAt: string | null;
+
+  @ApiProperty({ nullable: true })
+  transactionId: string | null;
+
+  @ApiProperty({ type: [ScheduledPaymentAttemptResponseDto] })
+  attempts: ScheduledPaymentAttemptResponseDto[];
+}

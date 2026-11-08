@@ -14,7 +14,12 @@ import { IntervalUnit } from '../internal/run-time';
 export const SCHEDULE_TARGET_TYPES = ['user'] as const;
 export type ScheduleTargetType = (typeof SCHEDULE_TARGET_TYPES)[number];
 
-export const SCHEDULE_STATUSES = ['active', 'cancelled', 'completed'] as const;
+export const SCHEDULE_STATUSES = [
+  'active',
+  'paused',
+  'cancelled',
+  'completed',
+] as const;
 export type ScheduleStatus = (typeof SCHEDULE_STATUSES)[number];
 
 export const SCHEDULE_VISIBILITIES = ['public', 'private'] as const;
@@ -115,6 +120,14 @@ export class ScheduledPayment {
 
   @Column('int', { default: 1 })
   nextRunNumber: number;
+
+  @Column('int', { default: 0 })
+  consecutiveFailures: number;
+
+  // 'user', a permanent failure code, or 'consecutive_failures'; null unless
+  // the schedule is paused.
+  @Column({ type: 'varchar', nullable: true })
+  pausedReason: string | null;
 
   @Column({ type: 'timestamptz', nullable: true })
   nextRunAt: Date | null;

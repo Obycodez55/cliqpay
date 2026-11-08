@@ -5,8 +5,13 @@ export interface RunJobData {
   runId: string;
 }
 
-// BullMQ rejects a custom job id with exactly one ':', so the schedule id and
-// run number are joined with '_', as in the attempt reference.
-export function runJobId(scheduleId: string, runNumber: number): string {
-  return `${scheduleId}_${runNumber}`;
+// BullMQ rejects a custom job id with exactly one ':', so the parts are joined
+// with '_', as in the attempt reference. The attempt number keeps a retry from
+// colliding with the previous attempt's job while BullMQ still holds it.
+export function runJobId(
+  scheduleId: string,
+  runNumber: number,
+  attemptNumber: number,
+): string {
+  return `${scheduleId}_${runNumber}_${attemptNumber}`;
 }

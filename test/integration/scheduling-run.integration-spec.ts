@@ -11,7 +11,6 @@ import {
 } from './support/scheduling-test-context';
 import { dataOf } from './support/api-response';
 import { waitFor } from './support/social-blocks-test-helpers';
-import { fundWallet } from './support/transfers-test-context';
 import { RunEngine } from '../../src/modules/scheduling/internal/run-engine.service';
 import { RunProcessor } from '../../src/modules/scheduling/internal/run.processor';
 import { ScheduledPaymentAttempt } from '../../src/modules/scheduling/entities/scheduled-payment-attempt.entity';
@@ -82,7 +81,10 @@ describe('Scheduled payment execution', () => {
     (await ctx.accountRepo.findOneByOrFail({ id: user.walletId })).balance;
 
   // A run row with no queue job, for driving executeRun by hand.
-  async function insertPendingRun(scheduleId: string) {
+  async function insertPendingRun(
+    scheduleId: string,
+    dueAt: Date = new Date(),
+  ) {
     // As the sweep leaves a schedule whose only run it just created.
     await h.scheduleRepo().update({ id: scheduleId }, { nextRunAt: null });
     const schedule = await h.scheduleRepo().findOneByOrFail({ id: scheduleId });
@@ -90,7 +92,7 @@ describe('Scheduled payment execution', () => {
       h.runRepo().create({
         scheduledPaymentId: schedule.id,
         runNumber: 1,
-        dueAt: new Date(),
+        dueAt,
         status: 'pending',
         amount: schedule.amount,
         targetType: schedule.targetType,
@@ -211,7 +213,7 @@ describe('Scheduled payment execution', () => {
     });
   });
 
-  describe('a run the transfer refuses', () => {
+  describe('a run the transfer permanently refuses', () => {
     async function expectFailed(
       scheduleId: string,
       failureCode: string,
@@ -238,54 +240,6 @@ describe('Scheduled payment execution', () => {
       expect(row.status).toBe('completed');
       expect(run.attemptCount).toBe(1);
     }
-
-    it('insufficient_balance: the balance is checked when the run executes', async () => {
-      const { sender, schedule } = await seedSchedule({
-        balanceMinor: 50_000n,
-      });
-      await expectFailed(schedule.id, 'insufficient_balance', sender, 50_000n);
-    });
-
-    it('daily_limit_exceeded: money sent since creation counts', async () => {
-      const { sender, recipient, schedule } = await seedSchedule({
-        senderTier: 'tier1',
-        balanceMinor: 10_000_000n,
-        body: { amount: 3_000_000 },
-      });
-      await h
-        .http()
-        .post('/transfers')
-        .set('Authorization', `Bearer ${h.tokenFor(sender.userId)}`)
-        .send({
-          recipientUserId: recipient.userId,
-          amount: 3_000_000,
-          reference: `live-${randomUUID()}`,
-          visibility: 'private',
-          pin: '1234',
-        })
-        .expect(201);
-
-      await expectFailed(
-        schedule.id,
-        'daily_limit_exceeded',
-        sender,
-        7_000_000n,
-      );
-    });
-
-    it('recipient_cap: the recipient filled up after creation', async () => {
-      const { sender, recipient, schedule } = await seedSchedule({
-        recipientTier: 'tier1',
-        body: { amount: 100_000 },
-      });
-      await fundWallet(ctx, {
-        reference: `cap-fill-${randomUUID()}`,
-        walletId: recipient.walletId,
-        netAmountMinor: 29_950_000n,
-      });
-
-      await expectFailed(schedule.id, 'recipient_cap', sender, 5_000_000n);
-    });
 
     it('blocked: a block placed after creation stops the run', async () => {
       const { sender, recipient, schedule } = await seedSchedule();
@@ -318,31 +272,15 @@ describe('Scheduled payment execution', () => {
         5_000_000n,
       );
     });
-
-    it('does not retry a business failure', async () => {
-      const { sender, schedule } = await seedSchedule({
-        balanceMinor: 50_000n,
-      });
-      const run = await sweepAndWait(schedule.id);
-      await fundWallet(ctx, {
-        reference: `topup-${randomUUID()}`,
-        walletId: sender.walletId,
-        netAmountMinor: 5_000_000n,
-      });
-
-      await h.engine().sweep();
-      await h.waitForQueuesDrained();
-
-      const after = await h.runRepo().findOneByOrFail({ id: run.id });
-      expect(after.status).toBe('failed');
-      expect(await attemptsOf(run.id)).toHaveLength(1);
-    });
   });
 
   describe('infrastructure errors', () => {
-    it('are retried by the queue, and recorded as infrastructure only after its attempts are spent', async () => {
+    it('are retried by the queue, and recorded as a transient infrastructure failure only after its attempts are spent', async () => {
       const { schedule } = await seedSchedule();
-      const run = await insertPendingRun(schedule.id);
+      const run = await insertPendingRun(
+        schedule.id,
+        new Date(Date.now() + 30 * 86_400_000),
+      );
       const processor = ctx.app.get(RunProcessor, { strict: false });
       jest
         .spyOn(ctx.app.get(RunEngine, { strict: false }), 'executeRun')
@@ -367,7 +305,8 @@ describe('Scheduled payment execution', () => {
       await processor.process(job(4));
 
       const after = await h.runRepo().findOneByOrFail({ id: run.id });
-      expect(after.status).toBe('failed');
+      expect(after).toMatchObject({ status: 'pending', attemptCount: 1 });
+      expect(after.nextAttemptAt).not.toBeNull();
       const [attempt] = await attemptsOf(run.id);
       expect(attempt).toMatchObject({
         outcome: 'failed',

@@ -42,7 +42,7 @@ export class ScheduleLimitReachedException extends DomainException {
   readonly code = 'SCHEDULE_LIMIT_REACHED';
   constructor(maxActive: number) {
     super(
-      `You can have at most ${maxActive} active scheduled payments`,
+      `You can have at most ${maxActive} active or paused scheduled payments`,
       HttpStatus.UNPROCESSABLE_ENTITY,
     );
   }
@@ -82,5 +82,22 @@ export class ScheduleRecurrenceInvalidException extends DomainException {
   readonly code = 'SCHEDULE_RECURRENCE_INVALID';
   constructor(message: string) {
     super(message, HttpStatus.BAD_REQUEST);
+  }
+}
+
+export class ScheduleStatusConflictException extends DomainException {
+  readonly code = 'SCHEDULE_STATUS_CONFLICT';
+  constructor(message: string) {
+    super(message, HttpStatus.CONFLICT);
+  }
+}
+
+export class ScheduleNothingToResumeException extends DomainException {
+  readonly code = 'SCHEDULE_NOTHING_TO_RESUME';
+  constructor() {
+    super(
+      'This scheduled payment has no run left to start, so it cannot be resumed. You can cancel it.',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
   }
 }

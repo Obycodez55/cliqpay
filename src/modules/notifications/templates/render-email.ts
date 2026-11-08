@@ -28,6 +28,7 @@ const bodies = {
   money_request_declined: compile('money-request-declined.hbs'),
   money_request_paid: compile('money-request-paid.hbs'),
   scheduled_payment_created: compile('scheduled-payment-created.hbs'),
+  scheduled_payment_paused: compile('scheduled-payment-paused.hbs'),
   withdrawal_initiated: compile('withdrawal-initiated.hbs'),
   withdrawal_completed: compile('withdrawal-completed.hbs'),
   withdrawal_failed: compile('withdrawal-failed.hbs'),

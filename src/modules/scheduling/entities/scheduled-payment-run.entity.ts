@@ -3,6 +3,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -44,6 +45,9 @@ export type RunStatus = (typeof RUN_STATUSES)[number];
   'scheduledPaymentId',
   'runNumber',
 ])
+@Index('IDX_scheduled_payment_runs_next_attempt_at', ['nextAttemptAt'], {
+  where: `"status" = 'pending'`,
+})
 export class ScheduledPaymentRun {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -81,6 +85,10 @@ export class ScheduledPaymentRun {
 
   @Column('int', { default: 0 })
   attemptCount: number;
+
+  // When a pending run's next attempt is due; null for a first attempt.
+  @Column({ type: 'timestamptz', nullable: true })
+  nextAttemptAt: Date | null;
 
   @Column('uuid', { nullable: true })
   transactionId: string | null;

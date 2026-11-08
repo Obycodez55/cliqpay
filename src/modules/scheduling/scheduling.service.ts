@@ -1,6 +1,11 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager } from 'typeorm';
+import { DataSource, EntityManager, In } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { Money } from '../../shared/primitives/money';
 import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
@@ -21,24 +26,31 @@ import { SocialService } from '../social/social.service';
 import { TransfersService } from '../transfers/transfers.service';
 import { UsersService } from '../users/users.service';
 import { CreateScheduledPaymentDto } from './dto/create-scheduled-payment.dto';
+import { ListScheduledPaymentRunsQueryDto } from './dto/list-scheduled-payment-runs-query.dto';
 import { ListScheduledPaymentsQueryDto } from './dto/list-scheduled-payments-query.dto';
+import { ResumeScheduledPaymentDto } from './dto/resume-scheduled-payment.dto';
+import { ScheduledPaymentRunResponseDto } from './dto/scheduled-payment-run-response.dto';
 import { ScheduledPaymentResponseDto } from './dto/scheduled-payment-response.dto';
 import { ScheduledPayment } from './entities/scheduled-payment.entity';
 import { ScheduledPaymentRun } from './entities/scheduled-payment-run.entity';
+import { ScheduledPaymentAttempt } from './entities/scheduled-payment-attempt.entity';
 import { ScheduledPaymentChange } from './entities/scheduled-payment-change.entity';
 import {
   ScheduleAlreadyCompletedException,
   ScheduleAmountExceedsDailyLimitException,
   ScheduleLimitReachedException,
+  ScheduleNothingToResumeException,
   ScheduleRecurrenceInvalidException,
   ScheduleRecipientUnableToReceiveException,
   ScheduleReferenceReusedException,
   ScheduleSenderFrozenException,
+  ScheduleStatusConflictException,
   ScheduleStartDateInvalidException,
   ScheduledPaymentNotFoundException,
 } from './internal/errors';
 import {
   computeDueAt,
+  findNextRun,
   isValidIsoDate,
   lagosToday,
   startDateBounds,
@@ -76,7 +88,7 @@ export class SchedulingService {
   ): Promise<ScheduledPaymentResponseDto> {
     const replayed = await this.findReplay(userId, dto);
     if (replayed) {
-      return toResponse(replayed);
+      return this.respond(replayed);
     }
 
     const recipientUserId = dto.target.userId;
@@ -148,14 +160,14 @@ export class SchedulingService {
       if (isUniqueViolation(error, UNIQUE_REFERENCE)) {
         const raced = await this.findReplay(userId, dto);
         if (raced) {
-          return toResponse(raced);
+          return this.respond(raced);
         }
       }
       throw error;
     }
 
     await this.publishCreated(schedule, prepared.sender.email);
-    return toResponse(schedule);
+    return toResponse(schedule, 0);
   }
 
   async get(
@@ -168,7 +180,7 @@ export class SchedulingService {
     if (!schedule) {
       throw new ScheduledPaymentNotFoundException();
     }
-    return toResponse(schedule);
+    return this.respond(schedule);
   }
 
   async list(
@@ -189,6 +201,8 @@ export class SchedulingService {
       .take(query.limit + 1);
     if (query.status === 'active') {
       builder.andWhere(`schedule.status = 'active'`);
+    } else if (query.status === 'paused') {
+      builder.andWhere(`schedule.status = 'paused'`);
     } else if (query.status === 'ended') {
       builder.andWhere(`schedule.status IN ('cancelled', 'completed')`);
     }
@@ -203,8 +217,11 @@ export class SchedulingService {
     }>();
     const hasMore = entities.length > query.limit;
     const page = hasMore ? entities.slice(0, query.limit) : entities;
+    const runsUsed = await this.runsCreated(page.map((s) => s.id));
     return {
-      items: page.map(toResponse),
+      items: page.map((schedule) =>
+        toResponse(schedule, runsUsed.get(schedule.id) ?? 0),
+      ),
       nextCursor: hasMore
         ? encodeCreatedAtIdCursor({
             createdAt: raw[query.limit - 1].raw_created_at,
@@ -244,7 +261,7 @@ export class SchedulingService {
           .getRepository(ScheduledPaymentRun)
           .update(
             { scheduledPaymentId: locked.id, status: 'pending' },
-            { status: 'cancelled' },
+            { status: 'cancelled', nextAttemptAt: null },
           );
         await manager.getRepository(ScheduledPaymentChange).save({
           scheduledPaymentId: locked.id,
@@ -254,7 +271,208 @@ export class SchedulingService {
         return locked;
       },
     );
-    return toResponse(schedule);
+    return this.respond(schedule);
+  }
+
+  async pause(
+    userId: string,
+    scheduleId: string,
+  ): Promise<ScheduledPaymentResponseDto> {
+    const schedule = await runInTransaction(
+      this.dataSource,
+      async (manager) => {
+        const locked = await this.lockOwned(manager, userId, scheduleId);
+        if (locked.status === 'paused') {
+          return locked;
+        }
+        if (locked.status !== 'active') {
+          throw new ScheduleStatusConflictException(
+            `A ${locked.status} scheduled payment cannot be paused`,
+          );
+        }
+        locked.status = 'paused';
+        locked.pausedReason = 'user';
+        locked.nextRunAt = null;
+        await manager.getRepository(ScheduledPayment).save(locked);
+        // Stopping money is immediate: an attempt already executing
+        // finishes, but nothing waiting to start does.
+        await manager
+          .getRepository(ScheduledPaymentRun)
+          .update(
+            { scheduledPaymentId: locked.id, status: 'pending' },
+            { status: 'cancelled', nextAttemptAt: null },
+          );
+        await manager.getRepository(ScheduledPaymentChange).save({
+          scheduledPaymentId: locked.id,
+          kind: 'paused',
+          actor: 'user',
+          reason: 'user',
+        });
+        return locked;
+      },
+    );
+    return this.respond(schedule);
+  }
+
+  async resume(
+    userId: string,
+    scheduleId: string,
+    dto: ResumeScheduledPaymentDto,
+  ): Promise<ScheduledPaymentResponseDto> {
+    const current = await this.dataSource
+      .getRepository(ScheduledPayment)
+      .findOneBy({ id: scheduleId, userId });
+    if (!current) {
+      throw new ScheduledPaymentNotFoundException();
+    }
+    assertPaused(current);
+    // Checked before the PIN so a schedule with nothing left doesn't cost an
+    // attempt at it.
+    this.requireNextRun(
+      current,
+      (await this.runsCreated([current.id])).get(current.id) ?? 0,
+    );
+    await this.authService.verifyTransactionPin(userId, dto.pin);
+
+    const schedule = await runInTransaction(
+      this.dataSource,
+      async (manager) => {
+        const locked = await this.lockOwned(manager, userId, scheduleId);
+        assertPaused(locked);
+        const runsCreated =
+          (await this.runsCreated([locked.id], manager)).get(locked.id) ?? 0;
+        const next = this.requireNextRun(locked, runsCreated);
+        // Dates that passed while paused are skipped, not run; the anchor stays
+        // so a 31st-of-the-month schedule keeps its day.
+        locked.nextRunNumber = next.runNumber;
+        locked.nextRunAt = next.dueAt;
+        locked.status = 'active';
+        locked.pausedReason = null;
+        locked.consecutiveFailures = 0;
+        await manager.getRepository(ScheduledPayment).save(locked);
+        await manager.getRepository(ScheduledPaymentChange).save({
+          scheduledPaymentId: locked.id,
+          kind: 'resumed',
+          actor: 'user',
+        });
+        return locked;
+      },
+    );
+    return this.respond(schedule);
+  }
+
+  async listRuns(
+    userId: string,
+    scheduleId: string,
+    query: ListScheduledPaymentRunsQueryDto,
+  ): Promise<PaginatedResult<ScheduledPaymentRunResponseDto>> {
+    const owned = await this.dataSource
+      .getRepository(ScheduledPayment)
+      .findOne({ where: { id: scheduleId, userId }, select: { id: true } });
+    if (!owned) {
+      throw new ScheduledPaymentNotFoundException();
+    }
+    const before = query.cursor ? decodeRunNumberCursor(query.cursor) : null;
+    const builder = this.dataSource
+      .getRepository(ScheduledPaymentRun)
+      .createQueryBuilder('run')
+      .where('run.scheduledPaymentId = :scheduleId', { scheduleId })
+      .orderBy('run.runNumber', 'DESC')
+      .take(query.limit + 1);
+    if (before !== null) {
+      builder.andWhere('run.runNumber < :before', { before });
+    }
+    const runs = await builder.getMany();
+    const hasMore = runs.length > query.limit;
+    const page = hasMore ? runs.slice(0, query.limit) : runs;
+    const attempts = page.length
+      ? await this.dataSource.getRepository(ScheduledPaymentAttempt).find({
+          where: { runId: In(page.map((run) => run.id)) },
+          order: { attemptNumber: 'ASC' },
+        })
+      : [];
+    return {
+      items: page.map((run) => ({
+        id: run.id,
+        runNumber: run.runNumber,
+        dueDate: lagosToday(run.dueAt),
+        status: run.status,
+        amount: Money.of(run.amount, NGN).toJSON(),
+        nextAttemptAt: run.nextAttemptAt?.toISOString() ?? null,
+        transactionId: run.transactionId,
+        attempts: attempts
+          .filter((attempt) => attempt.runId === run.id)
+          .map((attempt) => ({
+            attemptNumber: attempt.attemptNumber,
+            outcome: attempt.outcome,
+            failureCode: attempt.failureCode,
+            transactionId: attempt.transactionId,
+            startedAt: attempt.startedAt.toISOString(),
+          })),
+      })),
+      nextCursor: hasMore
+        ? encodeRunNumberCursor(page[page.length - 1].runNumber)
+        : null,
+    };
+  }
+
+  private async lockOwned(
+    manager: EntityManager,
+    userId: string,
+    scheduleId: string,
+  ): Promise<ScheduledPayment> {
+    const locked = await manager
+      .getRepository(ScheduledPayment)
+      .createQueryBuilder('schedule')
+      .where('schedule.id = :scheduleId', { scheduleId })
+      .andWhere('schedule.userId = :userId', { userId })
+      .setLock('pessimistic_write')
+      .getOne();
+    if (!locked) {
+      throw new ScheduledPaymentNotFoundException();
+    }
+    return locked;
+  }
+
+  private requireNextRun(
+    schedule: ScheduledPayment,
+    runsCreated: number,
+  ): { runNumber: number; dueAt: Date } {
+    const next = findNextRun(
+      schedule,
+      runsCreated,
+      this.config.scheduledPayments.windowStart,
+      new Date(),
+    );
+    if (!next) {
+      throw new ScheduleNothingToResumeException();
+    }
+    return next;
+  }
+
+  private async runsCreated(
+    scheduleIds: string[],
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<Map<string, number>> {
+    if (scheduleIds.length === 0) {
+      return new Map();
+    }
+    const rows = await manager
+      .getRepository(ScheduledPaymentRun)
+      .createQueryBuilder('run')
+      .select('run.scheduledPaymentId', 'scheduleId')
+      .addSelect('count(*)', 'count')
+      .where('run.scheduledPaymentId IN (:...scheduleIds)', { scheduleIds })
+      .groupBy('run.scheduledPaymentId')
+      .getRawMany<{ scheduleId: string; count: string }>();
+    return new Map(rows.map((row) => [row.scheduleId, Number(row.count)]));
+  }
+
+  private async respond(
+    schedule: ScheduledPayment,
+  ): Promise<ScheduledPaymentResponseDto> {
+    const runsUsed = await this.runsCreated([schedule.id]);
+    return toResponse(schedule, runsUsed.get(schedule.id) ?? 0);
   }
 
   private async findReplay(
@@ -355,7 +573,7 @@ export class SchedulingService {
     const { maxActive } = this.config.scheduledPayments;
     const active = await manager
       .getRepository(ScheduledPayment)
-      .countBy({ userId, status: 'active' });
+      .countBy({ userId, status: In(['active', 'paused']) });
     if (active >= maxActive) {
       throw new ScheduleLimitReachedException(maxActive);
     }
@@ -417,7 +635,41 @@ function assertRecurrenceValid(dto: CreateScheduledPaymentDto): void {
   }
 }
 
-function toResponse(schedule: ScheduledPayment): ScheduledPaymentResponseDto {
+function assertPaused(schedule: ScheduledPayment): void {
+  if (schedule.status !== 'paused') {
+    throw new ScheduleStatusConflictException(
+      `Only a paused scheduled payment can be resumed; this one is ${schedule.status}`,
+    );
+  }
+}
+
+function encodeRunNumberCursor(runNumber: number): string {
+  return Buffer.from(JSON.stringify({ runNumber })).toString('base64url');
+}
+
+function decodeRunNumberCursor(raw: string): number {
+  try {
+    const parsed = JSON.parse(
+      Buffer.from(raw, 'base64url').toString('utf8'),
+    ) as { runNumber?: unknown } | null;
+    const runNumber = parsed?.runNumber;
+    if (
+      typeof runNumber === 'number' &&
+      Number.isInteger(runNumber) &&
+      runNumber > 0
+    ) {
+      return runNumber;
+    }
+  } catch {
+    // falls through to the 400 below
+  }
+  throw new BadRequestException('Invalid cursor');
+}
+
+function toResponse(
+  schedule: ScheduledPayment,
+  runsUsed: number,
+): ScheduledPaymentResponseDto {
   return {
     id: schedule.id,
     target: { type: 'user', userId: schedule.recipientUserId },
@@ -430,8 +682,10 @@ function toResponse(schedule: ScheduledPayment): ScheduledPaymentResponseDto {
         : null,
     endDate: schedule.endDate,
     maxRuns: schedule.maxRuns,
-    runsUsed: schedule.nextRunNumber - 1,
+    runsUsed,
     status: schedule.status,
+    consecutiveFailures: schedule.consecutiveFailures,
+    pausedReason: schedule.pausedReason,
     nextRunDate: schedule.nextRunAt ? lagosToday(schedule.nextRunAt) : null,
     nextRunAt: schedule.nextRunAt?.toISOString() ?? null,
     createdAt: schedule.createdAt.toISOString(),

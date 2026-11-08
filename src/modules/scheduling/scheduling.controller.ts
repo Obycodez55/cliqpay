@@ -24,6 +24,9 @@ import {
 } from '../../common/guards/jwt-auth.guard';
 import { SchedulingService } from './scheduling.service';
 import { CreateScheduledPaymentDto } from './dto/create-scheduled-payment.dto';
+import { ListScheduledPaymentRunsQueryDto } from './dto/list-scheduled-payment-runs-query.dto';
+import { ResumeScheduledPaymentDto } from './dto/resume-scheduled-payment.dto';
+import { ScheduledPaymentRunResponseDto } from './dto/scheduled-payment-run-response.dto';
 import { ListScheduledPaymentsQueryDto } from './dto/list-scheduled-payments-query.dto';
 import { ScheduledPaymentResponseDto } from './dto/scheduled-payment-response.dto';
 
@@ -88,5 +91,56 @@ export class SchedulingController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<ScheduledPaymentResponseDto> {
     return this.schedulingService.cancel(req.user.userId, id);
+  }
+
+  @Post(':id/pause')
+  @ApiOperation({
+    summary: 'Pause a scheduled payment',
+    description:
+      'Needs no PIN. Runs not yet started are cancelled; an attempt already executing finishes. Nothing is sent until you resume.',
+  })
+  async pause(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<ScheduledPaymentResponseDto> {
+    return this.schedulingService.pause(req.user.userId, id);
+  }
+
+  @Post(':id/resume')
+  @ApiOperation({
+    summary: 'Resume a paused scheduled payment',
+    description:
+      'Needs the PIN. Continues from the next run date still in the future; dates that passed while paused are skipped, not run. 422 when no run is left to start.',
+  })
+  async resume(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: ResumeScheduledPaymentDto,
+  ): Promise<ScheduledPaymentResponseDto> {
+    return this.schedulingService.resume(req.user.userId, id, dto);
+  }
+
+  @Get(':id/runs')
+  @ApiOperation({
+    summary: "A scheduled payment's runs, newest first, with their attempts",
+  })
+  @ApiExtraModels(ScheduledPaymentRunResponseDto)
+  @ApiOkResponse({
+    schema: {
+      properties: {
+        items: {
+          type: 'array',
+          items: { $ref: getSchemaPath(ScheduledPaymentRunResponseDto) },
+        },
+        nextCursor: { type: 'string', nullable: true },
+      },
+    },
+  })
+  async listRuns(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() query: ListScheduledPaymentRunsQueryDto,
+  ): Promise<PaginatedResult<ScheduledPaymentRunResponseDto>> {
+    return this.schedulingService.listRuns(req.user.userId, id, query);
   }
 }

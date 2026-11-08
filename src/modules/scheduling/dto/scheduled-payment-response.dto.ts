@@ -62,6 +62,19 @@ export class ScheduledPaymentResponseDto {
   status: ScheduleStatus;
 
   @ApiProperty({
+    description:
+      'Runs in a row that ended failed; 3 pauses the schedule. A succeeded run resets it.',
+  })
+  consecutiveFailures: number;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'Why the schedule is paused: `user`, a failure code (blocked, recipient_unavailable, sender_frozen), or `consecutive_failures`. Null unless paused.',
+  })
+  pausedReason: string | null;
+
+  @ApiProperty({
     nullable: true,
     example: '2026-12-01',
     description:
