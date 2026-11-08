@@ -380,6 +380,7 @@ describe('Social blocks on the money path', () => {
             currency: 'NGN',
             note: null,
             moneyRequestId: randomUUID(),
+            kind: 'direct',
             fromFollowed: true,
           },
           occurredAt: new Date(),

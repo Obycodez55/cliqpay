@@ -186,7 +186,7 @@ export class SocialController {
 
   @Patch('posts/:transactionId/visibility')
   @ApiOperation({
-    summary: 'Change the visibility of a post for a transfer you sent',
+    summary: 'Change the visibility of a post you authored',
   })
   async setVisibility(
     @Req() req: AuthenticatedRequest,
@@ -201,30 +201,27 @@ export class SocialController {
   }
 
   @Put('posts/:transactionId/hide')
-  @ApiOperation({ summary: 'Hide a post for a transfer you received' })
+  @ApiOperation({
+    summary:
+      'Hide a post you are on from public view (not available to its author)',
+  })
   async hide(
     @Req() req: AuthenticatedRequest,
     @Param('transactionId', ParseUUIDPipe) transactionId: string,
   ): Promise<PostStateResponseDto> {
-    return this.socialService.setHiddenByRecipient(
-      req.user.userId,
-      transactionId,
-      true,
-    );
+    return this.socialService.setHidden(req.user.userId, transactionId, true);
   }
 
   @Delete('posts/:transactionId/hide')
   @HttpCode(200)
-  @ApiOperation({ summary: 'Unhide a post for a transfer you received' })
+  @ApiOperation({
+    summary: 'Unhide a post you hid (not available to its author)',
+  })
   async unhide(
     @Req() req: AuthenticatedRequest,
     @Param('transactionId', ParseUUIDPipe) transactionId: string,
   ): Promise<PostStateResponseDto> {
-    return this.socialService.setHiddenByRecipient(
-      req.user.userId,
-      transactionId,
-      false,
-    );
+    return this.socialService.setHidden(req.user.userId, transactionId, false);
   }
 
   @Put('follows/:userId')

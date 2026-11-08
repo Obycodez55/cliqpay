@@ -9,6 +9,10 @@ import {
 } from './support/transfers-test-context';
 import { dataOf, errorOf } from './support/api-response';
 import { Follow } from '../../src/modules/social/entities/follow.entity';
+import {
+  TestPostOptions,
+  insertTransferPost,
+} from './support/social-post-fixtures';
 import { KycTier } from '../../src/modules/users/users.service';
 
 jest.setTimeout(180_000);
@@ -24,8 +28,9 @@ interface Identity {
 
 interface FeedPost {
   transactionId: string;
-  sender: Identity;
-  recipient: Identity;
+  kind: string;
+  author: Identity;
+  participants: (Identity & { role: string })[];
   note: string | null;
   createdAt: string;
 }
@@ -74,32 +79,8 @@ describe('Social feed and post view', () => {
     );
   }
 
-  async function insertPost(options: {
-    sender: string;
-    recipient: string;
-    visibility?: 'public' | 'private';
-    hidden?: boolean;
-    note?: string | null;
-    createdAt?: string;
-  }): Promise<string> {
-    const transactionId = randomUUID();
-    const visibility = options.visibility ?? 'public';
-    await ctx.dataSource.query(
-      `INSERT INTO transaction_posts
-        (transaction_id, sender_user_id, recipient_user_id, note, visibility,
-         requested_visibility, hidden_by_recipient, created_at)
-       VALUES ($1, $2, $3, $4, $5, $5, $6, COALESCE($7::timestamptz, clock_timestamp()))`,
-      [
-        transactionId,
-        options.sender,
-        options.recipient,
-        options.note === undefined ? 'lunch' : options.note,
-        visibility,
-        options.hidden ?? false,
-        options.createdAt ?? null,
-      ],
-    );
-    return transactionId;
+  function insertPost(options: TestPostOptions): Promise<string> {
+    return insertTransferPost(ctx.dataSource, options);
   }
 
   function http() {
@@ -154,18 +135,30 @@ describe('Social feed and post view', () => {
       const [item] = page.items;
       expect(item).toEqual({
         transactionId,
-        sender: {
+        kind: 'transfer',
+        origin: null,
+        author: {
           userId: sender,
           username: expect.stringMatching(/^sender_feed_/) as string,
           firstName: 'Ada',
           lastName: 'Lovelace',
         },
-        recipient: {
-          userId: recipient,
-          username: expect.stringMatching(/^recipient_feed_/) as string,
-          firstName: 'Ada',
-          lastName: 'Lovelace',
-        },
+        participants: [
+          {
+            userId: sender,
+            username: expect.stringMatching(/^sender_feed_/) as string,
+            firstName: 'Ada',
+            lastName: 'Lovelace',
+            role: 'author',
+          },
+          {
+            userId: recipient,
+            username: expect.stringMatching(/^recipient_feed_/) as string,
+            firstName: 'Ada',
+            lastName: 'Lovelace',
+            role: 'counterparty',
+          },
+        ],
         note: 'suya money',
         createdAt: expect.any(String) as string,
         reactionCounts: {
@@ -290,6 +283,35 @@ describe('Social feed and post view', () => {
       await getPost(viewer, transactionId).expect(200);
     });
 
+    it('returns a post once when the viewer follows both participants, and when they are one of them', async () => {
+      const sender = await seedUser('sender');
+      const recipient = await seedUser('recipient');
+      const viewer = await seedUser('viewer');
+      await follow(viewer, sender, recipient);
+      const shared = await insertPost({ sender, recipient });
+      const own = await insertPost({ sender: viewer, recipient: sender });
+      const older = await insertPost({
+        sender,
+        recipient,
+        createdAt: '2020-01-01T00:00:00Z',
+      });
+
+      expect(await feedIds(viewer)).toEqual([own, shared, older]);
+
+      const first = dataOf<FeedPage>(
+        await getFeed(viewer, { limit: 1 }).expect(200),
+      );
+      const second = dataOf<FeedPage>(
+        await getFeed(viewer, { limit: 2, cursor: first.nextCursor! }).expect(
+          200,
+        ),
+      );
+      expect(
+        [...first.items, ...second.items].map((item) => item.transactionId),
+      ).toEqual([own, shared, older]);
+      expect(second.nextCursor).toBeNull();
+    });
+
     it('pages newest first with a stable cursor, including rows sharing a timestamp', async () => {
       const followedSender = await seedUser('sender');
       const followedRecipient = await seedUser('recipient');
@@ -325,13 +347,12 @@ describe('Social feed and post view', () => {
       );
 
       const expected = (
-        await ctx.dataSource.query<{ transaction_id: string }[]>(
-          `SELECT transaction_id FROM transaction_posts
-           WHERE transaction_id = ANY($1)
+        await ctx.dataSource.query<{ id: string }[]>(
+          `SELECT id FROM posts WHERE id = ANY($1)
            ORDER BY created_at DESC, id DESC`,
           [inserted],
         )
-      ).map((row) => row.transaction_id);
+      ).map((row) => row.id);
 
       const seen: string[] = [];
       let cursor: string | null = null;
@@ -396,8 +417,12 @@ describe('Social feed and post view', () => {
         const res = await getPost(viewer, privatePost).expect(200);
         expect(dataOf<FeedPost>(res)).toMatchObject({
           transactionId: privatePost,
-          sender: { userId: sender },
-          recipient: { userId: recipient },
+          kind: 'transfer',
+          author: { userId: sender },
+          participants: [
+            { userId: sender, role: 'author' },
+            { userId: recipient, role: 'counterparty' },
+          ],
           note: 'rent',
         });
         expect(JSON.stringify(res.body)).not.toMatch(/amount/i);
@@ -406,7 +431,7 @@ describe('Social feed and post view', () => {
       expect(await feedIds(sender)).toEqual([]);
     });
 
-    it('shows visibility and hiddenByRecipient to participants only, never in the feed', async () => {
+    it('shows visibility, isPublic and their own hidden flag to participants only, never in the feed', async () => {
       const sender = await seedUser('sender');
       const recipient = await seedUser('recipient');
       const follower = await seedUser('viewer');
@@ -419,23 +444,34 @@ describe('Social feed and post view', () => {
       });
       const hiddenPost = await insertPost({ sender, recipient, hidden: true });
 
-      for (const viewer of [sender, recipient]) {
+      const cases = [
+        [publicPost, 'public', true, false, false],
+        [privatePost, 'private', false, false, false],
+        [hiddenPost, 'public', false, false, true],
+      ] as const;
+      for (const [
+        post,
+        visibility,
+        isPublic,
+        senderHidden,
+        recipientHidden,
+      ] of cases) {
+        expect(dataOf(await getPost(sender, post).expect(200))).toMatchObject({
+          visibility,
+          isPublic,
+          hidden: senderHidden,
+        });
         expect(
-          dataOf(await getPost(viewer, publicPost).expect(200)),
-        ).toMatchObject({ visibility: 'public', hiddenByRecipient: false });
-        expect(
-          dataOf(await getPost(viewer, privatePost).expect(200)),
-        ).toMatchObject({ visibility: 'private', hiddenByRecipient: false });
-        expect(
-          dataOf(await getPost(viewer, hiddenPost).expect(200)),
-        ).toMatchObject({ visibility: 'public', hiddenByRecipient: true });
+          dataOf(await getPost(recipient, post).expect(200)),
+        ).toMatchObject({ visibility, isPublic, hidden: recipientHidden });
       }
 
       const asFollower = dataOf(
         await getPost(follower, publicPost).expect(200),
       );
       expect(asFollower).not.toHaveProperty('visibility');
-      expect(asFollower).not.toHaveProperty('hiddenByRecipient');
+      expect(asFollower).not.toHaveProperty('isPublic');
+      expect(asFollower).not.toHaveProperty('hidden');
 
       for (const viewer of [sender, follower]) {
         const [item] = dataOf<FeedPage>(
@@ -443,7 +479,8 @@ describe('Social feed and post view', () => {
         ).items;
         expect(item.transactionId).toBe(publicPost);
         expect(item).not.toHaveProperty('visibility');
-        expect(item).not.toHaveProperty('hiddenByRecipient');
+        expect(item).not.toHaveProperty('isPublic');
+        expect(item).not.toHaveProperty('hidden');
       }
     });
 

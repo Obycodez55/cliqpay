@@ -131,6 +131,8 @@ export interface MoneyRequestCreatedEventPayload {
   // The money request's own id — the in-app channel's dedupe_key, same
   // reasoning as TransferSentEventPayload's reference.
   moneyRequestId: string;
+  // 'group_share' for one share of a bill split, otherwise 'direct'.
+  kind: 'direct' | 'group_share';
   // Whether the payer followed the requester when the request was created.
   fromFollowed: boolean;
 }
@@ -146,6 +148,15 @@ export interface MoneyRequestDeclinedEventPayload {
   moneyRequestId: string;
 }
 
+// No notification catalog entry — it exists for non-notification subscribers.
+export const MONEY_REQUEST_CANCELLED_EVENT = 'money_request_cancelled';
+
+export interface MoneyRequestCancelledEventPayload {
+  moneyRequestId: string;
+  requesterUserId: string;
+  payerUserId: string;
+}
+
 export const MONEY_REQUEST_PAID_EVENT = 'money_request_paid';
 
 export interface MoneyRequestPaidEventPayload {
@@ -156,6 +167,16 @@ export interface MoneyRequestPaidEventPayload {
   currency: string;
   note: string | null;
   moneyRequestId: string;
+}
+
+export const BILL_SPLIT_COMPLETED_EVENT = 'bill_split_completed';
+
+export interface BillSplitCompletedEventPayload {
+  userId: string; // the initiator, notified every share was paid
+  billSplitId: string;
+  description: string;
+  total: string; // decimal display string (Money.toDecimalString())
+  currency: string;
 }
 
 export const WITHDRAWAL_INITIATED_EVENT = 'withdrawal_initiated';
@@ -259,6 +280,7 @@ export const POST_REACTION_EVENT = 'post_reaction';
 export interface PostReactionEventPayload {
   userId: string; // the participant being notified
   transactionId: string;
+  postKind: 'transfer' | 'bill_split';
   reactorUserId: string;
   reactorUsername: string;
 }
@@ -268,6 +290,7 @@ export const POST_COMMENT_EVENT = 'post_comment';
 export interface PostCommentEventPayload {
   userId: string; // the participant being notified
   transactionId: string;
+  postKind: 'transfer' | 'bill_split';
   commentId: string;
   commenterUserId: string;
   commenterUsername: string;

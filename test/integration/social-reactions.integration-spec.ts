@@ -12,6 +12,10 @@ import {
 import { dataOf, errorOf } from './support/api-response';
 import { Follow } from '../../src/modules/social/entities/follow.entity';
 import { PostReaction } from '../../src/modules/social/entities/post-reaction.entity';
+import {
+  TestPostOptions,
+  insertTransferPost,
+} from './support/social-post-fixtures';
 import { KycTier } from '../../src/modules/users/users.service';
 import {
   DOMAIN_EVENTS_QUEUE,
@@ -99,29 +103,8 @@ describe('Social reactions', () => {
     );
   }
 
-  async function insertPost(options: {
-    sender: string;
-    recipient: string;
-    visibility?: 'public' | 'private';
-  }): Promise<string> {
-    const transactionId = randomUUID();
-    const visibility = options.visibility ?? 'public';
-    await ctx.dataSource.query(
-      `INSERT INTO transaction_posts
-        (transaction_id, sender_user_id, recipient_user_id, note, visibility,
-         requested_visibility, hidden_by_recipient)
-       VALUES ($1, $2, $3, 'lunch', $4, $4, false)`,
-      [transactionId, options.sender, options.recipient, visibility],
-    );
-    return transactionId;
-  }
-
-  async function postIdOf(transactionId: string): Promise<string> {
-    const [row]: { id: string }[] = await ctx.dataSource.query(
-      'SELECT id FROM transaction_posts WHERE transaction_id = $1',
-      [transactionId],
-    );
-    return row.id;
+  function insertPost(options: TestPostOptions): Promise<string> {
+    return insertTransferPost(ctx.dataSource, options);
   }
 
   async function seedPublicPost() {
@@ -216,7 +199,7 @@ describe('Social reactions', () => {
   describe('post_reactions table', () => {
     it('rejects a reaction outside the fixed set', async () => {
       const { sender, transactionId } = await seedPublicPost();
-      const postId = await postIdOf(transactionId);
+      const postId = transactionId;
 
       await expect(
         ctx.dataSource.query(
@@ -239,7 +222,7 @@ describe('Social reactions', () => {
 
     it('holds at most one reaction per user per post', async () => {
       const { sender, transactionId } = await seedPublicPost();
-      const postId = await postIdOf(transactionId);
+      const postId = transactionId;
       const repo = ctx.dataSource.getRepository(PostReaction);
       await repo.insert({ postId, userId: sender, reaction: 'heart' });
 
@@ -667,6 +650,7 @@ describe('Social reactions', () => {
             payload: {
               userId,
               transactionId: randomUUID(),
+              postKind: 'transfer',
               reactorUserId,
               reactorUsername: 'someone',
             },

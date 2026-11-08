@@ -84,10 +84,30 @@ export class PayerNotFoundException extends DomainException {
 
 export class MoneyRequestPairCapExceededException extends DomainException {
   readonly code = 'MONEY_REQUEST_PAIR_CAP_EXCEEDED';
-  constructor(maxPendingPerPair: number) {
+  constructor(maxPendingPerPair: number, participantUsername?: string) {
     super(
-      `You already have ${maxPendingPerPair} outstanding requests to this user`,
+      `You already have ${maxPendingPerPair} outstanding requests to ${participantUsername ? `@${participantUsername}` : 'this user'}`,
       HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
+export class PaymentVisibilityRequiredException extends DomainException {
+  readonly code = 'PAYMENT_VISIBILITY_REQUIRED';
+  constructor() {
+    super(
+      'visibility is required when paying a direct money request',
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+}
+
+export class GroupSharePaymentVisibilityException extends DomainException {
+  readonly code = 'GROUP_SHARE_VISIBILITY_NOT_ALLOWED';
+  constructor() {
+    super(
+      'visibility must not be sent when paying a group-share request; that payment records no post',
+      HttpStatus.BAD_REQUEST,
     );
   }
 }

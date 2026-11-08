@@ -44,6 +44,7 @@ export class EventBusService implements OnModuleInit, OnModuleDestroy {
   // we handed it is exactly that case. Held separately so it can be quit
   // explicitly, or it leaks as a dangling open socket after shutdown.
   private priorityQueueEventsConnection!: Redis;
+  private readonly subscribers = new Map<string, Set<Queue>>();
 
   constructor(
     @InjectQueue(DOMAIN_EVENTS_QUEUE) private readonly queue: Queue,
@@ -64,10 +65,22 @@ export class EventBusService implements OnModuleInit, OnModuleDestroy {
     await this.priorityQueueEventsConnection.quit();
   }
 
+  // BullMQ queues hand each job to one worker rather than broadcasting, so a
+  // module that wants its own copy of an event needs its own queue — and so
+  // its own retry budget, which a failure elsewhere can't consume.
+  subscribe(queue: Queue, eventNames: readonly string[]): void {
+    for (const name of eventNames) {
+      const queues = this.subscribers.get(name) ?? new Set<Queue>();
+      queues.add(queue);
+      this.subscribers.set(name, queues);
+    }
+  }
+
   async publish<TName extends string, TPayload>(
     event: DomainEventEnvelope<TName, TPayload>,
   ): Promise<void> {
-    await this.queue.add(event.name, event);
+    const targets = [this.queue, ...(this.subscribers.get(event.name) ?? [])];
+    await Promise.all(targets.map((queue) => queue.add(event.name, event)));
   }
 
   async dispatchAndAwait<TName extends string, TPayload>(

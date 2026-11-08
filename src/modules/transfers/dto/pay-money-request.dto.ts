@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, Matches, MaxLength } from 'class-validator';
+import { IsIn, IsOptional, Matches, MaxLength } from 'class-validator';
 import { POST_VISIBILITIES, PostVisibility } from '../../social/social.service';
 
 // No amount, no recipient — both come from the request row, never the
@@ -18,13 +18,15 @@ export class PayMoneyRequestDto {
   })
   reference: string;
 
+  @IsOptional()
   @IsIn(POST_VISIBILITIES)
   @ApiProperty({
     enum: POST_VISIBILITIES,
+    required: false,
     description:
-      'Whether the resulting transfer may appear in the activity feed. Required; there is no default.',
+      'Whether the resulting transfer may appear in the activity feed. Required, with no default, when paying a direct request; sending it for a group-share request (one share of a bill split) is a 400, because that payment records no post.',
   })
-  visibility: PostVisibility;
+  visibility?: PostVisibility;
 
   @Matches(/^\d{4}$/, { message: 'pin must be exactly 4 digits' })
   @ApiProperty({ description: '4-digit transaction PIN' })

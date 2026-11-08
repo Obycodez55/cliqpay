@@ -50,6 +50,7 @@ function defaultTestAppConfig(): AppConfig {
     },
     transfers: { platformFee: 0, minAmount: 10_000 },
     moneyRequests: { expiryDays: 7, maxPendingPerPair: 3 },
+    billSplits: { maxParticipants: 20 },
     withdrawals: {
       minAmount: 10_000,
       platformFee: 0,

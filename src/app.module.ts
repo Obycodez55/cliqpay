@@ -22,6 +22,7 @@ import { WithdrawalsModule } from './modules/withdrawals/withdrawals.module';
 import { DisputesModule } from './modules/disputes/disputes.module';
 import { KycModule } from './modules/kyc/kyc.module';
 import { SocialModule } from './modules/social/social.module';
+import { BillSplitModule } from './modules/billsplit/billsplit.module';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { SocialModule } from './modules/social/social.module';
     DisputesModule,
     KycModule,
     SocialModule,
+    BillSplitModule,
     TerminusModule,
   ],
   controllers: [AppController],

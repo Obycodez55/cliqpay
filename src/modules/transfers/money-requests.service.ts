@@ -1,11 +1,6 @@
 import { ConflictException, Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import {
-  DataSource,
-  EntityManager,
-  Repository,
-  WhereExpressionBuilder,
-} from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { EntityNotFoundError } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { UsersService } from '../users/users.service';
@@ -13,10 +8,10 @@ import { KycService } from '../kyc/kyc.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { EventBusService } from '../../shared/events/event-bus.service';
 import {
-  MONEY_REQUEST_CREATED_EVENT,
+  MONEY_REQUEST_CANCELLED_EVENT,
   MONEY_REQUEST_DECLINED_EVENT,
   MONEY_REQUEST_PAID_EVENT,
-  MoneyRequestCreatedEventPayload,
+  MoneyRequestCancelledEventPayload,
   MoneyRequestDeclinedEventPayload,
   MoneyRequestPaidEventPayload,
 } from '../../shared/events/domain-events';
@@ -39,11 +34,17 @@ import {
 import { TransfersService } from './transfers.service';
 import { SocialService } from '../social/social.service';
 import {
+  countEffectivelyPending,
+  isEffectivelyPending,
+} from './internal/money-request-queries';
+import {
+  GroupSharePaymentVisibilityException,
   MoneyRequestAmountTooSmallException,
   MoneyRequestNotFoundException,
   MoneyRequestNotPayableException,
   MoneyRequestPairCapExceededException,
   PayerNotFoundException,
+  PaymentVisibilityRequiredException,
   RecipientUnableToReceiveException,
   SelfMoneyRequestException,
 } from './internal/errors';
@@ -63,31 +64,6 @@ export interface MoneyRequestListPagination {
 interface RequesterFilter {
   hiddenPendingFrom: string[];
   bucket?: { kind: IncomingBucket; followedIds: string[] };
-}
-
-// Applied to every query that treats a request as still actionable — a
-// `pending` row whose `expiresAt` has passed presents as expired but is
-// never rewritten (ADR-0012), so `status = 'pending'` alone is wrong
-// everywhere: the pair cap, cancel, and decline all go through this one
-// helper instead of three separately-reasoned-about WHERE clauses that
-// could drift.
-function applyEffectivelyPending<T extends WhereExpressionBuilder>(
-  qb: T,
-  alias: string,
-  now: Date,
-): T {
-  return qb
-    .andWhere(`${alias}.status = :pendingStatus`, { pendingStatus: 'pending' })
-    .andWhere(`${alias}.expiresAt > :now`, { now });
-}
-
-// Same predicate as applyEffectivelyPending above, evaluated against an
-// already-fetched row rather than as a SQL WHERE clause — payRequest below
-// needs the row regardless of its status (a paid row must still be
-// fetchable, to detect an idempotent replay), so it can't filter for
-// "pending" in the query itself the way cancel/decline do.
-function isEffectivelyPending(moneyRequest: MoneyRequest, now: Date): boolean {
-  return moneyRequest.status === 'pending' && moneyRequest.expiresAt > now;
 }
 
 /**
@@ -173,7 +149,7 @@ export class MoneyRequestsService {
           throw new RecipientUnableToReceiveException();
         }
 
-        const outstanding = await this.countEffectivelyPending(
+        const outstanding = await countEffectivelyPending(
           manager,
           requesterId,
           dto.payerUserId,
@@ -196,6 +172,7 @@ export class MoneyRequestsService {
           amount: BigInt(dto.amount),
           currency: NGN,
           note: dto.note ?? null,
+          kind: 'direct',
           status: 'pending',
           expiresAt,
           transactionId: null,
@@ -203,13 +180,14 @@ export class MoneyRequestsService {
         const followed = await this.socialService.isFollowing(
           payer.id,
           requester.id,
+          manager,
         );
         await repo.save(created);
         return { moneyRequest: created, fromFollowed: followed };
       },
     );
 
-    await this.publishCreatedEvent(
+    await this.transfersService.publishMoneyRequestCreated(
       moneyRequest,
       requester,
       payer,
@@ -256,59 +234,59 @@ export class MoneyRequestsService {
   }
 
   // Requester only, and only while effectively pending — scoped in the
-  // query itself (id + requesterUserId + applyEffectivelyPending), so a
-  // wrong owner or an already-resolved/expired request is indistinguishable
-  // from "doesn't exist" (same IDOR discipline as notifications' markRead).
-  // No notification — cancel is excluded from the catalog by design.
+  // query itself (id + requesterUserId), so a wrong owner or an
+  // already-resolved/expired request is indistinguishable from "doesn't
+  // exist" (same IDOR discipline as notifications' markRead). The row is
+  // locked and re-checked so a payment committing in between can't be
+  // overwritten. No notification — cancel is excluded from the catalog by
+  // design.
   async cancelRequest(
     requesterId: string,
     id: string,
   ): Promise<MoneyRequestResponseDto> {
     const now = new Date();
-    const qb = applyEffectivelyPending(
-      this.moneyRequests
-        .createQueryBuilder('moneyRequest')
-        .where('moneyRequest.id = :id', { id })
-        .andWhere('moneyRequest.requesterUserId = :requesterId', {
+    const moneyRequest = await runInTransaction(
+      this.dataSource,
+      async (manager) => {
+        const locked = await this.lockPendingRequest(
+          manager,
+          id,
+          'requesterUserId',
           requesterId,
-        }),
-      'moneyRequest',
-      now,
+          now,
+        );
+        locked.status = 'cancelled';
+        return manager.getRepository(MoneyRequest).save(locked);
+      },
     );
-    const moneyRequest = await qb.getOne();
-    if (!moneyRequest) {
-      throw new MoneyRequestNotFoundException();
-    }
 
-    moneyRequest.status = 'cancelled';
-    await this.moneyRequests.save(moneyRequest);
+    await this.publishCancelledEvent(moneyRequest);
 
     const payer = await this.usersService.findById(moneyRequest.payerUserId);
     return toMoneyRequestResponse(moneyRequest, toIdentitySummary(payer), now);
   }
 
-  // Payer only, and only while effectively pending — same scoping
-  // discipline as cancelRequest above. Notifies the requester.
+  // Payer only, and only while effectively pending — same scoping and
+  // locking as cancelRequest above. Notifies the requester.
   async declineRequest(
     payerId: string,
     id: string,
   ): Promise<MoneyRequestResponseDto> {
     const now = new Date();
-    const qb = applyEffectivelyPending(
-      this.moneyRequests
-        .createQueryBuilder('moneyRequest')
-        .where('moneyRequest.id = :id', { id })
-        .andWhere('moneyRequest.payerUserId = :payerId', { payerId }),
-      'moneyRequest',
-      now,
+    const moneyRequest = await runInTransaction(
+      this.dataSource,
+      async (manager) => {
+        const locked = await this.lockPendingRequest(
+          manager,
+          id,
+          'payerUserId',
+          payerId,
+          now,
+        );
+        locked.status = 'declined';
+        return manager.getRepository(MoneyRequest).save(locked);
+      },
     );
-    const moneyRequest = await qb.getOne();
-    if (!moneyRequest) {
-      throw new MoneyRequestNotFoundException();
-    }
-
-    moneyRequest.status = 'declined';
-    await this.moneyRequests.save(moneyRequest);
 
     const [requester, payer] = await Promise.all([
       this.usersService.findById(moneyRequest.requesterUserId),
@@ -352,9 +330,18 @@ export class MoneyRequestsService {
         throw new MoneyRequestNotFoundException();
       }
 
+      const isGroupShare = moneyRequest.kind === 'group_share';
+      if (isGroupShare && dto.visibility !== undefined) {
+        throw new GroupSharePaymentVisibilityException();
+      }
+      if (!isGroupShare && dto.visibility === undefined) {
+        throw new PaymentVisibilityRequiredException();
+      }
+
       const details = {
         note: moneyRequest.note || null,
-        visibility: dto.visibility,
+        visibility: dto.visibility ?? null,
+        origin: isGroupShare ? undefined : ('money_request' as const),
       };
       const prepared = await this.transfersService.prepareTransfer(
         payerId,
@@ -429,22 +416,24 @@ export class MoneyRequestsService {
     );
   }
 
-  private async countEffectivelyPending(
+  private async lockPendingRequest(
     manager: EntityManager,
-    requesterId: string,
-    payerId: string,
+    id: string,
+    ownerField: 'requesterUserId' | 'payerUserId',
+    ownerId: string,
     now: Date,
-  ): Promise<number> {
-    const qb = applyEffectivelyPending(
-      manager
-        .getRepository(MoneyRequest)
-        .createQueryBuilder('moneyRequest')
-        .where('moneyRequest.requesterUserId = :requesterId', { requesterId })
-        .andWhere('moneyRequest.payerUserId = :payerId', { payerId }),
-      'moneyRequest',
-      now,
-    );
-    return qb.getCount();
+  ): Promise<MoneyRequest> {
+    const moneyRequest = await manager
+      .getRepository(MoneyRequest)
+      .createQueryBuilder('moneyRequest')
+      .where('moneyRequest.id = :id', { id })
+      .andWhere(`moneyRequest.${ownerField} = :ownerId`, { ownerId })
+      .setLock('pessimistic_write')
+      .getOne();
+    if (!moneyRequest || !isEffectivelyPending(moneyRequest, now)) {
+      throw new MoneyRequestNotFoundException();
+    }
+    return moneyRequest;
   }
 
   private async list(
@@ -538,34 +527,22 @@ export class MoneyRequestsService {
     };
   }
 
-  private async publishCreatedEvent(
+  private async publishCancelledEvent(
     moneyRequest: MoneyRequest,
-    requester: CounterpartyUser,
-    payer: CounterpartyUser,
-    fromFollowed: boolean,
   ): Promise<void> {
     try {
-      await this.eventBus.publish<string, MoneyRequestCreatedEventPayload>({
-        name: MONEY_REQUEST_CREATED_EVENT,
+      await this.eventBus.publish<string, MoneyRequestCancelledEventPayload>({
+        name: MONEY_REQUEST_CANCELLED_EVENT,
         payload: {
-          userId: payer.id,
-          email: payer.email,
-          requesterUserId: requester.id,
-          counterpartyUsername: requester.username,
-          amount: Money.of(
-            moneyRequest.amount,
-            moneyRequest.currency,
-          ).toDecimalString(),
-          currency: moneyRequest.currency,
-          note: moneyRequest.note,
           moneyRequestId: moneyRequest.id,
-          fromFollowed,
+          requesterUserId: moneyRequest.requesterUserId,
+          payerUserId: moneyRequest.payerUserId,
         },
         occurredAt: new Date(),
       });
     } catch (error) {
       this.logger.error(
-        `publishCreatedEvent: money request "${moneyRequest.id}" created successfully, but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
+        `publishCancelledEvent: money request "${moneyRequest.id}" cancelled successfully, but publishing the event failed (${(error as Error).message}) — this will not be retried`,
       );
     }
   }

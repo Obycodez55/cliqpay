@@ -1,5 +1,6 @@
 import {
   AccountFrozenPayload,
+  BillSplitCompletedPayload,
   ChargebackReceivedPayload,
   EmailVerificationOtpPayload,
   FundingCompletedPayload,
@@ -47,6 +48,10 @@ export interface InAppContent {
   body: string;
   data: Record<string, unknown>;
   dedupeKey: string;
+}
+
+function postNoun(kind: PostCommentPayload['postKind']): string {
+  return kind === 'bill_split' ? 'bill split' : 'transaction';
 }
 
 /**
@@ -176,6 +181,11 @@ export const pushTemplates: {
     title: 'Request paid',
     body: `${payload.counterpartyUsername} paid you ${payload.currency} ${payload.amount}.`,
   }),
+  bill_split_completed: (payload: BillSplitCompletedPayload) => ({
+    title: 'Split complete',
+    body: `Everyone has paid their share of "${payload.description}".`,
+    data: { billSplitId: payload.billSplitId },
+  }),
   new_follower: (payload: NewFollowerPayload) => ({
     title: 'New follower',
     body: `${payload.followerUsername} started following you.`,
@@ -183,9 +193,10 @@ export const pushTemplates: {
   }),
   post_comment: (payload: PostCommentPayload) => ({
     title: 'New comment',
-    body: `${payload.commenterUsername} commented on your transaction.`,
+    body: `${payload.commenterUsername} commented on your ${postNoun(payload.postKind)}.`,
     data: {
       transactionId: payload.transactionId,
+      postKind: payload.postKind,
       commentId: payload.commentId,
     },
   }),
@@ -269,6 +280,16 @@ export const inAppTemplates: {
     },
     dedupeKey: payload.moneyRequestId,
   }),
+  bill_split_completed: (payload: BillSplitCompletedPayload) => ({
+    title: 'Split complete',
+    body: `Everyone has paid their share of "${payload.description}".`,
+    data: {
+      billSplitId: payload.billSplitId,
+      total: payload.total,
+      currency: payload.currency,
+    },
+    dedupeKey: payload.billSplitId,
+  }),
   new_follower: (payload: NewFollowerPayload) => ({
     title: 'New follower',
     body: `${payload.followerUsername} started following you.`,
@@ -282,9 +303,10 @@ export const inAppTemplates: {
   }),
   post_reaction: (payload: PostReactionPayload) => ({
     title: 'New reaction',
-    body: `${payload.reactorUsername} reacted to your transaction.`,
+    body: `${payload.reactorUsername} reacted to your ${postNoun(payload.postKind)}.`,
     data: {
       transactionId: payload.transactionId,
+      postKind: payload.postKind,
       reactorUserId: payload.reactorUserId,
       reactorUsername: payload.reactorUsername,
     },
@@ -294,9 +316,10 @@ export const inAppTemplates: {
   }),
   post_comment: (payload: PostCommentPayload) => ({
     title: 'New comment',
-    body: `${payload.commenterUsername} commented on your transaction.`,
+    body: `${payload.commenterUsername} commented on your ${postNoun(payload.postKind)}.`,
     data: {
       transactionId: payload.transactionId,
+      postKind: payload.postKind,
       commentId: payload.commentId,
       commenterUserId: payload.commenterUserId,
       commenterUsername: payload.commenterUsername,

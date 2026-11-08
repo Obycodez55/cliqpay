@@ -106,8 +106,12 @@ export default tseslint.config(
           pattern: 'src/modules/social/**',
         },
         {
+          type: 'billsplit-module',
+          pattern: 'src/modules/billsplit/**',
+        },
+        {
           type: 'peripheral-module',
-          pattern: 'src/modules/{fraud,billsplit,scheduling,notifications}',
+          pattern: 'src/modules/{fraud,scheduling,notifications}',
         },
         {
           type: 'shared',
@@ -271,25 +275,25 @@ export default tseslint.config(
               from: { element: { type: 'ledger-module' } },
               disallow: { to: { element: { type: 'social-module' } } },
               message:
-                '`ledger` must never import from `social` — only `transfers` and `notifications` depend on it. See docs/adr/0025-social-layer.md.',
+                '`ledger` must never import from `social` — only `transfers`, `notifications` and `billsplit` depend on it. See docs/adr/0025-social-layer.md.',
             },
             {
               from: { element: { type: 'users-module' } },
               disallow: { to: { element: { type: 'social-module' } } },
               message:
-                '`users` must never import from `social` — only `transfers` and `notifications` depend on it. See docs/adr/0025-social-layer.md.',
+                '`users` must never import from `social` — only `transfers`, `notifications` and `billsplit` depend on it. See docs/adr/0025-social-layer.md.',
             },
             {
               from: { element: { type: 'payments-module' } },
               disallow: { to: { element: { type: 'social-module' } } },
               message:
-                '`payments` must never import from `social` — only `transfers` and `notifications` depend on it. See docs/adr/0025-social-layer.md.',
+                '`payments` must never import from `social` — only `transfers`, `notifications` and `billsplit` depend on it. See docs/adr/0025-social-layer.md.',
             },
             {
               from: { element: { type: 'wallet-module' } },
               disallow: { to: { element: { type: 'social-module' } } },
               message:
-                '`wallet` must never import from `social` — only `transfers` and `notifications` depend on it. See docs/adr/0025-social-layer.md.',
+                '`wallet` must never import from `social` — only `transfers`, `notifications` and `billsplit` depend on it. See docs/adr/0025-social-layer.md.',
             },
             {
               from: { element: { type: 'social-module' } },
@@ -314,6 +318,24 @@ export default tseslint.config(
               disallow: { to: { element: { type: 'disputes-module' } } },
               message:
                 '`social` must never import from `disputes` — see docs/adr/0025-social-layer.md.',
+            },
+            {
+              from: { element: { type: '!(billsplit-module)' } },
+              disallow: { to: { element: { type: 'billsplit-module' } } },
+              message:
+                '`billsplit` is peripheral: nothing imports it, and core modules never depend on peripheral ones — see docs/architecture.md §10 and docs/adr/0026-bill-splitting.md.',
+            },
+            {
+              from: { element: { type: 'billsplit-module' } },
+              disallow: {
+                to: {
+                  element: {
+                    type: '!(billsplit-module|transfers-module|users-module|social-module|shared)',
+                  },
+                },
+              },
+              message:
+                '`billsplit` may import only `transfers`, `users` and `social` through their exported services (and shared) — see docs/adr/0026-bill-splitting.md.',
             },
           ],
         },
@@ -370,6 +392,10 @@ export default tseslint.config(
             },
             {
               target: { type: 'peripheral-module' },
+              allow: '*.(service|module).ts',
+            },
+            {
+              target: { type: 'billsplit-module' },
               allow: '*.(service|module).ts',
             },
             {

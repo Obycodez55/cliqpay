@@ -6,7 +6,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager, EntityNotFoundError } from 'typeorm';
+import { DataSource, EntityManager, EntityNotFoundError, In } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import {
   IdempotentReplay,
@@ -15,22 +15,46 @@ import {
 } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
 import { KycService } from '../kyc/kyc.service';
-import { PostVisibility, SocialService } from '../social/social.service';
+import {
+  PostOrigin,
+  PostVisibility,
+  SocialService,
+} from '../social/social.service';
 import { AuthService } from '../auth/auth.service';
 import { Money } from '../../shared/primitives/money';
 import { runInTransaction } from '../../database/transaction.util';
 import {
+  MONEY_REQUEST_CANCELLED_EVENT,
+  MONEY_REQUEST_CREATED_EVENT,
+  MoneyRequestCancelledEventPayload,
+  MoneyRequestCreatedEventPayload,
   TRANSFER_RECEIVED_EVENT,
   TRANSFER_SENT_EVENT,
   TransferReceivedEventPayload,
   TransferSentEventPayload,
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
+import {
+  MoneyRequest,
+  MoneyRequestKind,
+} from './entities/money-request.entity';
+import {
+  MoneyRequestApiStatus,
+  computeMoneyRequestApiStatus,
+} from './dto/money-request-response.dto';
+import {
+  countEffectivelyPending,
+  isEffectivelyPending,
+} from './internal/money-request-queries';
 import { SendTransferDto } from './dto/send-transfer.dto';
 import { SendTransferResponseDto } from './dto/send-transfer-response.dto';
 import {
+  MoneyRequestAmountTooSmallException,
+  MoneyRequestPairCapExceededException,
+  PayerNotFoundException,
   RecipientUnableToReceiveException,
   RecipientWalletNotFoundException,
+  SelfMoneyRequestException,
   SelfTransferException,
   SenderAccountFrozenException,
   SenderEmailNotVerifiedException,
@@ -56,10 +80,46 @@ export interface PreparedTransfer {
 }
 
 // A replayed reference carrying a different note or visibility is rejected,
-// even though neither is in the ledger fingerprint.
+// even though neither is in the ledger fingerprint. A null visibility means
+// the payment records no post and is compared on the note alone.
 export interface TransferPostDetails {
   note: string | null;
-  visibility: PostVisibility;
+  visibility: PostVisibility | null;
+  origin?: PostOrigin;
+}
+
+export interface SplitRequestShare {
+  payerUserId: string;
+  amount: Money;
+}
+
+export interface CreateSplitRequestsParams {
+  requesterId: string;
+  shares: SplitRequestShare[];
+  note: string | null;
+  expiresAt: Date;
+  now: Date;
+}
+
+export interface SplitRequestRecord {
+  id: string;
+  payerUserId: string;
+  amount: bigint;
+  note: string | null;
+  currency: string;
+  kind: MoneyRequestKind;
+  fromFollowed: boolean;
+}
+
+export interface MoneyRequestSummary {
+  id: string;
+  status: MoneyRequestApiStatus;
+}
+
+export interface CancelledRequestRecord {
+  id: string;
+  requesterUserId: string;
+  payerUserId: string;
 }
 
 export interface ExecuteTransferParams {
@@ -235,7 +295,9 @@ export class TransfersService {
     );
     if (
       storedNote !== details.note ||
-      (storedVisibility !== null && storedVisibility !== details.visibility)
+      (details.visibility !== null &&
+        storedVisibility !== null &&
+        storedVisibility !== details.visibility)
     ) {
       throw new ConflictException(
         'This reference was already used with a different note or visibility — use a new reference.',
@@ -301,13 +363,16 @@ export class TransfersService {
         tx,
         postParams,
       );
-      await this.socialService.recordTransferPost(tx, {
-        transactionId: result.transactionId,
-        senderUserId: result.senderUserId,
-        recipientUserId: result.recipientUserId,
-        note: details.note,
-        visibility: details.visibility,
-      });
+      if (details.visibility) {
+        await this.socialService.recordTransferPost(tx, {
+          transactionId: result.transactionId,
+          senderUserId: result.senderUserId,
+          recipientUserId: result.recipientUserId,
+          note: details.note,
+          visibility: details.visibility,
+          origin: details.origin,
+        });
+      }
       return result;
     };
 
@@ -401,6 +466,258 @@ export class TransfersService {
       manager,
     );
     return { result, replayed, sender: prepared.sender };
+  }
+
+  // Writes one group_share request per share inside the caller's
+  // transaction, so a caller that owns its own rows (a bill split) commits
+  // or loses them together with the requests. Pair locks are taken in
+  // ascending payer id order, which keeps two concurrent calls from one
+  // requester from deadlocking. Any failing share throws and, with the
+  // caller's rollback, leaves nothing written.
+  async createSplitRequests(
+    manager: EntityManager,
+    params: CreateSplitRequestsParams,
+  ): Promise<SplitRequestRecord[]> {
+    const { requesterId, note, expiresAt, now } = params;
+    const minAmount = Money.of(this.config.transfers.minAmount, NGN);
+    const shares = [...params.shares].sort((a, b) =>
+      a.payerUserId < b.payerUserId ? -1 : 1,
+    );
+
+    for (const share of shares) {
+      if (share.payerUserId === requesterId) {
+        throw new SelfMoneyRequestException();
+      }
+      if (share.amount.lessThan(minAmount)) {
+        throw new MoneyRequestAmountTooSmallException(
+          minAmount.toDecimalString(),
+        );
+      }
+    }
+
+    const total = shares.reduce(
+      (sum, share) => sum.add(share.amount),
+      Money.zero(NGN),
+    );
+    await this.kycService.checkCanReceive(manager, requesterId, total, (m) =>
+      this.ledgerService.getBalanceAndPendingFunding(m, requesterId),
+    );
+
+    const payers = await this.usersService.findByIds(
+      shares.map((share) => share.payerUserId),
+      manager,
+    );
+    const payerById = new Map(payers.map((payer) => [payer.id, payer]));
+    if (payerById.size !== shares.length) {
+      throw new PayerNotFoundException();
+    }
+
+    const { maxPendingPerPair } = this.config.moneyRequests;
+    for (const share of shares) {
+      if (
+        await this.socialService.lockPairAndCheckBlock(
+          manager,
+          requesterId,
+          share.payerUserId,
+        )
+      ) {
+        throw new RecipientUnableToReceiveException();
+      }
+      const outstanding = await countEffectivelyPending(
+        manager,
+        requesterId,
+        share.payerUserId,
+        now,
+      );
+      if (outstanding >= maxPendingPerPair) {
+        throw new MoneyRequestPairCapExceededException(
+          maxPendingPerPair,
+          payerById.get(share.payerUserId)!.username,
+        );
+      }
+    }
+
+    const repo = manager.getRepository(MoneyRequest);
+    const created = await repo.save(
+      shares.map((share) =>
+        repo.create({
+          requesterUserId: requesterId,
+          payerUserId: share.payerUserId,
+          amount: share.amount.amount,
+          currency: NGN,
+          note,
+          kind: 'group_share',
+          status: 'pending',
+          expiresAt,
+          transactionId: null,
+        }),
+      ),
+    );
+
+    const followers = await this.socialService.followedBy(
+      requesterId,
+      created.map((request) => request.payerUserId),
+      manager,
+    );
+    return created.map((request) => ({
+      id: request.id,
+      payerUserId: request.payerUserId,
+      amount: request.amount,
+      note: request.note,
+      currency: request.currency,
+      kind: request.kind,
+      fromFollowed: followers.has(request.payerUserId),
+    }));
+  }
+
+  // Live status of the given requests in one query. Ids that don't exist
+  // are simply absent from the result.
+  async findMoneyRequestsByIds(
+    ids: string[],
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<MoneyRequestSummary[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    const rows = await manager
+      .getRepository(MoneyRequest)
+      .createQueryBuilder('moneyRequest')
+      .where('moneyRequest.id = ANY(:ids::uuid[])', { ids })
+      .getMany();
+    const now = new Date();
+    return rows.map((row) => ({
+      id: row.id,
+      status: computeMoneyRequestApiStatus(row.status, row.expiresAt, now),
+    }));
+  }
+
+  // Cancels whichever of the given requests are still effectively pending and
+  // returns those; paid, declined, cancelled and expired ones are left as
+  // they are. Rows are locked in ascending id order, so two bulk calls over
+  // overlapping sets can't deadlock, and each is re-checked after its lock
+  // because a payment may have committed since the caller last looked.
+  async cancelPendingRequests(
+    manager: EntityManager,
+    requesterId: string,
+    ids: string[],
+    now: Date,
+  ): Promise<CancelledRequestRecord[]> {
+    if (ids.length === 0) {
+      return [];
+    }
+    const repo = manager.getRepository(MoneyRequest);
+    const locked = await repo
+      .createQueryBuilder('moneyRequest')
+      .where('moneyRequest.id = ANY(:ids::uuid[])', { ids })
+      .andWhere('moneyRequest.requesterUserId = :requesterId', { requesterId })
+      .orderBy('moneyRequest.id', 'ASC')
+      .setLock('pessimistic_write')
+      .getMany();
+    const pending = locked.filter((row) => isEffectivelyPending(row, now));
+    if (pending.length > 0) {
+      await repo.update(
+        { id: In(pending.map((row) => row.id)) },
+        { status: 'cancelled' },
+      );
+    }
+    return pending.map((row) => ({
+      id: row.id,
+      requesterUserId: row.requesterUserId,
+      payerUserId: row.payerUserId,
+    }));
+  }
+
+  async publishRequestsCancelled(
+    requests: CancelledRequestRecord[],
+  ): Promise<void> {
+    for (const request of requests) {
+      try {
+        await this.eventBus.publish<string, MoneyRequestCancelledEventPayload>({
+          name: MONEY_REQUEST_CANCELLED_EVENT,
+          payload: {
+            moneyRequestId: request.id,
+            requesterUserId: request.requesterUserId,
+            payerUserId: request.payerUserId,
+          },
+          occurredAt: new Date(),
+        });
+      } catch (error) {
+        this.logger.error(
+          `publishRequestsCancelled: money request "${request.id}" cancelled successfully, but publishing the event failed (${(error as Error).message}) — this will not be retried`,
+        );
+      }
+    }
+  }
+
+  async publishSplitRequestsCreated(
+    requesterId: string,
+    requests: SplitRequestRecord[],
+  ): Promise<void> {
+    try {
+      const users = await this.usersService.findByIds([
+        requesterId,
+        ...requests.map((request) => request.payerUserId),
+      ]);
+      const userById = new Map(users.map((user) => [user.id, user]));
+      const requester = userById.get(requesterId);
+      if (!requester) {
+        return;
+      }
+      for (const request of requests) {
+        const payer = userById.get(request.payerUserId);
+        if (payer) {
+          await this.publishMoneyRequestCreated(
+            request,
+            requester,
+            payer,
+            request.fromFollowed,
+          );
+        }
+      }
+    } catch (error) {
+      this.logger.error(
+        `publishSplitRequestsCreated: split requests created successfully, but loading their recipients failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
+  }
+
+  async publishMoneyRequestCreated(
+    moneyRequest: {
+      id: string;
+      amount: bigint;
+      currency: string;
+      note: string | null;
+      kind: MoneyRequestKind;
+    },
+    requester: TransferSender,
+    payer: TransferSender,
+    fromFollowed: boolean,
+  ): Promise<void> {
+    try {
+      await this.eventBus.publish<string, MoneyRequestCreatedEventPayload>({
+        name: MONEY_REQUEST_CREATED_EVENT,
+        payload: {
+          userId: payer.id,
+          email: payer.email,
+          requesterUserId: requester.id,
+          counterpartyUsername: requester.username,
+          amount: Money.of(
+            moneyRequest.amount,
+            moneyRequest.currency,
+          ).toDecimalString(),
+          currency: moneyRequest.currency,
+          note: moneyRequest.note,
+          moneyRequestId: moneyRequest.id,
+          kind: moneyRequest.kind,
+          fromFollowed,
+        },
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `publishMoneyRequestCreated: money request "${moneyRequest.id}" created successfully, but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
   }
 
   private async publishTransferEvents(

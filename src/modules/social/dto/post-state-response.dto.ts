@@ -1,9 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import {
-  POST_VISIBILITIES,
-  PostVisibility,
-  TransactionPost,
-} from '../entities/transaction-post.entity';
+import { POST_VISIBILITIES, PostVisibility } from '../entities/post.entity';
 
 export class PostStateResponseDto {
   @ApiProperty()
@@ -13,17 +9,14 @@ export class PostStateResponseDto {
   visibility: PostVisibility;
 
   @ApiProperty({
-    description: 'Whether the recipient has hidden this post from public view',
+    description:
+      'Whether the post is visible to people who follow a participant',
   })
-  hiddenByRecipient: boolean;
-}
+  isPublic: boolean;
 
-export function toPostStateResponse(
-  post: TransactionPost,
-): PostStateResponseDto {
-  return {
-    transactionId: post.transactionId,
-    visibility: post.visibility,
-    hiddenByRecipient: post.hiddenByRecipient,
-  };
+  @ApiProperty({
+    description:
+      'Whether you have hidden this post from public view. Never says whether anyone else has',
+  })
+  hidden: boolean;
 }
