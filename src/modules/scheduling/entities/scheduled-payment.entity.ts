@@ -9,6 +9,7 @@ import {
   UpdateDateColumn,
 } from 'typeorm';
 import { inList } from '../../../database/check.util';
+import { IntervalUnit } from '../internal/run-time';
 
 export const SCHEDULE_TARGET_TYPES = ['user'] as const;
 export type ScheduleTargetType = (typeof SCHEDULE_TARGET_TYPES)[number];
@@ -25,8 +26,9 @@ export const bigintTransformer = {
 };
 
 // `userId` and `recipientUserId` are cross-module references: plain columns,
-// no FK, no relation. `startDate` is a Lagos calendar date, kept as the
-// 'YYYY-MM-DD' string Postgres returns. `nextRunAt` is null once no further
+// no FK, no relation. `startDate` and `endDate` are Lagos calendar dates, kept
+// as the 'YYYY-MM-DD' strings Postgres returns; `startDate` is the date of run
+// `anchorRunNumber`. `nextRunAt` is null once no further
 // run is due.
 @Entity('scheduled_payments')
 @Check(
@@ -38,10 +40,27 @@ export const bigintTransformer = {
   'CHK_scheduled_payments_visibility',
   inList('visibility', SCHEDULE_VISIBILITIES),
 )
+@Check(
+  'CHK_scheduled_payments_interval',
+  `("interval_unit" IS NULL AND "interval_count" IS NULL) OR ("interval_unit" = 'day' AND "interval_count" IS NOT NULL AND "interval_count" BETWEEN 1 AND 365) OR ("interval_unit" = 'week' AND "interval_count" IS NOT NULL AND "interval_count" BETWEEN 1 AND 52) OR ("interval_unit" = 'month' AND "interval_count" IS NOT NULL AND "interval_count" BETWEEN 1 AND 12)`,
+)
+@Check(
+  'CHK_scheduled_payments_end_condition',
+  `"end_date" IS NULL OR "max_runs" IS NULL`,
+)
+@Check(
+  'CHK_scheduled_payments_max_runs',
+  `"max_runs" IS NULL OR "max_runs" BETWEEN 1 AND 366`,
+)
 @Unique('UQ_scheduled_payments_user_id_reference', ['userId', 'reference'])
 @Index('IDX_scheduled_payments_next_run_at', ['nextRunAt'], {
   where: `"status" = 'active'`,
 })
+@Index('IDX_scheduled_payments_user_id_created_at', [
+  'userId',
+  'createdAt',
+  'id',
+])
 export class ScheduledPayment {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -72,6 +91,21 @@ export class ScheduledPayment {
 
   @Column('date')
   startDate: string;
+
+  @Column('int', { default: 1 })
+  anchorRunNumber: number;
+
+  @Column({ type: 'varchar', nullable: true })
+  intervalUnit: IntervalUnit | null;
+
+  @Column({ type: 'int', nullable: true })
+  intervalCount: number | null;
+
+  @Column({ type: 'date', nullable: true })
+  endDate: string | null;
+
+  @Column({ type: 'int', nullable: true })
+  maxRuns: number | null;
 
   @Column('int')
   runOffsetMinutes: number;

@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { INTERVAL_UNITS, IntervalUnit } from '../internal/run-time';
 import { MoneyDto } from '../../../common/dto/money-response.dto';
 import {
   SCHEDULE_STATUSES,
@@ -13,6 +14,14 @@ export class ScheduledPaymentTargetDto {
 
   @ApiProperty()
   userId: string;
+}
+
+export class ScheduleIntervalResponseDto {
+  @ApiProperty({ enum: INTERVAL_UNITS })
+  unit: IntervalUnit;
+
+  @ApiProperty()
+  count: number;
 }
 
 export class ScheduledPaymentResponseDto {
@@ -30,6 +39,24 @@ export class ScheduledPaymentResponseDto {
 
   @ApiProperty({ enum: SCHEDULE_VISIBILITIES })
   visibility: ScheduleVisibility;
+
+  @ApiProperty({
+    nullable: true,
+    type: ScheduleIntervalResponseDto,
+    description: 'Null for a one-time schedule',
+  })
+  interval: ScheduleIntervalResponseDto | null;
+
+  @ApiProperty({ nullable: true, example: '2027-12-01' })
+  endDate: string | null;
+
+  @ApiProperty({ nullable: true })
+  maxRuns: number | null;
+
+  @ApiProperty({
+    description: 'Runs created so far, whatever their outcome',
+  })
+  runsUsed: number;
 
   @ApiProperty({ enum: SCHEDULE_STATUSES })
   status: ScheduleStatus;

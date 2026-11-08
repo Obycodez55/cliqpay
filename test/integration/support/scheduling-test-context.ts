@@ -38,6 +38,10 @@ export interface ScheduleBody {
   amount: { amount: string; currency: string };
   note: string | null;
   visibility: string;
+  interval: { unit: string; count: number } | null;
+  endDate: string | null;
+  maxRuns: number | null;
+  runsUsed: number;
   status: string;
   nextRunDate: string | null;
   nextRunAt: string | null;
@@ -108,6 +112,11 @@ export function createSchedulingHelpers(getCtx: () => TransfersTestContext) {
       .get(`/scheduled-payments/${id}`)
       .set('Authorization', `Bearer ${tokenFor(userId)}`);
 
+  const listSchedules = (userId: string, query = '') =>
+    http()
+      .get(`/scheduled-payments${query}`)
+      .set('Authorization', `Bearer ${tokenFor(userId)}`);
+
   const cancelSchedule = (userId: string, id: string) =>
     http()
       .post(`/scheduled-payments/${id}/cancel`)
@@ -171,6 +180,7 @@ export function createSchedulingHelpers(getCtx: () => TransfersTestContext) {
     seedUser,
     createSchedule,
     getSchedule,
+    listSchedules,
     cancelSchedule,
     engine,
     scheduleRepo,

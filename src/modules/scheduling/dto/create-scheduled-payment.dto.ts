@@ -9,18 +9,63 @@ import {
   IsString,
   IsUUID,
   Matches,
+  Max,
   MaxLength,
+  Min,
   ValidateNested,
+  ValidationArguments,
+  registerDecorator,
 } from 'class-validator';
 import {
   HasCodePointLength,
   normalizeText,
 } from '../../../common/validation/text';
 import { IsNotReservedReference } from '../../../common/validation/reference';
+import { INTERVAL_UNITS, IntervalUnit } from '../internal/run-time';
 import {
   SCHEDULE_VISIBILITIES,
   ScheduleVisibility,
 } from '../entities/scheduled-payment.entity';
+
+export const MAX_INTERVAL_COUNT: Record<IntervalUnit, number> = {
+  day: 365,
+  week: 52,
+  month: 12,
+};
+
+function IsWithinUnitLimit() {
+  return (target: object, propertyName: string) =>
+    registerDecorator({
+      target: target.constructor,
+      propertyName,
+      validator: {
+        validate: (value: unknown, args: ValidationArguments) => {
+          const unit = (args.object as ScheduleIntervalDto).unit;
+          return (
+            typeof value === 'number' &&
+            value <= (MAX_INTERVAL_COUNT[unit] ?? Infinity)
+          );
+        },
+        defaultMessage: (args: ValidationArguments) =>
+          `count must be at most ${MAX_INTERVAL_COUNT[(args.object as ScheduleIntervalDto).unit]} for a ${(args.object as ScheduleIntervalDto).unit} interval`,
+      },
+    });
+}
+
+export class ScheduleIntervalDto {
+  @IsIn(INTERVAL_UNITS)
+  @ApiProperty({ enum: INTERVAL_UNITS })
+  unit: IntervalUnit;
+
+  @IsInt()
+  @Min(1)
+  @IsWithinUnitLimit()
+  @ApiProperty({
+    example: 1,
+    description: 'Every how many units: 1–365 days, 1–52 weeks or 1–12 months',
+  })
+  count: number;
+}
 
 export class ScheduleTargetDto {
   @Equals('user')
@@ -64,6 +109,41 @@ export class CreateScheduledPaymentDto {
       'Lagos calendar date of the payment: tomorrow at the earliest, one year ahead at the latest. The payment runs on the morning of that date.',
   })
   startDate: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ScheduleIntervalDto)
+  @ApiProperty({
+    required: false,
+    type: ScheduleIntervalDto,
+    description:
+      'Makes the schedule recurring. Omit for a one-time payment. Every run is counted from startDate, so a month interval starting on the 31st pays on the last day of shorter months.',
+  })
+  interval?: ScheduleIntervalDto;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, {
+    message: 'endDate must be a YYYY-MM-DD date',
+  })
+  @ApiProperty({
+    required: false,
+    example: '2027-12-01',
+    description:
+      'Last Lagos date a run may fall on, inclusive. On or after startDate. Needs interval; not with maxRuns.',
+  })
+  endDate?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(366)
+  @ApiProperty({
+    required: false,
+    example: 12,
+    description:
+      'Stop after this many runs, counting every run whatever its outcome. Needs interval; not with endDate.',
+  })
+  maxRuns?: number;
 
   @Transform(({ value }: { value: unknown }) => {
     const note = normalizeText(value);

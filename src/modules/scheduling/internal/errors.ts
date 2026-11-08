@@ -77,3 +77,10 @@ export class ScheduleAlreadyCompletedException extends DomainException {
     );
   }
 }
+
+export class ScheduleRecurrenceInvalidException extends DomainException {
+  readonly code = 'SCHEDULE_RECURRENCE_INVALID';
+  constructor(message: string) {
+    super(message, HttpStatus.BAD_REQUEST);
+  }
+}

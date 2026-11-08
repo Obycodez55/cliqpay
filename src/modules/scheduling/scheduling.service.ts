@@ -3,6 +3,11 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, EntityManager } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { Money } from '../../shared/primitives/money';
+import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
+import {
+  decodeCreatedAtIdCursor,
+  encodeCreatedAtIdCursor,
+} from '../../common/pagination/cursor';
 import { isUniqueViolation } from '../../database/postgres-errors.util';
 import { runInTransaction } from '../../database/transaction.util';
 import {
@@ -16,6 +21,7 @@ import { SocialService } from '../social/social.service';
 import { TransfersService } from '../transfers/transfers.service';
 import { UsersService } from '../users/users.service';
 import { CreateScheduledPaymentDto } from './dto/create-scheduled-payment.dto';
+import { ListScheduledPaymentsQueryDto } from './dto/list-scheduled-payments-query.dto';
 import { ScheduledPaymentResponseDto } from './dto/scheduled-payment-response.dto';
 import { ScheduledPayment } from './entities/scheduled-payment.entity';
 import { ScheduledPaymentRun } from './entities/scheduled-payment-run.entity';
@@ -24,6 +30,7 @@ import {
   ScheduleAlreadyCompletedException,
   ScheduleAmountExceedsDailyLimitException,
   ScheduleLimitReachedException,
+  ScheduleRecurrenceInvalidException,
   ScheduleRecipientUnableToReceiveException,
   ScheduleReferenceReusedException,
   ScheduleSenderFrozenException,
@@ -81,6 +88,7 @@ export class SchedulingService {
     ) {
       throw new ScheduleStartDateInvalidException(min, max);
     }
+    assertRecurrenceValid(dto);
 
     const prepared = await this.transfersService.prepareTransfer(
       userId,
@@ -114,6 +122,11 @@ export class SchedulingService {
             note: dto.note ?? null,
             visibility: dto.visibility,
             startDate: dto.startDate,
+            anchorRunNumber: 1,
+            intervalUnit: dto.interval?.unit ?? null,
+            intervalCount: dto.interval?.count ?? null,
+            endDate: dto.endDate ?? null,
+            maxRuns: dto.maxRuns ?? null,
             runOffsetMinutes,
             status: 'active',
             nextRunNumber: 1,
@@ -156,6 +169,49 @@ export class SchedulingService {
       throw new ScheduledPaymentNotFoundException();
     }
     return toResponse(schedule);
+  }
+
+  async list(
+    userId: string,
+    query: ListScheduledPaymentsQueryDto,
+  ): Promise<PaginatedResult<ScheduledPaymentResponseDto>> {
+    const cursor = query.cursor ? decodeCreatedAtIdCursor(query.cursor) : null;
+    const builder = this.dataSource
+      .getRepository(ScheduledPayment)
+      .createQueryBuilder('schedule')
+      // Compared on Postgres's own text form of created_at, not the
+      // millisecond JS Date, so rows sharing a millisecond aren't skipped at
+      // a page boundary.
+      .addSelect('"schedule"."created_at"::text', 'raw_created_at')
+      .where('schedule.userId = :userId', { userId })
+      .orderBy('schedule.createdAt', 'DESC')
+      .addOrderBy('schedule.id', 'DESC')
+      .take(query.limit + 1);
+    if (query.status === 'active') {
+      builder.andWhere(`schedule.status = 'active'`);
+    } else if (query.status === 'ended') {
+      builder.andWhere(`schedule.status IN ('cancelled', 'completed')`);
+    }
+    if (cursor) {
+      builder.andWhere(
+        '(schedule.createdAt, schedule.id) < (:cursorCreatedAt::timestamptz, :cursorId::uuid)',
+        { cursorCreatedAt: cursor.createdAt, cursorId: cursor.id },
+      );
+    }
+    const { entities, raw } = await builder.getRawAndEntities<{
+      raw_created_at: string;
+    }>();
+    const hasMore = entities.length > query.limit;
+    const page = hasMore ? entities.slice(0, query.limit) : entities;
+    return {
+      items: page.map(toResponse),
+      nextCursor: hasMore
+        ? encodeCreatedAtIdCursor({
+            createdAt: raw[query.limit - 1].raw_created_at,
+            id: page[page.length - 1].id,
+          })
+        : null,
+    };
   }
 
   async cancel(
@@ -215,6 +271,10 @@ export class SchedulingService {
       existing.recipientUserId === dto.target.userId &&
       existing.amount === BigInt(dto.amount) &&
       existing.startDate === dto.startDate &&
+      existing.intervalUnit === (dto.interval?.unit ?? null) &&
+      existing.intervalCount === (dto.interval?.count ?? null) &&
+      existing.endDate === (dto.endDate ?? null) &&
+      existing.maxRuns === (dto.maxRuns ?? null) &&
       existing.note === (dto.note ?? null) &&
       existing.visibility === dto.visibility;
     if (!same) {
@@ -333,6 +393,30 @@ export class SchedulingService {
   }
 }
 
+function assertRecurrenceValid(dto: CreateScheduledPaymentDto): void {
+  if (!dto.interval) {
+    if (dto.endDate !== undefined || dto.maxRuns !== undefined) {
+      throw new ScheduleRecurrenceInvalidException(
+        'endDate and maxRuns need an interval',
+      );
+    }
+    return;
+  }
+  if (dto.endDate !== undefined && dto.maxRuns !== undefined) {
+    throw new ScheduleRecurrenceInvalidException(
+      'Set at most one of endDate and maxRuns',
+    );
+  }
+  if (
+    dto.endDate !== undefined &&
+    (!isValidIsoDate(dto.endDate) || dto.endDate < dto.startDate)
+  ) {
+    throw new ScheduleRecurrenceInvalidException(
+      'endDate must be a real date on or after startDate',
+    );
+  }
+}
+
 function toResponse(schedule: ScheduledPayment): ScheduledPaymentResponseDto {
   return {
     id: schedule.id,
@@ -340,6 +424,13 @@ function toResponse(schedule: ScheduledPayment): ScheduledPaymentResponseDto {
     amount: Money.of(schedule.amount, schedule.currency).toJSON(),
     note: schedule.note,
     visibility: schedule.visibility,
+    interval:
+      schedule.intervalUnit && schedule.intervalCount
+        ? { unit: schedule.intervalUnit, count: schedule.intervalCount }
+        : null,
+    endDate: schedule.endDate,
+    maxRuns: schedule.maxRuns,
+    runsUsed: schedule.nextRunNumber - 1,
     status: schedule.status,
     nextRunDate: schedule.nextRunAt ? lagosToday(schedule.nextRunAt) : null,
     nextRunAt: schedule.nextRunAt?.toISOString() ?? null,

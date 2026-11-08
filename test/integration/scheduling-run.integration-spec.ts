@@ -83,6 +83,8 @@ describe('Scheduled payment execution', () => {
 
   // A run row with no queue job, for driving executeRun by hand.
   async function insertPendingRun(scheduleId: string) {
+    // As the sweep leaves a schedule whose only run it just created.
+    await h.scheduleRepo().update({ id: scheduleId }, { nextRunAt: null });
     const schedule = await h.scheduleRepo().findOneByOrFail({ id: scheduleId });
     return h.runRepo().save(
       h.runRepo().create({

@@ -9,6 +9,7 @@ import {
   ScheduledTransferRejectedError,
   TransfersService,
 } from '../../transfers/transfers.service';
+import { computeDueAt, runDate } from './run-time';
 import { ScheduledPayment } from '../entities/scheduled-payment.entity';
 import { ScheduledPaymentRun } from '../entities/scheduled-payment-run.entity';
 import { ScheduledPaymentAttempt } from '../entities/scheduled-payment-attempt.entity';
@@ -107,11 +108,39 @@ export class RunEngine {
         scheduleId: schedule.id,
         runNumber: run.runNumber,
       });
-      schedule.nextRunNumber += 1;
-      schedule.nextRunAt = null;
-      await scheduleRepo.save(schedule);
+      await this.advance(manager, schedule);
     }
     return claimed;
+  }
+
+  // Never completes the schedule: with no next run it stays active and
+  // un-dated until its last run ends, so that run can still be cancelled.
+  private async advance(
+    manager: EntityManager,
+    schedule: ScheduledPayment,
+  ): Promise<void> {
+    schedule.nextRunNumber += 1;
+    schedule.nextRunAt = null;
+    if (schedule.intervalUnit && schedule.intervalCount) {
+      const nextDate = runDate(
+        schedule.startDate,
+        schedule.anchorRunNumber,
+        { unit: schedule.intervalUnit, count: schedule.intervalCount },
+        schedule.nextRunNumber,
+      );
+      const exhausted =
+        (schedule.maxRuns !== null &&
+          schedule.nextRunNumber > schedule.maxRuns) ||
+        (schedule.endDate !== null && nextDate > schedule.endDate);
+      if (!exhausted) {
+        schedule.nextRunAt = computeDueAt(
+          nextDate,
+          this.config.scheduledPayments.windowStart,
+          schedule.runOffsetMinutes,
+        );
+      }
+    }
+    await manager.getRepository(ScheduledPayment).save(schedule);
   }
 
   private async findStalePendingRuns(): Promise<RunToEnqueue[]> {
@@ -268,7 +297,15 @@ export class RunEngine {
         )
         .execute();
 
-      if (schedule.status === 'active') {
+      const pendingRuns = await runRepo.countBy({
+        scheduledPaymentId: schedule.id,
+        status: 'pending',
+      });
+      if (
+        schedule.status === 'active' &&
+        schedule.nextRunAt === null &&
+        pendingRuns === 0
+      ) {
         schedule.status = 'completed';
         await manager.getRepository(ScheduledPayment).save(schedule);
         await manager.getRepository(ScheduledPaymentChange).save({

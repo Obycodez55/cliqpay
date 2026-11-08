@@ -46,6 +46,46 @@ export function startDateBounds(now: Date): { min: string; max: string } {
   return { min: addDays(today, 1), max: addOneYear(today) };
 }
 
+export const INTERVAL_UNITS = ['day', 'week', 'month'] as const;
+export type IntervalUnit = (typeof INTERVAL_UNITS)[number];
+
+export interface Interval {
+  unit: IntervalUnit;
+  count: number;
+}
+
+function addMonths(isoDate: string, months: number): string {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  const total = year * 12 + (month - 1) + months;
+  const targetYear = Math.floor(total / 12);
+  const targetMonth = total - targetYear * 12;
+  const lastDay = new Date(
+    Date.UTC(targetYear, targetMonth + 1, 0),
+  ).getUTCDate();
+  return toIsoDate(
+    new Date(Date.UTC(targetYear, targetMonth, Math.min(day, lastDay))),
+  );
+}
+
+// Always counted from the anchor, never from the previous run, so a clamped
+// month (Jan 31 -> Feb 28) doesn't drag later months down to the 28th.
+export function runDate(
+  startDate: string,
+  anchorRunNumber: number,
+  interval: Interval,
+  runNumber: number,
+): string {
+  const steps = (runNumber - anchorRunNumber) * interval.count;
+  switch (interval.unit) {
+    case 'day':
+      return addDays(startDate, steps);
+    case 'week':
+      return addDays(startDate, steps * 7);
+    case 'month':
+      return addMonths(startDate, steps);
+  }
+}
+
 export function computeDueAt(
   isoDate: string,
   windowStart: string,

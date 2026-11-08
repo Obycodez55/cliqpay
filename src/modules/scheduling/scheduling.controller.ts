@@ -5,16 +5,26 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Query,
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiExtraModels,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+  getSchemaPath,
+} from '@nestjs/swagger';
+import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
 import {
   AuthenticatedRequest,
   JwtAuthGuard,
 } from '../../common/guards/jwt-auth.guard';
 import { SchedulingService } from './scheduling.service';
 import { CreateScheduledPaymentDto } from './dto/create-scheduled-payment.dto';
+import { ListScheduledPaymentsQueryDto } from './dto/list-scheduled-payments-query.dto';
 import { ScheduledPaymentResponseDto } from './dto/scheduled-payment-response.dto';
 
 @ApiTags('Scheduled payments')
@@ -26,7 +36,7 @@ export class SchedulingController {
 
   @Post()
   @ApiOperation({
-    summary: 'Schedule a one-time payment to another Cliqpay user',
+    summary: 'Schedule a one-time or recurring payment to another Cliqpay user',
     description:
       'The PIN verified here authorises the payment on its date, when no PIN is asked. The balance is not checked now, only when the payment runs.',
   })
@@ -35,6 +45,27 @@ export class SchedulingController {
     @Body() dto: CreateScheduledPaymentDto,
   ): Promise<ScheduledPaymentResponseDto> {
     return this.schedulingService.create(req.user.userId, dto);
+  }
+
+  @Get()
+  @ApiOperation({ summary: 'List your scheduled payments, newest first' })
+  @ApiExtraModels(ScheduledPaymentResponseDto)
+  @ApiOkResponse({
+    schema: {
+      properties: {
+        items: {
+          type: 'array',
+          items: { $ref: getSchemaPath(ScheduledPaymentResponseDto) },
+        },
+        nextCursor: { type: 'string', nullable: true },
+      },
+    },
+  })
+  async list(
+    @Req() req: AuthenticatedRequest,
+    @Query() query: ListScheduledPaymentsQueryDto,
+  ): Promise<PaginatedResult<ScheduledPaymentResponseDto>> {
+    return this.schedulingService.list(req.user.userId, query);
   }
 
   @Get(':id')
