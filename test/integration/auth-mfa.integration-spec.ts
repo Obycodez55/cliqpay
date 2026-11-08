@@ -16,6 +16,7 @@ import {
   createAuthTestHelpers,
   extractSixDigitCode,
   SIGN_IN_CODE_SUBJECT,
+  stepUpCodeSubject,
   TEST_DEVICE,
   wrongCodeFor,
 } from './support/auth-test-helpers';
@@ -326,7 +327,9 @@ describe('MFA over HTTP — trusted-device cookie and the JWT guard', () => {
       .expect(200);
     const challengeId = dataOf<{ challengeId: string }>(res).challengeId;
     const code = extractSixDigitCode(
-      helpers.latestEmailWithSubject(SIGN_IN_CODE_SUBJECT).text,
+      helpers.latestEmailWithSubject(
+        stepUpCodeSubject('set up an authenticator app'),
+      ).text,
     );
     return { challengeId, code };
   }

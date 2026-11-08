@@ -8,7 +8,7 @@ import {
 import {
   createAuthTestHelpers,
   extractSixDigitCode,
-  SIGN_IN_CODE_SUBJECT,
+  stepUpCodeSubject,
 } from './support/auth-test-helpers';
 import { dataOf } from './support/api-response';
 
@@ -42,7 +42,8 @@ describe('change password', () => {
       .expect(200);
     const challengeId = dataOf<{ challengeId: string }>(res).challengeId;
     const code = extractSixDigitCode(
-      helpers.latestEmailWithSubject(SIGN_IN_CODE_SUBJECT).text,
+      helpers.latestEmailWithSubject(stepUpCodeSubject('change your password'))
+        .text,
     );
     return { challengeId, code };
   }

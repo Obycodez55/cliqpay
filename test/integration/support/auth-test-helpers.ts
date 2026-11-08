@@ -12,6 +12,8 @@ export const TEST_DEVICE: DeviceMetadata = {
 };
 
 export const SIGN_IN_CODE_SUBJECT = 'Your Cliqpay sign-in code';
+export const stepUpCodeSubject = (purpose: string): string =>
+  `Your Cliqpay code to ${purpose}`;
 export const SECURITY_ALERT_SUBJECT = 'Security alert on your Cliqpay account';
 export const PASSWORD_RESET_SUBJECT = 'Reset your Cliqpay password';
 

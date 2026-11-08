@@ -1,3 +1,5 @@
+import { MfaChallengeAction } from '../../shared/events/domain-events';
+
 export type NotificationChannel = 'email' | 'sms' | 'push' | 'in_app';
 
 export interface EmailVerificationOtpPayload {
@@ -26,6 +28,7 @@ export interface MfaChallengeOtpPayload {
   email: string;
   code: string;
   expiresInMinutes: number;
+  action: MfaChallengeAction;
 }
 
 export interface SecurityAlertPayload {

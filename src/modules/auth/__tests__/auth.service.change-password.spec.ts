@@ -136,6 +136,7 @@ describe('AuthService — change password', () => {
       expect(usersService.findById).toHaveBeenCalledWith('user-1');
       expect(mfaService.createStepUpChallenge).toHaveBeenCalledWith(
         buildUser(),
+        'change_password',
       );
       expect(result.challengeId).toBe('challenge-1');
     });

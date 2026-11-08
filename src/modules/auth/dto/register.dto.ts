@@ -8,6 +8,10 @@ import {
 } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 import { IsNotCommonPassword } from '../internal/is-not-common-password.validator';
+import {
+  IsNigerianMobile,
+  normalizeNigerianMobile,
+} from '../../../common/validation/phone';
 
 const lowercaseTrim = ({ value }: { value: unknown }) =>
   typeof value === 'string' ? value.trim().toLowerCase() : value;
@@ -46,12 +50,12 @@ export class RegisterDto {
   })
   username: string;
 
-  @Transform(({ value }: { value: unknown }) =>
-    typeof value === 'string' ? value.trim() : value,
-  )
-  @Matches(/^\+?[1-9]\d{6,14}$/, {
-    message: 'phone must be a valid phone number',
+  @Transform(({ value }: { value: unknown }) => normalizeNigerianMobile(value))
+  @IsNigerianMobile()
+  @ApiProperty({
+    example: '+2348012345678',
+    description:
+      'A Nigerian mobile number, in any common format; stored as E.164',
   })
-  @ApiProperty({ example: '+2348012345678', description: 'E.164 format' })
   phone: string;
 }

@@ -128,7 +128,7 @@ export class WithdrawalsService {
   async initiateSaveBankAccountStepUp(
     userId: string,
   ): Promise<StepUpChallengeResponseDto> {
-    return this.authService.initiateStepUp(userId);
+    return this.authService.initiateStepUp(userId, 'save_bank_account');
   }
 
   // Step 2 of 2 — verifies the step-up challenge, resolves the account

@@ -46,7 +46,7 @@ export class TransactionPinService {
     userId: string,
   ): Promise<StepUpChallengeResponseDto> {
     const user = await this.usersService.findById(userId);
-    return this.mfaService.createStepUpChallenge(user);
+    return this.mfaService.createStepUpChallenge(user, 'set_pin');
   }
 
   // Step 2 of 2 — only for the first PIN on an account; an existing PIN
@@ -80,7 +80,7 @@ export class TransactionPinService {
     userId: string,
   ): Promise<StepUpChallengeResponseDto> {
     const user = await this.usersService.findById(userId);
-    return this.mfaService.createStepUpChallenge(user);
+    return this.mfaService.createStepUpChallenge(user, 'change_pin');
   }
 
   // Verifies the step-up challenge and the current PIN, then changes the
@@ -118,7 +118,7 @@ export class TransactionPinService {
     userId: string,
   ): Promise<StepUpChallengeResponseDto> {
     const user = await this.usersService.findById(userId);
-    return this.mfaService.createStepUpChallenge(user);
+    return this.mfaService.createStepUpChallenge(user, 'reset_pin');
   }
 
   async resetTransactionPin(
