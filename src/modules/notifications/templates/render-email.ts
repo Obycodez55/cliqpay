@@ -54,11 +54,17 @@ const HTML_ENTITIES: Record<string, string> = {
 };
 
 function htmlToText(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&[a-z]+;|&#\d+;/gi, (entity) => HTML_ENTITIES[entity] ?? entity)
-    .replace(/\s+/g, ' ')
-    .trim();
+  return (
+    html
+      .replace(/<[^>]+>/g, ' ')
+      // Handlebars escapes ' ` = in interpolated values as hex entities.
+      .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) =>
+        String.fromCodePoint(parseInt(hex, 16)),
+      )
+      .replace(/&[a-z]+;|&#\d+;/gi, (entity) => HTML_ENTITIES[entity] ?? entity)
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
 }
 
 export function renderEmail<T extends keyof typeof bodies>(

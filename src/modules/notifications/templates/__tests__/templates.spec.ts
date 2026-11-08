@@ -153,6 +153,25 @@ describe('funding refund emails', () => {
   });
 });
 
+describe('plain-text email', () => {
+  it("decodes the hex entities Handlebars escapes interpolated ' ` = into", () => {
+    const email = emailTemplates.scheduled_payment_paused!({
+      userId: 'u1',
+      email: 'a@example.com',
+      scheduledPaymentId: 's1',
+      changeId: 'c1',
+      counterpartyLabel: "o'brien `x` a=b",
+      amount: '5000.00',
+      currency: 'NGN',
+      reason: 'recipient_unable_to_receive',
+    });
+
+    expect(email.text).toContain("o'brien `x` a=b");
+    expect(email.text).toContain("can't");
+    expect(email.text).not.toMatch(/&#x[0-9a-f]+;/i);
+  });
+});
+
 describe('refund_attention_required', () => {
   const payload = {
     email: 'ops@cliqpay.test',
