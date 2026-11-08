@@ -16,6 +16,7 @@ import {
 } from 'class-validator';
 import { POST_VISIBILITIES, PostVisibility } from '../../social/social.service';
 import { BILL_SPLIT_MODES, BillSplitMode } from '../entities/bill-split.entity';
+import { IsNotReservedReference } from '../../../common/validation/reference';
 
 export class BillSplitParticipantInputDto {
   @IsUUID()
@@ -35,6 +36,7 @@ export class BillSplitParticipantInputDto {
 }
 
 export class CreateBillSplitDto {
+  @IsNotReservedReference()
   @MaxLength(100)
   @Matches(/^[a-zA-Z0-9_-]+$/, {
     message: 'reference must contain only letters, numbers, - or _',

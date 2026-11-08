@@ -51,6 +51,13 @@ function defaultTestAppConfig(): AppConfig {
     transfers: { platformFee: 0, minAmount: 10_000 },
     moneyRequests: { expiryDays: 7, maxPendingPerPair: 3 },
     billSplits: { maxParticipants: 20 },
+    scheduledPayments: {
+      sweepIntervalMs: 60_000,
+      workerConcurrency: 5,
+      windowStart: '06:00',
+      windowMinutes: 240,
+      maxActive: 20,
+    },
     withdrawals: {
       minAmount: 10_000,
       platformFee: 0,

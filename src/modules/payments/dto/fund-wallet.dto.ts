@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsInt, Matches, MaxLength, Min } from 'class-validator';
+import { IsNotReservedReference } from '../../../common/validation/reference';
 
 // NGN 100: the smallest amount Kora can refund, and a held funding must
 // always be refundable.
@@ -19,6 +20,7 @@ export class FundWalletDto {
   // result rather than initiating a second charge. Must be globally unique;
   // a UUID is recommended (ADR-0010) — a reference reused across users
   // returns 409, and reused with a different amount returns 422.
+  @IsNotReservedReference()
   @MaxLength(100)
   @Matches(/^[a-zA-Z0-9_-]+$/, {
     message: 'reference must contain only letters, numbers, - or _',

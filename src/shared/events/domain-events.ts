@@ -192,6 +192,18 @@ export interface BillSplitCompletedEventPayload {
   currency: string;
 }
 
+export const SCHEDULED_PAYMENT_CREATED_EVENT = 'scheduled_payment_created';
+
+export interface ScheduledPaymentCreatedEventPayload {
+  userId: string;
+  email: string;
+  scheduledPaymentId: string;
+  counterpartyUsername: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  startDate: string; // Lagos calendar date, YYYY-MM-DD
+}
+
 export const WITHDRAWAL_INITIATED_EVENT = 'withdrawal_initiated';
 
 export interface WithdrawalInitiatedEventPayload {

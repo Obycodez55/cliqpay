@@ -228,6 +228,7 @@ export interface PostTransferParams {
   amount: Money;
   platformFee: Money;
   note?: string | null;
+  extraMetadata?: Record<string, unknown>;
 }
 
 export interface PostTransferResult {
@@ -458,6 +459,19 @@ export class LedgerService {
     return fingerprintMatches
       ? { outcome: 'match', transaction }
       : { outcome: 'diverged' };
+  }
+
+  async findTransactionIdForUser(
+    reference: string,
+    userId: string,
+  ): Promise<string | null> {
+    const transaction = await this.dataSource
+      .getRepository(Transaction)
+      .findOneBy({ reference });
+    return transaction &&
+      (await this.transactionBelongsToUser(transaction, userId))
+      ? transaction.id
+      : null;
   }
 
   // `transactions` has no user_id column (ADR-0010 rejected adding one) —
@@ -1754,6 +1768,7 @@ export class LedgerService {
         senderWalletId: params.senderWalletId,
         recipientWalletId: params.recipientWalletId,
         metadata: {
+          ...params.extraMetadata,
           platformFee: params.platformFee.toJSON(),
           ...(params.note ? { note: params.note } : {}),
         },

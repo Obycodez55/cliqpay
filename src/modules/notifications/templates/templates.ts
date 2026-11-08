@@ -16,6 +16,7 @@ import {
   PhoneVerificationOtpPayload,
   PostCommentPayload,
   PostReactionPayload,
+  ScheduledPaymentCreatedPayload,
   ReconciliationMismatchPayload,
   RefundAttentionRequiredPayload,
   SecurityAlertPayload,
@@ -136,6 +137,10 @@ export const emailTemplates: {
   withdrawal_initiated: (payload: WithdrawalInitiatedPayload) => ({
     subject: `Your withdrawal of ${payload.currency} ${payload.amount} is on its way`,
     ...renderEmail('withdrawal_initiated', payload),
+  }),
+  scheduled_payment_created: (payload: ScheduledPaymentCreatedPayload) => ({
+    subject: `You scheduled ${payload.currency} ${payload.amount} for ${payload.startDate}`,
+    ...renderEmail('scheduled_payment_created', payload),
   }),
   withdrawal_completed: (payload: WithdrawalCompletedPayload) => ({
     subject: `Your withdrawal of ${payload.currency} ${payload.amount} is complete`,
@@ -310,6 +315,18 @@ export const inAppTemplates: {
       currency: payload.currency,
     },
     dedupeKey: payload.billSplitId,
+  }),
+  scheduled_payment_created: (payload: ScheduledPaymentCreatedPayload) => ({
+    title: 'Payment scheduled',
+    body: `${payload.currency} ${payload.amount} will be sent to ${payload.counterpartyUsername} on ${payload.startDate}.`,
+    data: {
+      scheduledPaymentId: payload.scheduledPaymentId,
+      amount: payload.amount,
+      currency: payload.currency,
+      counterpartyUsername: payload.counterpartyUsername,
+      startDate: payload.startDate,
+    },
+    dedupeKey: payload.scheduledPaymentId,
   }),
   new_follower: (payload: NewFollowerPayload) => ({
     title: 'New follower',

@@ -109,3 +109,21 @@ describe('KYC_PROVIDER', () => {
     ).toThrow('must not be "fake" in production');
   });
 });
+
+describe('scheduled payments', () => {
+  it('defaults to a 06:00 Lagos window of 240 minutes', () => {
+    expect(loadConfig(baseEnv()).scheduledPayments).toEqual({
+      sweepIntervalMs: 60_000,
+      workerConcurrency: 5,
+      windowStart: '06:00',
+      windowMinutes: 240,
+      maxActive: 20,
+    });
+  });
+
+  it('rejects a window start that is not HH:MM', () => {
+    expect(() =>
+      loadConfig({ ...baseEnv(), SCHEDULED_PAYMENT_WINDOW_START: '6am' }),
+    ).toThrow('SCHEDULED_PAYMENT_WINDOW_START');
+  });
+});

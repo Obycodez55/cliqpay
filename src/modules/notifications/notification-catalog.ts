@@ -136,6 +136,17 @@ export interface BillSplitCompletedPayload {
   currency: string;
 }
 
+export interface ScheduledPaymentCreatedPayload {
+  userId: string;
+  email: string;
+  // The schedule's id: the in-app channel's dedupe_key.
+  scheduledPaymentId: string;
+  counterpartyUsername: string;
+  amount: string;
+  currency: string;
+  startDate: string;
+}
+
 export interface WithdrawalInitiatedPayload {
   userId: string;
   email: string;
@@ -246,6 +257,7 @@ export interface NotificationPayloadMap {
   money_request_declined: MoneyRequestDeclinedPayload;
   money_request_paid: MoneyRequestPaidPayload;
   bill_split_completed: BillSplitCompletedPayload;
+  scheduled_payment_created: ScheduledPaymentCreatedPayload;
   withdrawal_initiated: WithdrawalInitiatedPayload;
   withdrawal_completed: WithdrawalCompletedPayload;
   withdrawal_failed: WithdrawalFailedPayload;
@@ -309,6 +321,7 @@ export const NOTIFICATION_CATALOG = {
   money_request_paid: { channels: ['email', 'push', 'in_app'] },
   // Each payment already emailed the initiator, so completion skips email.
   bill_split_completed: { channels: ['push', 'in_app'] },
+  scheduled_payment_created: { channels: ['email', 'in_app'] },
   // Email only for this issue (#28) — push/in_app follow the same pattern
   // as transfer_sent if a later issue asks for them; not scaffolded ahead
   // of that need.
