@@ -1,6 +1,8 @@
-# Cliqpay — Project Documentation (v16)
+# Cliqpay — Project Documentation (v17)
 
 > Cliqpay is a production-grade peer-to-peer payment platform. A Venmo-equivalent for Africa — built on NestJS, PostgreSQL, TypeORM, currently integrated with Kora.
+
+> **v17 changes:** Phase 9 design pass (scheduled & recurring payments). A schedule pays another Cliqpay user or one of the sender's saved bank accounts; runs post as ordinary `p2p_transfer` or `withdrawal`, and `scheduled` stays reserved and unused. `scheduling` is **peripheral**: it calls one new PIN-skipping method each on `TransfersService` and `WithdrawalsService`, and the PIN verified at creation is a standing mandate for every run (re-verified to change money-affecting fields or resume; never needed to pause or cancel). The database owns what is due (`next_run_at` plus a one-minute sweep with `SKIP LOCKED`, one BullMQ job per run); runs are date-based, spread across a 06:00–10:00 Lagos window by a fixed per-schedule offset. Recurrence is `interval_unit` (day/week/month) × `interval_count` from a stored anchor with month-end clamping. Transient failures retry up to 4 times within the Lagos day, permanent ones pause at once, and 3 consecutive failed runs pause the schedule; runs missed during downtime are recorded, never paid late on another day. Bank runs sit in a `settling` state until `withdrawal_completed`/`withdrawal_failed`. Four `scheduling` tables, two of them append-only by trigger (attempts and changes). See [ADR-0028](adr/0028-scheduled-payments.md).
 
 > **v16 changes:** Phase 8 design pass (bill splitting). A split is reimbursement, not escrow: participants pay the initiator back through ordinary exact-amount money requests, so the ledger doesn't change and the `bill_split` transaction type stays reserved and unused. `billsplit` is **peripheral** by §10's test and owns `bill_splits` and `bill_split_participants`; `transfers` never learns splits exist. Paid/unpaid is read live from the linked money requests rather than copied, with `completed_at`/`closed_at` stored for list filtering and repaired on read. Split requests obey the money-request rules unchanged (pair cap, shared expiry, blocks), creation is atomic and idempotent on a client `reference`, and one new notification, `bill_split_completed`, is added. Two shared changes come with it: the event bus fans out to one queue per subscriber, because a second consumer on `domain-events` would take half of every event, and money-request cancel/decline now lock the row, closing a race that could overwrite a paid request. See [ADR-0026](adr/0026-bill-splitting.md).
 
@@ -385,7 +387,7 @@ transactions
   reference             varchar unique     -- Cliqpay's own idempotency key (client-supplied for client-initiated ops)
   provider              varchar nullable   -- CHECK (provider IN ('kora')) — which provider processed this; null for purely internal transactions (p2p, profit withdrawal)
   provider_reference     varchar nullable  -- the provider's own reference for this operation; indexed, used to correlate webhooks
-  type                  enum (funding | funding_refund | p2p_transfer | withdrawal | withdrawal_reversal | chargeback | chargeback_reversal | profit_withdrawal | bill_split | scheduled)   -- [v16] bill_split is reserved and unused: split payments are p2p_transfer (ADR-0026)
+  type                  enum (funding | funding_refund | p2p_transfer | withdrawal | withdrawal_reversal | chargeback | chargeback_reversal | profit_withdrawal | bill_split | scheduled)   -- [v16] bill_split is reserved and unused: split payments are p2p_transfer (ADR-0026). [v17] scheduled is likewise reserved and unused: runs are p2p_transfer or withdrawal (ADR-0028)
   status                enum (pending | completed | failed | reversed | disputed | held | refunded)   -- held/refunded: funding rows only ([v14])
   reverses_transaction_id uuid FK nullable  -- set on chargeback/reversal rows
   amount                bigint             -- minor units
@@ -552,7 +554,80 @@ bill_split_participants
 
   -- UNIQUE (bill_split_id, user_id); index (user_id, created_at DESC) for the participant list
 
+-- [v17] Phase 9 — owned by `scheduling` (see ADR-0028). User, bank-account and
+-- transaction references are cross-module, so no FK; schedule/run ids are same-module FKs.
+scheduled_payments
+  id                    uuid PK
+  user_id               uuid                -- the sender
+  reference             varchar             -- client idempotency key; UNIQUE (user_id, reference)
+  target_type           enum (user | bank_account)
+  recipient_user_id     uuid nullable       -- set iff target_type = user
+  bank_account_id       uuid nullable       -- set iff target_type = bank_account; withdrawals' bank_accounts
+  amount                bigint              -- minor units
+  currency              varchar
+  note                  varchar(500) nullable
+  visibility            enum (public | private) nullable   -- required iff target_type = user
+  start_date            date                -- the recurrence anchor (Lagos calendar date)
+  anchor_run_number     int                 -- the run number that falls on start_date
+  interval_unit         enum (day | week | month) nullable   -- null with interval_count for a one-time schedule
+  interval_count        int nullable
+  end_date              date nullable       -- inclusive; at most one of end_date / max_runs
+  max_runs              int nullable        -- counts every run, including failed, missed and reversed
+  run_offset_minutes    int                 -- fixed at creation, within the run window
+  status                enum (active | paused | cancelled | completed)
+  next_run_number       int
+  next_run_at           timestamptz nullable   -- null unless active
+  consecutive_failures  int default 0       -- failed or reversed runs since the last succeeded one
+  paused_reason         varchar nullable    -- user, consecutive_failures, or a permanent failure code
+  created_at            timestamptz
+  updated_at            timestamptz
+
+  -- partial index (next_run_at) WHERE status = 'active'; index (user_id, created_at DESC, id DESC)
+
+scheduled_payment_runs
+  id                    uuid PK
+  scheduled_payment_id  uuid FK -> scheduled_payments
+  run_number            int
+  due_at                timestamptz
+  status                enum (pending | settling | succeeded | failed | missed | reversed | cancelled)
+  amount                bigint              -- snapshot of the schedule at run creation, with target, note, visibility
+  target_type           enum (user | bank_account)
+  recipient_user_id     uuid nullable
+  bank_account_id       uuid nullable
+  note                  varchar(500) nullable
+  visibility            enum (public | private) nullable
+  attempt_count         int default 0
+  next_attempt_at       timestamptz nullable
+  transaction_id        uuid nullable       -- ledger's transactions, no FK
+  created_at            timestamptz
+  updated_at            timestamptz
+
+  -- UNIQUE (scheduled_payment_id, run_number); partial index (next_attempt_at) WHERE status = 'pending'
+
+scheduled_payment_attempts               -- append-only, enforced by trigger
+  id                    uuid PK
+  run_id                uuid FK -> scheduled_payment_runs
+  kind                  enum (attempt | missed | settled | reversed)
+  attempt_number        int nullable        -- kind = attempt
+  reference             varchar nullable    -- sched_<scheduleId>_<runNumber>_<attempt>
+  outcome               enum (succeeded | settling | failed) nullable   -- kind = attempt
+  failure_code          varchar nullable    -- insufficient_balance | daily_limit_exceeded | recipient_cap | blocked | recipient_unavailable | bank_account_removed | sender_frozen | payout_rejected | infrastructure
+  transaction_id        uuid nullable
+  started_at            timestamptz nullable
+  created_at            timestamptz
+
+scheduled_payment_changes                -- append-only, enforced by trigger
+  id                    uuid PK
+  scheduled_payment_id  uuid FK -> scheduled_payments
+  kind                  enum (created | updated | paused | resumed | cancelled | completed)
+  actor                 enum (user | system)
+  reason                varchar nullable    -- system actions, e.g. consecutive_failures
+  changes               jsonb nullable      -- updated: { field: { from, to } }
+  created_at            timestamptz
+
 ```
+
+> **[v17] Note on** `scheduled_payment_runs`**:** a run copies the schedule's amount, target, note and visibility when the sweep creates it, so every attempt of a run pays the same thing and an edit takes effect from the next run. `attempts` and `changes` are the audit record and are append-only by trigger, like `ledger_entries`; `scheduled_payments` and `scheduled_payment_runs` are mutable current state. See [ADR-0028](adr/0028-scheduled-payments.md).
 
 > **[v16] Note on** `bill_split_participants`**:** there is no `status` column. A participant's paid/unpaid state is their money request's status, read live in one batched read per split or page; copying it through events would go wrong for good on a lost event, since the bus has no outbox. See [ADR-0026](adr/0026-bill-splitting.md).
 
@@ -821,14 +896,24 @@ Each phase exits with a working, production-quality slice of the system. No phas
 
 ### Phase 9 — Scheduled & Recurring Payments
 
-**Goal:** Payments can be automated. Unchanged from v1.
+**Goal:** Payments can be automated. See [ADR-0028](adr/0028-scheduled-payments.md).
 
-- Schedule a one-time future payment
-- Set up recurring payments — weekly, biweekly, monthly
-- BullMQ job processor setup
-- Handle failures on scheduled payments — retry logic, notifications
-- Cancel or modify scheduled payments
-- Audit log of all scheduled payment executions
+- **[v17]** A schedule pays one target: another Cliqpay user, or one of the sender's saved bank accounts (built after P2P, as its own slice). Runs post as ordinary `p2p_transfer` or `withdrawal`; `scheduled` stays reserved and unused. `scheduling` is **peripheral** by §10's test
+- Schedule a one-time future payment — **[v17]** date only, no time of day; the first run is tomorrow at the earliest, at most a year ahead
+- Set up recurring payments — **[v17]** `interval_unit` (`day | week | month`) × `interval_count` (1–365 / 1–52 / 1–12); weekly, biweekly and monthly are client presets. Run *n* is computed from the stored anchor, month steps clamped to the month's last day (Jan 31 → Feb 28 → Mar 31). Optional `end_date` (inclusive) or `max_runs` (1–366, counting every run). Pure date function, test-first, no new dependency
+- **[v17]** Authorisation: the PIN verified at creation is a standing mandate for every run. `TransfersService` and `WithdrawalsService` each gain one exported method that skips only the PIN (every other check still runs) and records `scheduleId`/`runNumber` on `transactions.metadata`; no controller reaches it. PIN re-verified to change amount, interval, next run date or end condition, or to resume; never for pause, cancel, note or visibility. No extra step-up for bank targets, and security events don't pause schedules
+- BullMQ job processor setup — **[v17]** the database owns what is due: `next_run_at` (partial index on active rows) and a sweep every `SCHEDULED_PAYMENT_SWEEP_INTERVAL_MS` (60 s) that claims due schedules `FOR UPDATE SKIP LOCKED`, inserts the run row, advances `next_run_at`, and after commit enqueues one `scheduled-payment-runs` job per run (`jobId = <scheduleId>:<runNumber>`) for a worker with capped concurrency. The sweep also re-enqueues stale `pending` runs. Claims are unbatched for now
+- **[v17]** Runs land at `06:00 Lagos + run_offset_minutes`, a per-schedule offset fixed at creation within a 240-minute window (`SCHEDULED_PAYMENT_WINDOW_START`, `SCHEDULED_PAYMENT_WINDOW_MINUTES`), spreading payday load and leaving the day for retries
+- **[v17]** Idempotency: reference `sched_<scheduleId>_<runNumber>_<attempt>`; the attempt number advances only once the previous attempt is confirmed not to have posted, so a crash-retry replays rather than pays twice. Client references starting `sched_` are rejected
+- Handle failures on scheduled payments — retry logic, notifications — **[v17]** transient (balance, daily limit, recipient cap, synchronous payout rejection): up to 4 attempts at +2h/+4h/+6h, all within the Lagos day, then the run is `failed` and the schedule continues. Permanent (blocked, recipient unavailable, bank account removed, frozen): the run fails and the schedule pauses at once. Infrastructure errors use BullMQ's own retries first. 3 consecutive failed or reversed runs pause the schedule; resume starts at the next future date. Sender-only notifications, final outcomes only
+- **[v17]** Missed runs: due earlier today → run late with the attempts that still fit; due on a past day → recorded `missed`, one summary notification per schedule, counted toward `max_runs` but not toward the pause rule. Never paid late on another day
+- **[v17]** Run states: `pending` → `succeeded` (P2P), or `pending` → `settling` → `succeeded` | `reversed` (bank, resolved by `withdrawal_completed`/`withdrawal_failed`, matched on the `sched_` prefix); also `failed`, `missed`, `cancelled`. `reversed` counts toward the pause rule and is never retried
+- Cancel or modify scheduled payments — **[v17]** the payee is not editable (cancel and create instead). Each run snapshots amount, target, note and visibility, so edits apply from the next run. Edits lock the schedule row; cancel cancels any `pending` run, and an attempt already executing finishes
+- Audit log of all scheduled payment executions — **[v17]** `scheduled_payment_attempts` (one row per attempt plus `missed`/`settled`/`reversed` outcomes) and `scheduled_payment_changes` (lifecycle and before/after edits, actor and reason), both append-only by trigger. Runs and attempts are exposed per schedule; the change log is internal
+- **[v17]** Creation rules: KYC Tier 1+, verified email, not frozen; amount between the transfer (or withdrawal) minimum and the sender's current daily limit; P2P recipient exists, isn't self, isn't blocked either way, advisory `checkCanReceive`; bank account saved and owned. At most `SCHEDULED_PAYMENT_MAX_ACTIVE` (20) active or paused schedules. Required client `reference` (ADR-0010 replay semantics). Note optional (1–500); visibility required for P2P, forbidden for bank. Runs are plain transfer posts; nothing marks them as scheduled
+- **[v17]** Only the owner sees a schedule; recipients are never told one exists
+- **[v17]** Notifications: `scheduled_payment_created` and `scheduled_payment_updated` (email, in-app), `scheduled_payment_run_failed` and `scheduled_payment_runs_missed` (push, in-app), `scheduled_payment_paused` (push, email, in-app), and `scheduled_payment_upcoming` (push, in-app) from a daily 18:00 Lagos job, only when the wallet balance is below tomorrow's run amount. Successful runs use the existing transfer and withdrawal notifications
+- **[v17]** API: `POST /scheduled-payments` (PIN), `GET /scheduled-payments?status=active|paused|ended` (keyset on `(created_at, id)`, 20 default / 50 max), `GET /scheduled-payments/:id`, `PATCH /scheduled-payments/:id` (PIN when a money-affecting field is present), `POST /:id/pause`, `POST /:id/resume` (PIN), `POST /:id/cancel`, `GET /:id/runs`
 
 **Key concepts:** Job queues, background processing, reliability, retry strategies
 
@@ -1033,7 +1118,7 @@ Rules that make this real rather than aspirational:
 
 - **A module's public surface is exactly one exported service.** TypeScript has no enforced "module-private" concept — nothing stops one module importing another's internals except tooling. `eslint-plugin-boundaries` (or `dependency-cruiser`) config enforces this in CI: a build fails if a module reaches past another module's exported service.
 - **Dependency direction is a rule, not just "modules shouldn't touch each other."** Core modules must never import from peripheral ones; peripheral modules may depend on core (Fraud reads balances via Ledger's service). Encode this in the same lint config as an explicit constraint, not a convention someone has to remember.
-- **[v15] What makes a module core.** Ask: *if this module disappeared, would money still move correctly and safely?* If not — it is on the money path, or a money-moving operation must consult it synchronously before committing — it is **core**. If it only reacts to money movement after commit, through events, and could be removed or extracted without the money path noticing, it is **peripheral**. Place every new module by this test, not by analogy. Today: `ledger`, `payments`, `auth`, `users`, `transfers`, `withdrawals`, `disputes`, `kyc` and `social` are core (`social` because blocking gates transfers and money requests, ADR-0025); `notifications` and **[v16]** `billsplit` are peripheral (`billsplit` depends only on the exported services of `transfers`, `users` and `social`, creates money requests through `TransfersService` and reacts to their events; every split request stays payable without it, ADR-0026). `fraud` and `scheduling` are placed by this test when their phase is designed — a fraud rule that blocks a transfer before it commits, for one, would make `fraud` core. Being peripheral is only worth keeping if it buys removability — wrapping a synchronous dependency in a port to keep the label doesn't.
+- **[v15] What makes a module core.** Ask: *if this module disappeared, would money still move correctly and safely?* If not — it is on the money path, or a money-moving operation must consult it synchronously before committing — it is **core**. If it only reacts to money movement after commit, through events, and could be removed or extracted without the money path noticing, it is **peripheral**. Place every new module by this test, not by analogy. Today: `ledger`, `payments`, `auth`, `users`, `transfers`, `withdrawals`, `disputes`, `kyc` and `social` are core (`social` because blocking gates transfers and money requests, ADR-0025); `notifications`, **[v16]** `billsplit` and **[v17]** `scheduling` are peripheral (`billsplit` depends only on the exported services of `transfers`, `users` and `social`, creates money requests through `TransfersService` and reacts to their events; every split request stays payable without it, ADR-0026. `scheduling` drives transfers and withdrawals through their exported services and nothing on the money path consults it, ADR-0028). `fraud` is placed by this test when its phase is designed — a fraud rule that blocks a transfer before it commits, for one, would make `fraud` core. Being peripheral is only worth keeping if it buys removability — wrapping a synchronous dependency in a port to keep the label doesn't.
 - **Cross-module references are plain UUIDs, never a DB-level foreign key.** Same-module references (e.g. `ledger_entries.account_id`) keep real FK constraints. Cross-module references (e.g. `bill_split_participants.money_request_id`, which points at something `transfers` owns) don't — a real FK can't survive the day that table moves to its own database, and the discipline costs nothing to build in now. See [ADR-0002](adr/0002-cross-module-references-and-relation-decorators.md) for the entity-modeling consequence — TypeORM relation decorators follow the same split, additive only where a real FK backs them.
 - **Cross-module side effects are async domain events, not direct synchronous calls.** A P2P transfer's ledger write is synchronous and atomic, inside the Ledger module (must be — it's the money). Everything downstream of it — feed updates, notifications, fraud-rule evaluation — reacts to a domain event published through the shared BullMQ-backed event bus. Critically, **the event publishes after the originating transaction commits, not during it** — publishing inside the transaction means a downstream reaction can fire for a transaction that then rolls back, which is a subtle, easy-to-introduce correctness bug. **[v15]** This rule governs *reactions* to a commit. Storing part of a request's own data in the core module that owns it is not a reaction: a transfer's `visibility` is written to `social`'s `posts` inside the transfer's transaction (`recordTransferPost(manager, …)`, the same shape as `kyc` calling `users.setKycTier(manager, …)`), because a lost post-commit event would silently drop the user's explicit choice (ADR-0025). This async seam is also exactly what becomes a real message broker (SQS/NATS/etc.) if a module is ever actually extracted into its own service — swapping the transport is small; retrofitting a synchronous call into an async boundary after the fact is not.
 - **Shared primitives are the one deliberate exception to isolation.** `Money`, `TransactionType`, `KycTier`, and similar shared domain vocabulary — some pure types, some (like `Money`) small value objects with real behavior — live in `shared/primitives/` and any module may import them. `primitives/`, not `types/`, because the folder isn't just type declarations — the isolation rule being carved out here is about behavior and state living in a *module*, not about whether the shared thing itself has logic.
@@ -1077,6 +1162,11 @@ Features raised during design and deliberately not scoped into any phase in §6.
 - **[v15] Esusu (rotating group savings).** The Yoruba rotating savings practice (*isusu* in Igbo, *adashe* in Hausa): a fixed group each contributes a fixed amount every period, and each period one member collects the whole pot, in an agreed order, until everyone has collected once. The starting design is orchestration only, with no pot held by Cliqpay. Each round is "every member pays this round's recipient": one money request per member, all to the same payee. That makes it bill splitting (Phase 8) combined with recurring scheduling (Phase 9), so it needs no ledger change and adds no custody, and it would sit as a peripheral module that creates requests and schedules through `transfers` and `scheduling` and reacts to `money_request_paid`. A pooled pot instead, with contributions held in a per-group ledger account and paid out from it, would allow guarantees such as escrow and paying out only once the pot is complete. But it needs a new account type and posting rules, likely makes the module core (payouts would consult it before committing), and holding pooled savings needs a compliance answer first. Questions any version must settle: default after a member has already collected (Tier 1 KYC, an upfront auto-debit mandate via Phase 9, ordering newer members later, penalties), payout order (organiser-set, random or bid), late contributions (wait, partial payout or organiser covers), members leaving mid-cycle, and the organiser's role and any fee. Blocks between two users should keep them out of the same group. Builds on Phases 8 and 9, so it comes after both.
 
 ### Deferred from an existing phase or section
+
+- **[v17] Scheduled payment of a money request.** "Pay this request on payday." Left out of Phase 9 because it races the request's 7-day expiry and paying it by hand already exists. Would fit `scheduled_payments` as a third target type (ADR-0028).
+- **[v17] Incoming schedules for recipients.** Telling a recipient a schedule exists, and listing incoming ones. Phase 9 keeps schedules private to the sender, since a schedule is not a promise; esusu is the likely reason to revisit, under its own consent model.
+- **[v17] Batched sweep claims.** The Phase 9 sweep claims every due schedule in one transaction. If a single tick ever carries enough runs to make that transaction long, claim in batches (ADR-0028).
+- **[v17] Dropping reserved transaction types.** `bill_split` and `scheduled` are reserved and unused in the `transactions.type` CHECK; removing both is one hand-written migration, worth doing in a cleanup pass.
 
 - **[v15] Per-user default visibility.** A stored preference the client reads to preselect the public/private toggle on the send screen, so it follows the user across devices. The server would still never apply it: `visibility` stays required on every transfer request (ADR-0025). Deferred because there is no user settings surface yet.
 - **Admin panel and `AdminUser`.** A React/Next.js internal panel with its own `AdminUser` model, stricter auth (mandatory security-key MFA, no trusted-device skip) and a `/v1/admin/*` namespace (§9). Until then, internal operations such as recording a chargeback use the shared-secret internal guard (Phase 5).
