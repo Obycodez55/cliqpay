@@ -104,8 +104,12 @@ year ahead.
 dates are computed from the stored anchor, never from the previous run:
 run *n* is `start_date + (n - anchor_run_number) × interval`, with month steps
 clamped to the month's last day, so Jan 31 → Feb 28 → Mar 31. Changing the
-next run date re-anchors (`start_date` = the new date, `anchor_run_number` =
-the next run number). One optional end condition: `end_date` (inclusive) or
+next run date or the interval re-anchors (`start_date` = the new date,
+`anchor_run_number` = the next run number). An edit may clear the interval
+(recurring becomes one-time), and `end_date`/`max_runs` need an interval. A
+paused schedule has no upcoming run to anchor to, so an interval change on one
+needs a `nextRunDate`. `max_runs` cannot go below the runs already created, and
+lowering it to exactly that count completes the schedule. One optional end condition: `end_date` (inclusive) or
 `max_runs` (1–366), counting every run including failed, missed and reversed
 ones. A schedule that reaches it becomes `completed`. The date arithmetic is a
 pure function, test-first, with no new dependency.
@@ -134,7 +138,9 @@ pure function, test-first, with no new dependency.
   resets the count. A system pause cancels the schedule's other `pending`
   runs, as a user pause does, and `executeRun` refuses to pay for a schedule
   that is not `active`, ending its pending run as `cancelled`. Resume starts from the next future date and never runs
-  missed ones.
+  missed ones. The skipped dates don't re-anchor the schedule, so a
+  31st-of-the-month schedule keeps its day, and `max_runs` counts runs created,
+  so they don't use it up.
 - Only the sender is notified, and only on final outcomes, never per attempt.
 
 **Missed runs.** A run due earlier today is executed late with whatever
@@ -154,8 +160,10 @@ sits in `settling` until `withdrawals` resolves the payout: accepted and
 `withdrawal_completed` and `withdrawal_failed`, matching the `sched_`
 reference prefix. `reversed` counts toward the pause rule and is not retried.
 No extra notification: `withdrawal_failed` already tells the user. A
-`settling` run does not block the next run, and `scheduling` never times one
-out itself.
+`settling` run does not block the next run, and `scheduling` never fails one
+for being slow. If both events are lost, the sweep repairs a run that has been
+`settling` for over an hour by reading the withdrawal itself (a partial index
+on `settling` rows keeps that cheap); a payout still pending is left alone.
 
 **Audit.** Four tables. `scheduled_payments` and `scheduled_payment_runs`
 hold mutable current state. `scheduled_payment_attempts` (one row per attempt
@@ -200,9 +208,10 @@ schedule exists.
 | `scheduled_payment_run_failed` | push, in-app | a run's final attempt fails |
 | `scheduled_payment_paused` | push, email, in-app | the system pauses a schedule |
 | `scheduled_payment_runs_missed` | push, in-app | runs skipped after downtime |
-| `scheduled_payment_upcoming` | push, in-app | the evening before a run, only if the wallet balance is below the run amount |
+| `scheduled_payment_upcoming` | push, in-app | the evening before a run, only if the wallet balance is below the run amount plus any fees |
 
-The upcoming check is a daily repeatable job at 18:00 Lagos. It records the
+The upcoming check is a daily repeatable job at 18:00 Lagos. A bank run's fees
+count toward the balance it compares against, and the message states them. It records the
 run date it warned about on the schedule, in the transaction that decides to
 send, so a re-run or a second instance never warns twice. Successful runs
 use the existing transfer and withdrawal notifications. User-initiated pause

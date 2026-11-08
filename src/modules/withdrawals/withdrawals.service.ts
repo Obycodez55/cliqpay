@@ -365,8 +365,7 @@ export class WithdrawalsService {
       : null;
   }
 
-  // `pin` is null only for the scheduled seam. Debit-first
-  // (docs/architecture.md §6 Phase 4) as before.
+  // `pin` is null only for the scheduled seam.
   private async processWithdrawal(
     userId: string,
     dto: { bankAccountId: string; amount: number; reference: string },

@@ -80,12 +80,10 @@ describe('Scheduled payment execution', () => {
   const balanceOf = async (user: ScheduleUser) =>
     (await ctx.accountRepo.findOneByOrFail({ id: user.walletId })).balance;
 
-  // A run row with no queue job, for driving executeRun by hand.
   async function insertPendingRun(
     scheduleId: string,
     dueAt: Date = new Date(),
   ) {
-    // As the sweep leaves a schedule whose only run it just created.
     await h.scheduleRepo().update({ id: scheduleId }, { nextRunAt: null });
     const schedule = await h.scheduleRepo().findOneByOrFail({ id: scheduleId });
     return h.runRepo().save(

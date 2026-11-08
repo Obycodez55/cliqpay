@@ -1,6 +1,5 @@
 const MINUTE_MS = 60_000;
 const DAY_MS = 24 * 60 * MINUTE_MS;
-// Africa/Lagos is UTC+1 all year, with no DST.
 const LAGOS_OFFSET_MS = 60 * MINUTE_MS;
 
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -39,8 +38,6 @@ export function addOneYear(isoDate: string): string {
   );
 }
 
-// The allowed start dates, as Lagos calendar dates: tomorrow at the
-// earliest, one year ahead at the latest.
 export function startDateBounds(now: Date): { min: string; max: string } {
   const today = lagosToday(now);
   return { min: addDays(today, 1), max: addOneYear(today) };
@@ -100,7 +97,6 @@ export function computeDueAt(
   );
 }
 
-// The first instant after the given Lagos calendar date.
 export function lagosDayEnd(isoDate: string): Date {
   return computeDueAt(addDays(isoDate, 1), '00:00', 0);
 }

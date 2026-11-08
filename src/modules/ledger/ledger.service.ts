@@ -636,8 +636,7 @@ export class LedgerService {
     return Money.of(wallet.balance, wallet.currency);
   }
 
-  // Several users' stored balances in one read; a user without a wallet is
-  // simply absent from the map.
+  // A user without a wallet is absent from the map.
   async getWalletBalances(
     userIds: string[],
     manager: EntityManager = this.dataSource.manager,

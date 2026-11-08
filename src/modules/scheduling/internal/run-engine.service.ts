@@ -37,8 +37,6 @@ import { RunJobData, SCHEDULED_PAYMENT_RUNS_QUEUE, runJobId } from './queues';
 import { toClientFailureReason } from './failure-reasons';
 import { targetLabel } from './target-label';
 
-// A pending first attempt this old with no result is assumed to have lost its
-// job.
 const STALE_RUN_AFTER_MINUTES = 5;
 const MAX_ATTEMPTS = 4;
 const RETRY_STEP_MS = 2 * 60 * 60 * 1000;
@@ -61,14 +59,12 @@ interface RunToEnqueue {
   attemptNumber: number;
 }
 
-// What a recorded attempt means for the sender, published once it commits.
 interface RecordedOutcome {
   runFailedReason: FailureCode | null;
   pause: { changeId: string; reason: string } | null;
   missed: boolean;
 }
 
-// The runs one sweep skipped for one schedule, summarised in one notice.
 interface MissedBatch {
   schedule: ScheduledPayment;
   firstRunId: string;
@@ -86,10 +82,6 @@ interface AttemptResult {
   transactionId: string | null;
 }
 
-/**
- * The sweep that turns due schedules into runs, and the execution of one run.
- * Internal to the module; the repeatable job and the worker are its callers.
- */
 @Injectable()
 export class RunEngine {
   private readonly logger = new Logger(RunEngine.name);
@@ -315,7 +307,6 @@ export class RunEngine {
     if (run.nextAttemptAt && run.nextAttemptAt > now) {
       return;
     }
-    // Past its Lagos day nothing may be paid, however the run got here.
     if (now >= lagosDayEnd(lagosToday(run.dueAt))) {
       await this.endExpiredRun(run);
       return;
@@ -323,8 +314,6 @@ export class RunEngine {
     const schedule = await this.dataSource
       .getRepository(ScheduledPayment)
       .findOneByOrFail({ id: run.scheduledPaymentId });
-    // A paused or cancelled schedule pays nothing more, whatever job is
-    // still waiting.
     if (schedule.status !== 'active') {
       await this.dataSource
         .getRepository(ScheduledPaymentRun)
@@ -704,8 +693,6 @@ export class RunEngine {
     return outcome;
   }
 
-  // What a run ending does to its schedule: the failure streak, a pause, and
-  // completion once nothing is left to run.
   private async settleSchedule(
     manager: EntityManager,
     schedule: ScheduledPayment,
@@ -934,7 +921,6 @@ export class RunEngine {
     }
   }
 
-  // What a run debits on top of the amount; null when it debits nothing.
   private feesOf(schedule: ScheduledPayment): Money | null {
     const { currency } = schedule;
     const fees =

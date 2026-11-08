@@ -2,7 +2,7 @@
 
 > Cliqpay is a production-grade peer-to-peer payment platform. A Venmo-equivalent for Africa — built on NestJS, PostgreSQL, TypeORM, currently integrated with Kora.
 
-> **v17 changes:** Phase 9 design pass (scheduled & recurring payments). A schedule pays another Cliqpay user or one of the sender's saved bank accounts; runs post as ordinary `p2p_transfer` or `withdrawal`, and `scheduled` stays reserved and unused. `scheduling` is **peripheral**: it calls one new PIN-skipping method each on `TransfersService` and `WithdrawalsService`, and the PIN verified at creation is a standing mandate for every run (re-verified to change money-affecting fields or resume; never needed to pause or cancel). The database owns what is due (`next_run_at` plus a one-minute sweep with `SKIP LOCKED`, one BullMQ job per run); runs are date-based, spread across a 06:00–10:00 Lagos window by a fixed per-schedule offset. Recurrence is `interval_unit` (day/week/month) × `interval_count` from a stored anchor with month-end clamping. Transient failures retry up to 4 times within the Lagos day, permanent ones pause at once, and 3 consecutive failed runs pause the schedule; runs missed during downtime are recorded, never paid late on another day. Bank runs sit in a `settling` state until `withdrawal_completed`/`withdrawal_failed`. Four `scheduling` tables, two of them append-only by trigger (attempts and changes). See [ADR-0028](adr/0028-scheduled-payments.md).
+> **v17 changes:** Phase 9 design pass (scheduled & recurring payments). A schedule pays another Cliqpay user or one of the sender's saved bank accounts; runs post as ordinary `p2p_transfer` or `withdrawal`, and `scheduled` stays reserved and unused. `scheduling` is **peripheral**: it calls one new PIN-skipping method each on `TransfersService` and `WithdrawalsService`, and the PIN verified at creation is a standing mandate for every run (re-verified to change money-affecting fields or resume; never needed to pause or cancel). The database owns what is due (`next_run_at` plus a one-minute sweep with `SKIP LOCKED`, one BullMQ job per run); runs are date-based, spread across a 06:00–10:00 Lagos window by a fixed per-schedule offset. Recurrence is `interval_unit` (day/week/month) × `interval_count` from a stored anchor with month-end clamping. Transient failures retry up to 4 times within the Lagos day, permanent ones pause at once, and 3 consecutive failed runs pause the schedule; runs missed during downtime are recorded, and a run is never paid after its Lagos day. Bank runs sit in a `settling` state until `withdrawal_completed`/`withdrawal_failed`, with a sweep repair if both events are lost. Four `scheduling` tables, two of them append-only by trigger (attempts and changes). See [ADR-0028](adr/0028-scheduled-payments.md).
 
 > **v16 changes:** Phase 8 design pass (bill splitting). A split is reimbursement, not escrow: participants pay the initiator back through ordinary exact-amount money requests, so the ledger doesn't change and the `bill_split` transaction type stays reserved and unused. `billsplit` is **peripheral** by §10's test and owns `bill_splits` and `bill_split_participants`; `transfers` never learns splits exist. Paid/unpaid is read live from the linked money requests rather than copied, with `completed_at`/`closed_at` stored for list filtering and repaired on read. Split requests obey the money-request rules unchanged (pair cap, shared expiry, blocks), creation is atomic and idempotent on a client `reference`, and one new notification, `bill_split_completed`, is added. Two shared changes come with it: the event bus fans out to one queue per subscriber, because a second consumer on `domain-events` would take half of every event, and money-request cancel/decline now lock the row, closing a race that could overwrite a paid request. See [ADR-0026](adr/0026-bill-splitting.md).
 
@@ -561,7 +561,7 @@ scheduled_payments
   user_id               uuid                -- the sender
   reference             varchar             -- client idempotency key; UNIQUE (user_id, reference)
   target_type           enum (user | bank_account)
-  recipient_user_id     uuid nullable       -- set iff target_type = user
+  recipient_user_id     uuid nullable       -- set iff target_type = user (CHECK: exactly the matching target column is set)
   bank_account_id       uuid nullable       -- set iff target_type = bank_account; withdrawals' bank_accounts
   amount                bigint              -- minor units
   currency              varchar
@@ -579,6 +579,7 @@ scheduled_payments
   next_run_at           timestamptz nullable   -- null unless active
   consecutive_failures  int default 0       -- failed or reversed runs since the last succeeded one
   paused_reason         varchar nullable    -- user, consecutive_failures, or a permanent failure code
+  last_reminded_run_date date nullable      -- the run date the evening low-balance reminder last warned about; the dedupe
   created_at            timestamptz
   updated_at            timestamptz
 
@@ -592,8 +593,8 @@ scheduled_payment_runs
   status                enum (pending | settling | succeeded | failed | missed | reversed | cancelled)
   amount                bigint              -- snapshot of the schedule at run creation, with target, note, visibility
   target_type           enum (user | bank_account)
-  recipient_user_id     uuid nullable
-  bank_account_id       uuid nullable
+  recipient_user_id     uuid nullable       -- same target CHECK as scheduled_payments
+  bank_account_id       uuid nullable       -- set for a bank run; the snapshot survives edits to the schedule
   note                  varchar(500) nullable
   visibility            enum (public | private) nullable
   attempt_count         int default 0
@@ -602,28 +603,32 @@ scheduled_payment_runs
   created_at            timestamptz
   updated_at            timestamptz
 
-  -- UNIQUE (scheduled_payment_id, run_number); partial index (next_attempt_at) WHERE status = 'pending'
+  -- UNIQUE (scheduled_payment_id, run_number); partial index (next_attempt_at) WHERE status = 'pending'; partial index (updated_at) WHERE status = 'settling' (the stale-settling repair)
 
 scheduled_payment_attempts               -- append-only, enforced by trigger
   id                    uuid PK
   run_id                uuid FK -> scheduled_payment_runs
   kind                  enum (attempt | missed | settled | reversed)
-  attempt_number        int nullable        -- kind = attempt
-  reference             varchar nullable    -- sched_<scheduleId>_<runNumber>_<attempt>
-  outcome               enum (succeeded | settling | failed) nullable   -- kind = attempt
-  failure_code          varchar nullable    -- insufficient_balance | daily_limit_exceeded | recipient_cap | blocked | recipient_unavailable | bank_account_removed | sender_frozen | payout_rejected | infrastructure
+  attempt_number        int nullable        -- null unless kind = attempt (CHECK: an attempt row has number, reference, outcome and started_at)
+  reference             varchar nullable    -- sched_<scheduleId>_<runNumber>_<attempt>; settled and reversed rows repeat the attempt's
+  outcome               enum (succeeded | settling | failed) nullable   -- kind = attempt; settling = a bank payout accepted but not yet resolved
+  failure_code          varchar nullable    -- insufficient_balance | daily_limit_exceeded | recipient_cap | blocked | recipient_unavailable | sender_frozen | sender_unverified | bank_account_removed | payout_rejected | amount_below_minimum | infrastructure (CHECK)
   transaction_id        uuid nullable
   started_at            timestamptz nullable
   created_at            timestamptz
+
+  -- UNIQUE (run_id, attempt_number) WHERE kind = 'attempt'; index (run_id)
 
 scheduled_payment_changes                -- append-only, enforced by trigger
   id                    uuid PK
   scheduled_payment_id  uuid FK -> scheduled_payments
   kind                  enum (created | updated | paused | resumed | cancelled | completed)
   actor                 enum (user | system)
-  reason                varchar nullable    -- system actions, e.g. consecutive_failures
+  reason                varchar nullable    -- system actions, e.g. consecutive_failures or a permanent failure code
   changes               jsonb nullable      -- updated: { field: { from, to } }
   created_at            timestamptz
+
+  -- index (scheduled_payment_id)
 
 ```
 
@@ -905,14 +910,14 @@ Each phase exits with a working, production-quality slice of the system. No phas
 - BullMQ job processor setup — **[v17]** the database owns what is due: `next_run_at` (partial index on active rows) and a sweep every `SCHEDULED_PAYMENT_SWEEP_INTERVAL_MS` (60 s) that claims due schedules `FOR UPDATE SKIP LOCKED`, inserts the run row, advances `next_run_at`, and after commit enqueues one `scheduled-payment-runs` job per run (`jobId = <scheduleId>:<runNumber>`) for a worker with capped concurrency. The sweep also re-enqueues stale `pending` runs. Claims are unbatched for now
 - **[v17]** Runs land at `06:00 Lagos + run_offset_minutes`, a per-schedule offset fixed at creation within a 240-minute window (`SCHEDULED_PAYMENT_WINDOW_START`, `SCHEDULED_PAYMENT_WINDOW_MINUTES`), spreading payday load and leaving the day for retries
 - **[v17]** Idempotency: reference `sched_<scheduleId>_<runNumber>_<attempt>`; the attempt number advances only once the previous attempt is confirmed not to have posted, so a crash-retry replays rather than pays twice. Client references starting `sched_` are rejected
-- Handle failures on scheduled payments — retry logic, notifications — **[v17]** transient (balance, daily limit, recipient cap, synchronous payout rejection): up to 4 attempts at +2h/+4h/+6h, all within the Lagos day, then the run is `failed` and the schedule continues. Permanent (blocked, recipient unavailable, bank account removed, frozen): the run fails and the schedule pauses at once. Infrastructure errors use BullMQ's own retries first. 3 consecutive failed or reversed runs pause the schedule; resume starts at the next future date. Sender-only notifications, final outcomes only
-- **[v17]** Missed runs: due earlier today → run late with the attempts that still fit; due on a past day → recorded `missed`, one summary notification per schedule, counted toward `max_runs` but not toward the pause rule. Never paid late on another day
-- **[v17]** Run states: `pending` → `succeeded` (P2P), or `pending` → `settling` → `succeeded` | `reversed` (bank, resolved by `withdrawal_completed`/`withdrawal_failed`, matched on the `sched_` prefix); also `failed`, `missed`, `cancelled`. `reversed` counts toward the pause rule and is never retried
-- Cancel or modify scheduled payments — **[v17]** the payee is not editable (cancel and create instead). Each run snapshots amount, target, note and visibility, so edits apply from the next run. Edits lock the schedule row; cancel cancels any `pending` run, and an attempt already executing finishes
+- Handle failures on scheduled payments — retry logic, notifications — **[v17]** transient (balance, daily limit, recipient cap, synchronous payout rejection): up to 4 attempts at +2h/+4h/+6h, all within the Lagos day, then the run is `failed` and the schedule continues. Permanent (blocked, recipient unavailable, bank account removed, frozen, amount below a minimum raised since creation): the run fails and the schedule pauses at once. A tier-0 sender (`sender_unverified`) is transient. Infrastructure errors use BullMQ's own retries first. 3 consecutive failed or reversed runs pause the schedule. A system pause cancels the schedule's other `pending` runs, as a user pause does, and `executeRun` ends a `pending` run of a schedule that is no longer `active` as `cancelled`. Resume starts at the next future date: dates that passed while paused are skipped, not run, and the anchor is not moved, so a 31st-of-the-month schedule keeps its day; `max_runs` counts runs created, so skipped dates don't use it up. Clients never see the precise code for a block, the recipient's balance cap or an unavailable recipient: all three read `recipient_unable_to_receive` in runs, `pausedReason`, events and notifications, matching a live send's single answer; the database keeps the real code. Sender-only notifications, final outcomes only
+- **[v17]** Missed runs: due earlier today → run late with the attempts that still fit; due on a past day → recorded `missed`, one summary notification per schedule, counted toward `max_runs` but not toward the pause rule. A run is never paid after its Lagos day, however it got there: with no attempt yet it is `missed`, with attempts it fails with its last failure
+- **[v17]** Run states: `pending` → `succeeded` (P2P), or `pending` → `settling` → `succeeded` | `reversed` (bank, resolved by `withdrawal_completed`/`withdrawal_failed`, matched on the `sched_` prefix); also `failed`, `missed`, `cancelled`. `reversed` counts toward the pause rule and is never retried. If both settlement events are lost, the sweep repairs a run `settling` for over an hour by reading the withdrawal itself and leaves a still-`pending` payout alone
+- Cancel or modify scheduled payments — **[v17]** the payee is not editable (cancel and create instead). Each run snapshots amount, target, note and visibility, so edits apply from the next run. PATCH rules: `interval` may be `null` (recurring → one-time) and `endDate`/`maxRuns` need an interval; a changed interval or next run date re-anchors the schedule at that run, and on a paused schedule an interval change needs `nextRunDate` since there is no upcoming run to anchor to; `maxRuns` cannot go below the runs already created, and lowering it to exactly that count completes an active schedule once no run is pending. Edits lock the schedule row; cancel cancels any `pending` run, and an attempt already executing finishes
 - Audit log of all scheduled payment executions — **[v17]** `scheduled_payment_attempts` (one row per attempt plus `missed`/`settled`/`reversed` outcomes) and `scheduled_payment_changes` (lifecycle and before/after edits, actor and reason), both append-only by trigger. Runs and attempts are exposed per schedule; the change log is internal
 - **[v17]** Creation rules: KYC Tier 1+, verified email, not frozen; amount between the transfer (or withdrawal) minimum and the sender's current daily limit; P2P recipient exists, isn't self, isn't blocked either way, advisory `checkCanReceive`; bank account saved and owned. At most `SCHEDULED_PAYMENT_MAX_ACTIVE` (20) active or paused schedules. Required client `reference` (ADR-0010 replay semantics). Note optional (1–500); visibility required for P2P, forbidden for bank. Runs are plain transfer posts; nothing marks them as scheduled
 - **[v17]** Only the owner sees a schedule; recipients are never told one exists
-- **[v17]** Notifications: `scheduled_payment_created` and `scheduled_payment_updated` (email, in-app), `scheduled_payment_run_failed` and `scheduled_payment_runs_missed` (push, in-app), `scheduled_payment_paused` (push, email, in-app), and `scheduled_payment_upcoming` (push, in-app) from a daily 18:00 Lagos job, only when the wallet balance is below tomorrow's run amount. Successful runs use the existing transfer and withdrawal notifications
+- **[v17]** Notifications: `scheduled_payment_created` and `scheduled_payment_updated` (email, in-app), `scheduled_payment_run_failed` and `scheduled_payment_runs_missed` (push, in-app), `scheduled_payment_paused` (push, email, in-app), and `scheduled_payment_upcoming` (push, in-app) from a daily 18:00 Lagos job, only when the wallet balance is below tomorrow's run amount plus, for a bank run, its fees (the message states them). The run date it warned about is recorded on the schedule in the transaction that decides to send (`last_reminded_run_date`), so a re-run or a second instance never warns twice. Successful runs use the existing transfer and withdrawal notifications
 - **[v17]** API: `POST /scheduled-payments` (PIN), `GET /scheduled-payments?status=active|paused|ended` (keyset on `(created_at, id)`, 20 default / 50 max), `GET /scheduled-payments/:id`, `PATCH /scheduled-payments/:id` (PIN when a money-affecting field is present), `POST /:id/pause`, `POST /:id/resume` (PIN), `POST /:id/cancel`, `GET /:id/runs`
 
 **Key concepts:** Job queues, background processing, reliability, retry strategies

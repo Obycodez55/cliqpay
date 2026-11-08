@@ -92,8 +92,6 @@ export class SchedulingService {
   private readonly logger = new Logger(SchedulingService.name);
 
   constructor(
-    // @InjectDataSource: creation and cancellation each write several rows
-    // under a lock in one transaction.
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly transfersService: TransfersService,
     private readonly withdrawalsService: WithdrawalsService,
@@ -638,8 +636,7 @@ export class SchedulingService {
     await this.assertRecipientCanReceive(userId, prepared);
   }
 
-  // The account has to be saved and the sender's, and the amount something
-  // a withdrawal would accept on the day; the run checks it all again.
+  // The run checks all of this again.
   private async assertBankPaymentAllowed(
     userId: string,
     bankAccountId: string,

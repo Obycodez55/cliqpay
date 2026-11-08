@@ -14,8 +14,7 @@ export class RunProcessor extends WorkerHost implements OnApplicationBootstrap {
     super();
   }
 
-  // The decorator's options are fixed at class definition, before config
-  // exists, so concurrency is set on the live worker.
+  // Decorator options are fixed before config exists, so concurrency is set on the live worker.
   onApplicationBootstrap(): void {
     this.worker.concurrency = this.config.scheduledPayments.workerConcurrency;
   }

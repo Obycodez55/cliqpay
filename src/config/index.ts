@@ -101,8 +101,6 @@ const envSchema = z
     // Participants exclude the initiator.
     BILL_SPLIT_MAX_PARTICIPANTS: z.coerce.number().int().positive().default(20),
 
-    // Runs land at WINDOW_START (Lagos) plus a per-schedule offset within
-    // WINDOW_MINUTES.
     SCHEDULED_PAYMENT_SWEEP_INTERVAL_MS: z.coerce
       .number()
       .int()

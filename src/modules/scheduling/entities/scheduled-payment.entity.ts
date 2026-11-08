@@ -34,11 +34,9 @@ export const bigintTransformer = {
   from: (v: string) => BigInt(v),
 };
 
-// `userId`, `recipientUserId` and `bankAccountId` are cross-module references: plain columns,
-// no FK, no relation. `startDate` and `endDate` are Lagos calendar dates, kept
-// as the 'YYYY-MM-DD' strings Postgres returns; `startDate` is the date of run
-// `anchorRunNumber`. `nextRunAt` is null once no further
-// run is due.
+// `startDate` and `endDate` are Lagos calendar dates, kept as the
+// 'YYYY-MM-DD' strings Postgres returns; `startDate` is the date of run
+// `anchorRunNumber`.
 @Entity('scheduled_payments')
 @Check(
   'CHK_scheduled_payments_target_type',

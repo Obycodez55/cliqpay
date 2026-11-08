@@ -120,8 +120,7 @@ describe('PATCH /scheduled-payments/:id', () => {
         .findBy({ transactionId, direction: 'debit' })
     ).map((entry) => entry.amount);
 
-  // Makes the schedule due and runs a real sweep with the queue muted, so its
-  // next run becomes a run row that nothing executes until the test says so.
+  // Queue muted, so nothing executes the run until the test says so.
   async function claimRun(scheduleId: string): Promise<ScheduledPaymentRun> {
     await h.makeDue(scheduleId);
     const addBulk = jest

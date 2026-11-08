@@ -71,7 +71,6 @@ describe('Missed scheduled runs and the low-balance reminder', () => {
     jest.restoreAllMocks();
   }
 
-  // A pending run as the sweep leaves it for a one-time schedule.
   async function insertRun(scheduleId: string, dueAt: Date) {
     await h.scheduleRepo().update({ id: scheduleId }, { nextRunAt: null });
     const schedule = await h.scheduleRepo().findOneByOrFail({ id: scheduleId });

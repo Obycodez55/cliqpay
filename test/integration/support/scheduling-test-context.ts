@@ -209,8 +209,6 @@ export function createSchedulingHelpers(getCtx: () => TransfersTestContext) {
   const fakeAdapter = () =>
     getCtx().app.get<FakeAdapter>(PAYMENT_PROVIDER_ADAPTER, { strict: false });
 
-  // Delivers Kora's payout webhook for a withdrawal reference, so the
-  // settlement runs through the real completion and reversal paths.
   async function settlePayout(
     reference: string,
     status: 'success' | 'failed',

@@ -198,7 +198,7 @@ export interface ScheduledPaymentCreatedEventPayload {
   userId: string;
   email: string;
   scheduledPaymentId: string;
-  counterpartyLabel: string; // a username, or a bank name and masked account
+  counterpartyLabel: string;
   amount: string; // decimal display string (Money.toDecimalString())
   currency: string;
   startDate: string; // Lagos calendar date, YYYY-MM-DD
@@ -211,8 +211,8 @@ export interface ScheduledPaymentUpdatedEventPayload {
   email: string;
   scheduledPaymentId: string;
   changeId: string;
-  counterpartyLabel: string; // a username, or a bank name and masked account
-  amount: string; // decimal display string (Money.toDecimalString()), as edited
+  counterpartyLabel: string;
+  amount: string; // decimal display string (Money.toDecimalString())
   currency: string;
   changedFields: string[];
 }
@@ -224,7 +224,7 @@ export interface ScheduledPaymentRunFailedEventPayload {
   userId: string;
   scheduledPaymentId: string;
   runId: string;
-  counterpartyLabel: string; // a username, or a bank name and masked account
+  counterpartyLabel: string;
   amount: string; // decimal display string (Money.toDecimalString())
   currency: string;
   runDate: string; // Lagos calendar date, YYYY-MM-DD
@@ -238,7 +238,7 @@ export interface ScheduledPaymentRunsMissedEventPayload {
   userId: string;
   scheduledPaymentId: string;
   runId: string; // the first missed run in the batch
-  counterpartyLabel: string; // a username, or a bank name and masked account
+  counterpartyLabel: string;
   amount: string; // decimal display string (Money.toDecimalString())
   currency: string;
   runDates: string[]; // Lagos calendar dates, YYYY-MM-DD
@@ -249,7 +249,7 @@ export const SCHEDULED_PAYMENT_UPCOMING_EVENT = 'scheduled_payment_upcoming';
 export interface ScheduledPaymentUpcomingEventPayload {
   userId: string;
   scheduledPaymentId: string;
-  counterpartyLabel: string; // a username, or a bank name and masked account
+  counterpartyLabel: string;
   amount: string; // decimal display string (Money.toDecimalString())
   balance: string; // decimal display string (Money.toDecimalString())
   fee?: string; // a bank run's fees on top of amount (Money.toDecimalString())
@@ -264,7 +264,7 @@ export interface ScheduledPaymentPausedEventPayload {
   email: string;
   scheduledPaymentId: string;
   changeId: string;
-  counterpartyLabel: string; // a username, or a bank name and masked account
+  counterpartyLabel: string;
   amount: string; // decimal display string (Money.toDecimalString())
   currency: string;
   reason: string; // a failure code, or 'consecutive_failures'

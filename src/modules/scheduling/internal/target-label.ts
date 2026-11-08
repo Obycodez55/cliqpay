@@ -7,8 +7,7 @@ interface LabelledTarget {
   bankAccountId: string | null;
 }
 
-// What the sender is told the money goes to: a username, or a bank name with
-// the last four digits. Never the full account number.
+// Never the full account number.
 export async function targetLabel(
   usersService: UsersService,
   withdrawalsService: WithdrawalsService,

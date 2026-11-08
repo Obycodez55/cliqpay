@@ -97,7 +97,7 @@ export class ScheduledPaymentRun {
   @Column('int', { default: 0 })
   attemptCount: number;
 
-  // When a pending run's next attempt is due; null for a first attempt.
+  // Null for a first attempt.
   @Column({ type: 'timestamptz', nullable: true })
   nextAttemptAt: Date | null;
 
