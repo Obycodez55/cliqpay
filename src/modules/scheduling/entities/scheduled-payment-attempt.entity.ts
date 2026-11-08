@@ -10,7 +10,7 @@ import {
 import { inList } from '../../../database/check.util';
 import { ScheduledPaymentRun } from './scheduled-payment-run.entity';
 
-export const ATTEMPT_KINDS = ['attempt'] as const;
+export const ATTEMPT_KINDS = ['attempt', 'missed'] as const;
 export type AttemptKind = (typeof ATTEMPT_KINDS)[number];
 
 export const ATTEMPT_OUTCOMES = ['succeeded', 'failed'] as const;
@@ -29,12 +29,17 @@ export type FailureCode = (typeof FAILURE_CODES)[number];
 
 // Append-only, enforced by a trigger. A row is written once the attempt's
 // outcome is known, so an attempt that crashed mid-flight leaves no row and
-// is retried under the same number and reference.
+// is retried under the same number and reference. A `missed` row records a
+// run that was never tried, so it has no number, reference, outcome or start.
 @Entity('scheduled_payment_attempts')
 @Check('CHK_scheduled_payment_attempts_kind', inList('kind', ATTEMPT_KINDS))
 @Check(
   'CHK_scheduled_payment_attempts_outcome',
   inList('outcome', ATTEMPT_OUTCOMES),
+)
+@Check(
+  'CHK_scheduled_payment_attempts_attempt_fields',
+  `"kind" <> 'attempt' OR ("attempt_number" IS NOT NULL AND "reference" IS NOT NULL AND "outcome" IS NOT NULL AND "started_at" IS NOT NULL)`,
 )
 @Check(
   'CHK_scheduled_payment_attempts_failure_code',
@@ -54,14 +59,14 @@ export class ScheduledPaymentAttempt {
   @Column('varchar')
   kind: AttemptKind;
 
-  @Column('int')
-  attemptNumber: number;
+  @Column({ type: 'int', nullable: true })
+  attemptNumber: number | null;
 
-  @Column('varchar')
-  reference: string;
+  @Column({ type: 'varchar', nullable: true })
+  reference: string | null;
 
-  @Column('varchar')
-  outcome: AttemptOutcome;
+  @Column({ type: 'varchar', nullable: true })
+  outcome: AttemptOutcome | null;
 
   @Column('varchar', { nullable: true })
   failureCode: FailureCode | null;
@@ -69,8 +74,8 @@ export class ScheduledPaymentAttempt {
   @Column('uuid', { nullable: true })
   transactionId: string | null;
 
-  @Column({ type: 'timestamptz' })
-  startedAt: Date;
+  @Column({ type: 'timestamptz', nullable: true })
+  startedAt: Date | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;

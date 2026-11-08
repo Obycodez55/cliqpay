@@ -19,6 +19,7 @@ import {
 } from './transfers-test-context';
 import {
   addDays,
+  computeDueAt,
   lagosToday,
 } from '../../../src/modules/scheduling/internal/run-time';
 import { waitFor } from './social-blocks-test-helpers';
@@ -55,6 +56,38 @@ export function createSchedulingTestContext() {
 
 export function tomorrow(): string {
   return addDays(lagosToday(new Date()), 1);
+}
+
+export const lagosAt = (date: string, time: string) =>
+  computeDueAt(date, time, 0);
+
+// Fakes only Date, so queries, timers and the worker keep running while the
+// engine believes it is a given moment.
+export async function atClock<T>(now: Date, fn: () => Promise<T>): Promise<T> {
+  jest.useFakeTimers({
+    now,
+    doNotFake: [
+      'hrtime',
+      'nextTick',
+      'performance',
+      'queueMicrotask',
+      'requestAnimationFrame',
+      'cancelAnimationFrame',
+      'requestIdleCallback',
+      'cancelIdleCallback',
+      'setImmediate',
+      'clearImmediate',
+      'setInterval',
+      'clearInterval',
+      'setTimeout',
+      'clearTimeout',
+    ],
+  });
+  try {
+    return await fn();
+  } finally {
+    jest.useRealTimers();
+  }
 }
 
 export function createSchedulingHelpers(getCtx: () => TransfersTestContext) {

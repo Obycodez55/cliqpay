@@ -403,11 +403,12 @@ export class SchedulingService {
         attempts: attempts
           .filter((attempt) => attempt.runId === run.id)
           .map((attempt) => ({
+            kind: attempt.kind,
             attemptNumber: attempt.attemptNumber,
             outcome: attempt.outcome,
             failureCode: attempt.failureCode,
             transactionId: attempt.transactionId,
-            startedAt: attempt.startedAt.toISOString(),
+            startedAt: attempt.startedAt?.toISOString() ?? null,
           })),
       })),
       nextCursor: hasMore

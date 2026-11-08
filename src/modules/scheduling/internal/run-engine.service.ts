@@ -9,16 +9,21 @@ import {
   ScheduledTransferRejectedError,
   TransfersService,
 } from '../../transfers/transfers.service';
+import { LedgerService } from '../../ledger/ledger.service';
 import { Money } from '../../../shared/primitives/money';
 import {
   SCHEDULED_PAYMENT_PAUSED_EVENT,
   SCHEDULED_PAYMENT_RUN_FAILED_EVENT,
+  SCHEDULED_PAYMENT_RUNS_MISSED_EVENT,
+  SCHEDULED_PAYMENT_UPCOMING_EVENT,
   ScheduledPaymentPausedEventPayload,
   ScheduledPaymentRunFailedEventPayload,
+  ScheduledPaymentRunsMissedEventPayload,
+  ScheduledPaymentUpcomingEventPayload,
 } from '../../../shared/events/domain-events';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { UsersService } from '../../users/users.service';
-import { findNextRun, lagosDayEnd, lagosToday } from './run-time';
+import { addDays, findNextRun, lagosDayEnd, lagosToday } from './run-time';
 import { ScheduledPayment } from '../entities/scheduled-payment.entity';
 import { ScheduledPaymentRun } from '../entities/scheduled-payment-run.entity';
 import { ScheduledPaymentAttempt } from '../entities/scheduled-payment-attempt.entity';
@@ -49,6 +54,19 @@ interface RunToEnqueue {
 interface RecordedOutcome {
   runFailedReason: FailureCode | null;
   pause: { changeId: string; reason: string } | null;
+  missed: boolean;
+}
+
+// The runs one sweep skipped for one schedule, summarised in one notice.
+interface MissedBatch {
+  schedule: ScheduledPayment;
+  firstRunId: string;
+  runDates: string[];
+}
+
+interface ClaimResult {
+  toEnqueue: RunToEnqueue[];
+  missed: MissedBatch[];
 }
 
 interface AttemptResult {
@@ -71,16 +89,25 @@ export class RunEngine {
     private readonly runsQueue: Queue<RunJobData>,
     private readonly transfersService: TransfersService,
     private readonly usersService: UsersService,
+    private readonly ledgerService: LedgerService,
     private readonly eventBus: EventBusService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   async sweep(): Promise<void> {
-    const created = await runInTransaction(this.dataSource, (manager) =>
-      this.claimDueSchedules(manager),
+    const now = new Date();
+    const claim = await runInTransaction(this.dataSource, (manager) =>
+      this.claimDueSchedules(manager, now),
     );
+    for (const batch of claim.missed) {
+      await this.publishRunsMissed(
+        batch.schedule,
+        batch.firstRunId,
+        batch.runDates,
+      );
+    }
     const due = await this.findDuePendingRuns();
-    const toEnqueue = [...created, ...due];
+    const toEnqueue = [...claim.toEnqueue, ...due];
     if (toEnqueue.length === 0) {
       return;
     }
@@ -103,44 +130,80 @@ export class RunEngine {
     }
   }
 
+  // A run dated before today in Lagos is recorded `missed` and never paid:
+  // it would land days after the user expected it. Today's run goes ahead
+  // even if late, since its retries already stop at midnight.
   private async claimDueSchedules(
     manager: EntityManager,
-  ): Promise<RunToEnqueue[]> {
+    now: Date,
+  ): Promise<ClaimResult> {
     const scheduleRepo = manager.getRepository(ScheduledPayment);
     const due = await scheduleRepo
       .createQueryBuilder('schedule')
       .where(`schedule.status = 'active'`)
-      .andWhere('schedule.nextRunAt <= now()')
+      .andWhere('schedule.nextRunAt <= :now', { now })
       .orderBy('schedule.nextRunAt', 'ASC')
       .setLock('pessimistic_write')
       .setOnLocked('skip_locked')
       .getMany();
 
-    const runRepo = manager.getRepository(ScheduledPaymentRun);
+    const today = lagosToday(now);
     const claimed: RunToEnqueue[] = [];
+    const missed: MissedBatch[] = [];
     for (const schedule of due) {
-      const run = await runRepo.save(
-        runRepo.create({
-          scheduledPaymentId: schedule.id,
-          runNumber: schedule.nextRunNumber,
-          dueAt: schedule.nextRunAt!,
-          status: 'pending',
-          amount: schedule.amount,
-          targetType: schedule.targetType,
-          recipientUserId: schedule.recipientUserId,
-          note: schedule.note,
-          visibility: schedule.visibility,
-        }),
-      );
-      claimed.push({
-        runId: run.id,
-        scheduleId: schedule.id,
-        runNumber: run.runNumber,
-        attemptNumber: 1,
-      });
-      await this.advance(manager, schedule);
+      const batch: MissedBatch = {
+        schedule,
+        firstRunId: '',
+        runDates: [],
+      };
+      while (schedule.nextRunAt && lagosToday(schedule.nextRunAt) < today) {
+        const run = await this.createRun(manager, schedule, 'missed');
+        await manager.getRepository(ScheduledPaymentAttempt).save({
+          runId: run.id,
+          kind: 'missed',
+        });
+        batch.firstRunId ||= run.id;
+        batch.runDates.push(lagosToday(run.dueAt));
+        await this.advance(manager, schedule);
+      }
+      if (schedule.nextRunAt && schedule.nextRunAt <= now) {
+        const run = await this.createRun(manager, schedule, 'pending');
+        claimed.push({
+          runId: run.id,
+          scheduleId: schedule.id,
+          runNumber: run.runNumber,
+          attemptNumber: 1,
+        });
+        await this.advance(manager, schedule);
+      }
+      if (batch.runDates.length > 0) {
+        missed.push(batch);
+        await this.completeIfFinished(manager, schedule);
+        await scheduleRepo.save(schedule);
+      }
     }
-    return claimed;
+    return { toEnqueue: claimed, missed };
+  }
+
+  private createRun(
+    manager: EntityManager,
+    schedule: ScheduledPayment,
+    status: 'pending' | 'missed',
+  ): Promise<ScheduledPaymentRun> {
+    const runRepo = manager.getRepository(ScheduledPaymentRun);
+    return runRepo.save(
+      runRepo.create({
+        scheduledPaymentId: schedule.id,
+        runNumber: schedule.nextRunNumber,
+        dueAt: schedule.nextRunAt!,
+        status,
+        amount: schedule.amount,
+        targetType: schedule.targetType,
+        recipientUserId: schedule.recipientUserId,
+        note: schedule.note,
+        visibility: schedule.visibility,
+      }),
+    );
   }
 
   // Never completes the schedule: with no next run it stays active and
@@ -195,7 +258,13 @@ export class RunEngine {
     }
     // A job can outlive the attempt it was added for, and recovery can add
     // one early; a retry never runs before its time.
-    if (run.nextAttemptAt && run.nextAttemptAt > new Date()) {
+    const now = new Date();
+    if (run.nextAttemptAt && run.nextAttemptAt > now) {
+      return;
+    }
+    // Past its Lagos day nothing may be paid, however the run got here.
+    if (now >= lagosDayEnd(lagosToday(run.dueAt))) {
+      await this.endExpiredRun(run);
       return;
     }
     const schedule = await this.dataSource
@@ -305,7 +374,11 @@ export class RunEngine {
     },
   ): Promise<RecordedOutcome> {
     const { result } = attempt;
-    const outcome: RecordedOutcome = { runFailedReason: null, pause: null };
+    const outcome: RecordedOutcome = {
+      runFailedReason: null,
+      pause: null,
+      missed: false,
+    };
 
     // Locked so a cancel, a pause and the end of this run can't each move
     // the schedule's status.
@@ -361,13 +434,32 @@ export class RunEngine {
       return outcome;
     }
 
+    await this.settleSchedule(
+      manager,
+      schedule,
+      status,
+      result.failureCode,
+      outcome,
+    );
+    return outcome;
+  }
+
+  // What a run ending does to its schedule: the failure streak, a pause, and
+  // completion once nothing is left to run.
+  private async settleSchedule(
+    manager: EntityManager,
+    schedule: ScheduledPayment,
+    status: 'pending' | 'succeeded' | 'failed',
+    failureCode: FailureCode | null,
+    outcome: RecordedOutcome,
+  ): Promise<void> {
     if (status === 'succeeded') {
       schedule.consecutiveFailures = 0;
     } else if (status === 'failed') {
       schedule.consecutiveFailures += 1;
-      outcome.runFailedReason = result.failureCode;
-      const pauseReason = PERMANENT_FAILURES.includes(result.failureCode!)
-        ? result.failureCode
+      outcome.runFailedReason = failureCode;
+      const pauseReason = PERMANENT_FAILURES.includes(failureCode!)
+        ? failureCode
         : schedule.consecutiveFailures >= CONSECUTIVE_FAILURE_LIMIT
           ? 'consecutive_failures'
           : null;
@@ -391,11 +483,17 @@ export class RunEngine {
         outcome.pause = { changeId: change.id, reason: pauseReason };
       }
     }
+    await this.completeIfFinished(manager, schedule);
+    await manager.getRepository(ScheduledPayment).save(schedule);
+  }
 
-    const pendingRuns = await runRepo.countBy({
-      scheduledPaymentId: schedule.id,
-      status: 'pending',
-    });
+  private async completeIfFinished(
+    manager: EntityManager,
+    schedule: ScheduledPayment,
+  ): Promise<void> {
+    const pendingRuns = await manager
+      .getRepository(ScheduledPaymentRun)
+      .countBy({ scheduledPaymentId: schedule.id, status: 'pending' });
     if (
       schedule.status === 'active' &&
       schedule.nextRunAt === null &&
@@ -408,8 +506,63 @@ export class RunEngine {
         actor: 'system',
       });
     }
-    await manager.getRepository(ScheduledPayment).save(schedule);
-    return outcome;
+  }
+
+  // A pending run whose Lagos day is over. With no attempt yet it was never
+  // tried, so it is `missed` and the outage isn't held against the sender;
+  // otherwise it fails with its last failure, like a run out of retries.
+  private async endExpiredRun(run: ScheduledPaymentRun): Promise<void> {
+    const outcome = await runInTransaction(this.dataSource, async (manager) => {
+      const outcome: RecordedOutcome = {
+        runFailedReason: null,
+        pause: null,
+        missed: false,
+      };
+      const schedule = await manager
+        .getRepository(ScheduledPayment)
+        .createQueryBuilder('schedule')
+        .where('schedule.id = :id', { id: run.scheduledPaymentId })
+        .setLock('pessimistic_write')
+        .getOneOrFail();
+      const never = run.attemptCount === 0;
+      const ended = await manager
+        .getRepository(ScheduledPaymentRun)
+        .createQueryBuilder()
+        .update()
+        .set({ status: never ? 'missed' : 'failed', nextAttemptAt: null })
+        .where('id = :id', { id: run.id })
+        .andWhere(`status = 'pending'`)
+        .andWhere('attempt_count = :count', { count: run.attemptCount })
+        .execute();
+      if (!ended.affected) {
+        return outcome;
+      }
+      if (never) {
+        await manager
+          .getRepository(ScheduledPaymentAttempt)
+          .save({ runId: run.id, kind: 'missed' });
+        outcome.missed = true;
+        await this.completeIfFinished(manager, schedule);
+        await manager.getRepository(ScheduledPayment).save(schedule);
+        return outcome;
+      }
+      const last = await manager
+        .getRepository(ScheduledPaymentAttempt)
+        .findOneOrFail({
+          where: { runId: run.id, attemptNumber: run.attemptCount },
+        });
+      await this.settleSchedule(
+        manager,
+        schedule,
+        'failed',
+        last.failureCode ?? 'infrastructure',
+        outcome,
+      );
+      return outcome;
+    });
+    if (outcome.missed || outcome.runFailedReason || outcome.pause) {
+      await this.publishOutcome(run, run.scheduledPaymentId, outcome);
+    }
   }
 
   // Retries run 2h, 4h and 6h after the first attempt, and only within the
@@ -437,9 +590,111 @@ export class RunEngine {
               .findOneByOrFail({ runId: run.id, attemptNumber: 1 })
           ).startedAt;
     const next = new Date(
-      firstStartedAt.getTime() + attempt.attemptNumber * RETRY_STEP_MS,
+      firstStartedAt!.getTime() + attempt.attemptNumber * RETRY_STEP_MS,
     );
     return next < lagosDayEnd(lagosToday(run.dueAt)) ? next : null;
+  }
+
+  async sendUpcomingReminders(now = new Date()): Promise<void> {
+    const runDate = addDays(lagosToday(now), 1);
+    const reminders = await runInTransaction(
+      this.dataSource,
+      async (manager) => {
+        const repo = manager.getRepository(ScheduledPayment);
+        const candidates = await repo
+          .createQueryBuilder('schedule')
+          .where(`schedule.status = 'active'`)
+          .andWhere('schedule.nextRunAt >= :start', {
+            start: lagosDayEnd(lagosToday(now)),
+          })
+          .andWhere('schedule.nextRunAt < :end', { end: lagosDayEnd(runDate) })
+          .andWhere(
+            '(schedule.lastRemindedRunDate IS NULL OR schedule.lastRemindedRunDate <> :runDate)',
+            { runDate },
+          )
+          .setLock('pessimistic_write')
+          .setOnLocked('skip_locked')
+          .getMany();
+        const balances = await this.ledgerService.getWalletBalances([
+          ...new Set(candidates.map((schedule) => schedule.userId)),
+        ]);
+        const low: { schedule: ScheduledPayment; balance: Money }[] = [];
+        for (const schedule of candidates) {
+          const balance = balances.get(schedule.userId);
+          if (balance && balance.amount < schedule.amount) {
+            schedule.lastRemindedRunDate = runDate;
+            await repo.save(schedule);
+            low.push({ schedule, balance });
+          }
+        }
+        return low;
+      },
+    );
+    for (const { schedule, balance } of reminders) {
+      try {
+        const recipient = await this.usersService.findById(
+          schedule.recipientUserId,
+        );
+        await this.eventBus.publish<
+          string,
+          ScheduledPaymentUpcomingEventPayload
+        >({
+          name: SCHEDULED_PAYMENT_UPCOMING_EVENT,
+          payload: {
+            userId: schedule.userId,
+            scheduledPaymentId: schedule.id,
+            counterpartyUsername: recipient.username,
+            amount: Money.of(
+              schedule.amount,
+              schedule.currency,
+            ).toDecimalString(),
+            balance: balance.toDecimalString(),
+            currency: schedule.currency,
+            runDate,
+          },
+          occurredAt: new Date(),
+        });
+      } catch (error) {
+        this.logger.error(
+          `schedule ${schedule.id}: publishing its low-balance reminder failed (${(error as Error).message}) — this will not be retried`,
+        );
+      }
+    }
+  }
+
+  private async publishRunsMissed(
+    schedule: ScheduledPayment,
+    firstRunId: string,
+    runDates: string[],
+  ): Promise<void> {
+    try {
+      const recipient = await this.usersService.findById(
+        schedule.recipientUserId,
+      );
+      await this.eventBus.publish<
+        string,
+        ScheduledPaymentRunsMissedEventPayload
+      >({
+        name: SCHEDULED_PAYMENT_RUNS_MISSED_EVENT,
+        payload: {
+          userId: schedule.userId,
+          scheduledPaymentId: schedule.id,
+          runId: firstRunId,
+          counterpartyUsername: recipient.username,
+          amount: Money.of(
+            schedule.amount,
+            schedule.currency,
+          ).toDecimalString(),
+          currency: schedule.currency,
+          runDates,
+        },
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `schedule ${schedule.id}: publishing its missed-runs notice failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
   }
 
   private async publishOutcome(
@@ -456,6 +711,9 @@ export class RunEngine {
         this.usersService.findById(run.recipientUserId),
       ]);
       const amount = Money.of(run.amount, schedule.currency).toDecimalString();
+      if (outcome.missed) {
+        await this.publishRunsMissed(schedule, run.id, [lagosToday(run.dueAt)]);
+      }
       if (outcome.runFailedReason) {
         await this.eventBus.publish<
           string,

@@ -1,7 +1,9 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { MoneyDto } from '../../../common/dto/money-response.dto';
 import {
+  ATTEMPT_KINDS,
   ATTEMPT_OUTCOMES,
+  AttemptKind,
   AttemptOutcome,
   FAILURE_CODES,
   FailureCode,
@@ -12,11 +14,18 @@ import {
 } from '../entities/scheduled-payment-run.entity';
 
 export class ScheduledPaymentAttemptResponseDto {
-  @ApiProperty()
-  attemptNumber: number;
+  @ApiProperty({ enum: ATTEMPT_KINDS })
+  kind: AttemptKind;
 
-  @ApiProperty({ enum: ATTEMPT_OUTCOMES })
-  outcome: AttemptOutcome;
+  @ApiProperty({ nullable: true, description: 'Null for a missed run' })
+  attemptNumber: number | null;
+
+  @ApiProperty({
+    enum: ATTEMPT_OUTCOMES,
+    nullable: true,
+    description: 'Null for a missed run',
+  })
+  outcome: AttemptOutcome | null;
 
   @ApiProperty({ enum: FAILURE_CODES, nullable: true })
   failureCode: FailureCode | null;
@@ -24,8 +33,8 @@ export class ScheduledPaymentAttemptResponseDto {
   @ApiProperty({ nullable: true })
   transactionId: string | null;
 
-  @ApiProperty()
-  startedAt: string;
+  @ApiProperty({ nullable: true, description: 'Null for a missed run' })
+  startedAt: string | null;
 }
 
 export class ScheduledPaymentRunResponseDto {

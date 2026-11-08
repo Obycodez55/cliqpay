@@ -25,6 +25,7 @@ export const RUN_STATUSES = [
   'succeeded',
   'failed',
   'cancelled',
+  'missed',
 ] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
 

@@ -218,6 +218,31 @@ export interface ScheduledPaymentRunFailedEventPayload {
   reason: string; // the last attempt's failure code
 }
 
+export const SCHEDULED_PAYMENT_RUNS_MISSED_EVENT =
+  'scheduled_payment_runs_missed';
+
+export interface ScheduledPaymentRunsMissedEventPayload {
+  userId: string;
+  scheduledPaymentId: string;
+  runId: string; // the first missed run in the batch
+  counterpartyUsername: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  runDates: string[]; // Lagos calendar dates, YYYY-MM-DD
+}
+
+export const SCHEDULED_PAYMENT_UPCOMING_EVENT = 'scheduled_payment_upcoming';
+
+export interface ScheduledPaymentUpcomingEventPayload {
+  userId: string;
+  scheduledPaymentId: string;
+  counterpartyUsername: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  balance: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  runDate: string; // Lagos calendar date, YYYY-MM-DD
+}
+
 export const SCHEDULED_PAYMENT_PAUSED_EVENT = 'scheduled_payment_paused';
 
 export interface ScheduledPaymentPausedEventPayload {

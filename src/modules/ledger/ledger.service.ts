@@ -620,6 +620,24 @@ export class LedgerService {
     return Money.of(wallet.balance, wallet.currency);
   }
 
+  // Several users' stored balances in one read; a user without a wallet is
+  // simply absent from the map.
+  async getWalletBalances(userIds: string[]): Promise<Map<string, Money>> {
+    if (userIds.length === 0) {
+      return new Map();
+    }
+    const wallets = await this.dataSource.getRepository(Account).findBy({
+      userId: In(userIds),
+      role: 'user_wallet',
+    });
+    return new Map(
+      wallets.map((wallet) => [
+        wallet.userId!,
+        Money.of(wallet.balance, wallet.currency),
+      ]),
+    );
+  }
+
   // What a still-pending funding would credit and to whom, so a caller can
   // take that user's lock before posting and compare a provider-reported
   // amount with the requested one. Null for anything that is not a pending

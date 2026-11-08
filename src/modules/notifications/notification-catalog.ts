@@ -159,6 +159,27 @@ export interface ScheduledPaymentRunFailedPayload {
   reason: string;
 }
 
+export interface ScheduledPaymentRunsMissedPayload {
+  userId: string;
+  // The batch's first missed run: the in-app channel's dedupe_key.
+  runId: string;
+  scheduledPaymentId: string;
+  counterpartyUsername: string;
+  amount: string;
+  currency: string;
+  runDates: string[];
+}
+
+export interface ScheduledPaymentUpcomingPayload {
+  userId: string;
+  scheduledPaymentId: string;
+  counterpartyUsername: string;
+  amount: string;
+  balance: string;
+  currency: string;
+  runDate: string;
+}
+
 export interface ScheduledPaymentPausedPayload {
   userId: string;
   email: string;
@@ -285,6 +306,8 @@ export interface NotificationPayloadMap {
   scheduled_payment_created: ScheduledPaymentCreatedPayload;
   scheduled_payment_run_failed: ScheduledPaymentRunFailedPayload;
   scheduled_payment_paused: ScheduledPaymentPausedPayload;
+  scheduled_payment_runs_missed: ScheduledPaymentRunsMissedPayload;
+  scheduled_payment_upcoming: ScheduledPaymentUpcomingPayload;
   withdrawal_initiated: WithdrawalInitiatedPayload;
   withdrawal_completed: WithdrawalCompletedPayload;
   withdrawal_failed: WithdrawalFailedPayload;
@@ -351,6 +374,8 @@ export const NOTIFICATION_CATALOG = {
   scheduled_payment_created: { channels: ['email', 'in_app'] },
   scheduled_payment_run_failed: { channels: ['push', 'in_app'] },
   scheduled_payment_paused: { channels: ['push', 'email', 'in_app'] },
+  scheduled_payment_runs_missed: { channels: ['push', 'in_app'] },
+  scheduled_payment_upcoming: { channels: ['push', 'in_app'] },
   // Email only for this issue (#28) — push/in_app follow the same pattern
   // as transfer_sent if a later issue asks for them; not scaffolded ahead
   // of that need.

@@ -132,6 +132,11 @@ export class ScheduledPayment {
   @Column({ type: 'timestamptz', nullable: true })
   nextRunAt: Date | null;
 
+  // The Lagos date of the run the sender was last warned about, so the
+  // evening job never warns twice for the same run.
+  @Column({ type: 'date', nullable: true })
+  lastRemindedRunDate: string | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 

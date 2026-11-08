@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { AuthModule } from '../auth/auth.module';
+import { LedgerModule } from '../ledger/ledger.module';
 import { KycModule } from '../kyc/kyc.module';
 import { SocialModule } from '../social/social.module';
 import { TransfersModule } from '../transfers/transfers.module';
@@ -22,6 +23,7 @@ import {
     UsersModule,
     AuthModule,
     KycModule,
+    LedgerModule,
     SocialModule,
     EventBusModule,
     BullModule.registerQueue(

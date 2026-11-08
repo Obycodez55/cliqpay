@@ -129,8 +129,10 @@ pure function, test-first, with no new dependency.
 
 **Missed runs.** A run due earlier today is executed late with whatever
 attempts still fit before Lagos midnight. A run whose date has already passed
-is recorded `missed` with no attempt, and the schedule advances; several
-missed runs each get a row, and the sender gets one summary per schedule.
+is recorded `missed` with a `missed` attempt row and no execution, and the
+schedule advances; several missed runs each get a row, and the sender gets one
+summary per schedule. A run whose day ends before it can execute is never paid:
+with no attempts it is `missed`, with attempts it fails with its last failure.
 Missed runs count toward `max_runs` but not toward the consecutive-failure
 pause, since the outage was ours.
 
@@ -185,7 +187,9 @@ schedule exists.
 | `scheduled_payment_runs_missed` | push, in-app | runs skipped after downtime |
 | `scheduled_payment_upcoming` | push, in-app | the evening before a run, only if the wallet balance is below the run amount |
 
-The upcoming check is a daily repeatable job at 18:00 Lagos. Successful runs
+The upcoming check is a daily repeatable job at 18:00 Lagos. It records the
+run date it warned about on the schedule, in the transaction that decides to
+send, so a re-run or a second instance never warns twice. Successful runs
 use the existing transfer and withdrawal notifications. User-initiated pause
 and cancel, and normal completion, send nothing.
 

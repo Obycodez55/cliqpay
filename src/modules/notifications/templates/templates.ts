@@ -18,6 +18,8 @@ import {
   PostReactionPayload,
   ScheduledPaymentCreatedPayload,
   ScheduledPaymentPausedPayload,
+  ScheduledPaymentRunsMissedPayload,
+  ScheduledPaymentUpcomingPayload,
   ScheduledPaymentRunFailedPayload,
   ReconciliationMismatchPayload,
   RefundAttentionRequiredPayload,
@@ -44,6 +46,23 @@ const SCHEDULE_FAILURE_REASONS: Record<string, string> = {
 
 function scheduleReason(reason: string): string {
   return SCHEDULE_FAILURE_REASONS[reason] ?? 'it could not be completed';
+}
+
+const MISSED_DATES_SHOWN = 5;
+
+function missedDates(dates: string[]): string {
+  const shown = dates.slice(0, MISSED_DATES_SHOWN).join(', ');
+  const rest = dates.length - MISSED_DATES_SHOWN;
+  return rest > 0 ? `${shown} and ${rest} more` : shown;
+}
+
+function missedBody(payload: ScheduledPaymentRunsMissedPayload): string {
+  const count = payload.runDates.length;
+  return `We couldn't run your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} on ${missedDates(payload.runDates)} because of a problem on our side, so ${count === 1 ? 'it was' : 'they were'} skipped and not paid.`;
+}
+
+function upcomingBody(payload: ScheduledPaymentUpcomingPayload): string {
+  return `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} is scheduled for tomorrow (${payload.runDate}), but your wallet balance is ${payload.currency} ${payload.balance}. Add funds so it goes through.`;
 }
 
 export interface EmailContent {
@@ -243,6 +262,18 @@ export const pushTemplates: {
     body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} on ${payload.runDate} failed because ${scheduleReason(payload.reason)}.`,
     data: { scheduledPaymentId: payload.scheduledPaymentId },
   }),
+  scheduled_payment_runs_missed: (
+    payload: ScheduledPaymentRunsMissedPayload,
+  ) => ({
+    title: 'Scheduled payments skipped',
+    body: missedBody(payload),
+    data: { scheduledPaymentId: payload.scheduledPaymentId },
+  }),
+  scheduled_payment_upcoming: (payload: ScheduledPaymentUpcomingPayload) => ({
+    title: 'Low balance for tomorrow’s payment',
+    body: upcomingBody(payload),
+    data: { scheduledPaymentId: payload.scheduledPaymentId },
+  }),
   scheduled_payment_paused: (payload: ScheduledPaymentPausedPayload) => ({
     title: 'Scheduled payment paused',
     body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} was paused because ${scheduleReason(payload.reason)}.`,
@@ -379,6 +410,34 @@ export const inAppTemplates: {
       runDate: payload.runDate,
     },
     dedupeKey: payload.runId,
+  }),
+  scheduled_payment_runs_missed: (
+    payload: ScheduledPaymentRunsMissedPayload,
+  ) => ({
+    title: 'Scheduled payments skipped',
+    body: missedBody(payload),
+    data: {
+      scheduledPaymentId: payload.scheduledPaymentId,
+      runId: payload.runId,
+      runDates: payload.runDates,
+      amount: payload.amount,
+      currency: payload.currency,
+      counterpartyUsername: payload.counterpartyUsername,
+    },
+    dedupeKey: payload.runId,
+  }),
+  scheduled_payment_upcoming: (payload: ScheduledPaymentUpcomingPayload) => ({
+    title: 'Low balance for tomorrow’s payment',
+    body: upcomingBody(payload),
+    data: {
+      scheduledPaymentId: payload.scheduledPaymentId,
+      runDate: payload.runDate,
+      amount: payload.amount,
+      balance: payload.balance,
+      currency: payload.currency,
+      counterpartyUsername: payload.counterpartyUsername,
+    },
+    dedupeKey: `${payload.scheduledPaymentId}:${payload.runDate}`,
   }),
   scheduled_payment_paused: (payload: ScheduledPaymentPausedPayload) => ({
     title: 'Scheduled payment paused',

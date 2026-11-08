@@ -9,15 +9,16 @@ import {
 import {
   ScheduleBody,
   ScheduleUser,
+  atClock,
   createSchedulingHelpers,
   createSchedulingTestContext,
+  lagosAt,
 } from './support/scheduling-test-context';
 import { dataOf, errorOf } from './support/api-response';
 import { waitFor } from './support/social-blocks-test-helpers';
 import { SCHEDULED_PAYMENT_RUNS_QUEUE } from '../../src/modules/scheduling/internal/queues';
 import {
   addDays,
-  computeDueAt,
   lagosToday,
 } from '../../src/modules/scheduling/internal/run-time';
 import { ScheduledPaymentAttempt } from '../../src/modules/scheduling/entities/scheduled-payment-attempt.entity';
@@ -47,38 +48,8 @@ describe('Scheduled payment failures, retries and pausing', () => {
     jest.restoreAllMocks();
   });
 
-  const lagosAt = (date: string, time: string) => computeDueAt(date, time, 0);
   const hoursAfter = (from: Date, hours: number) =>
     new Date(from.getTime() + hours * HOUR_MS);
-
-  // Fakes only Date, so queries, timers and the worker keep running while
-  // the engine believes it is a given moment.
-  async function atClock<T>(now: Date, fn: () => Promise<T>): Promise<T> {
-    jest.useFakeTimers({
-      now,
-      doNotFake: [
-        'hrtime',
-        'nextTick',
-        'performance',
-        'queueMicrotask',
-        'requestAnimationFrame',
-        'cancelAnimationFrame',
-        'requestIdleCallback',
-        'cancelIdleCallback',
-        'setImmediate',
-        'clearImmediate',
-        'setInterval',
-        'clearInterval',
-        'setTimeout',
-        'clearTimeout',
-      ],
-    });
-    try {
-      return await fn();
-    } finally {
-      jest.useRealTimers();
-    }
-  }
 
   async function seedSchedule(
     options: { body?: Record<string, unknown>; balanceMinor?: bigint } = {},
