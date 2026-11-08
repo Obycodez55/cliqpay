@@ -101,3 +101,53 @@ export class ScheduleNothingToResumeException extends DomainException {
     );
   }
 }
+
+export class ScheduleNextRunDateInvalidException extends DomainException {
+  readonly code = 'SCHEDULE_NEXT_RUN_DATE_INVALID';
+  constructor(min: string, max: string) {
+    super(
+      `nextRunDate must be a real date between ${min} and ${max}`,
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+}
+
+export class SchedulePinRequiredException extends DomainException {
+  readonly code = 'SCHEDULE_PIN_REQUIRED';
+  constructor() {
+    super(
+      'Changing the amount, interval, next run date or end condition needs your PIN',
+      HttpStatus.BAD_REQUEST,
+    );
+  }
+}
+
+export class ScheduleNextRunDateRequiredException extends DomainException {
+  readonly code = 'SCHEDULE_NEXT_RUN_DATE_REQUIRED';
+  constructor() {
+    super(
+      'A paused scheduled payment has no next run date, so changing its interval needs a nextRunDate too',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
+export class ScheduleNoUpcomingRunException extends DomainException {
+  readonly code = 'SCHEDULE_NO_UPCOMING_RUN';
+  constructor() {
+    super(
+      'This scheduled payment has no upcoming run to move or re-time',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
+export class ScheduleEditLeavesNoRunException extends DomainException {
+  readonly code = 'SCHEDULE_EDIT_LEAVES_NO_RUN';
+  constructor() {
+    super(
+      'This change would leave no run to start. Cancel the scheduled payment instead.',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}

@@ -487,7 +487,7 @@ export class RunEngine {
     await manager.getRepository(ScheduledPayment).save(schedule);
   }
 
-  private async completeIfFinished(
+  async completeIfFinished(
     manager: EntityManager,
     schedule: ScheduledPayment,
   ): Promise<void> {

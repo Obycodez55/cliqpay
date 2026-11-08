@@ -204,6 +204,19 @@ export interface ScheduledPaymentCreatedEventPayload {
   startDate: string; // Lagos calendar date, YYYY-MM-DD
 }
 
+export const SCHEDULED_PAYMENT_UPDATED_EVENT = 'scheduled_payment_updated';
+
+export interface ScheduledPaymentUpdatedEventPayload {
+  userId: string;
+  email: string;
+  scheduledPaymentId: string;
+  changeId: string;
+  counterpartyUsername: string;
+  amount: string; // decimal display string (Money.toDecimalString()), as edited
+  currency: string;
+  changedFields: string[];
+}
+
 export const SCHEDULED_PAYMENT_RUN_FAILED_EVENT =
   'scheduled_payment_run_failed';
 

@@ -14,6 +14,7 @@ export const CHANGE_KINDS = [
   'created',
   'paused',
   'resumed',
+  'updated',
   'cancelled',
   'completed',
 ] as const;
@@ -45,6 +46,10 @@ export class ScheduledPaymentChange {
 
   @Column({ type: 'varchar', nullable: true })
   reason: string | null;
+
+  // Only on an `updated` change: each edited field's before and after.
+  @Column({ type: 'jsonb', nullable: true })
+  changes: Record<string, { from: unknown; to: unknown }> | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;

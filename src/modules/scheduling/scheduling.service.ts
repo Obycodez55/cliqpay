@@ -17,7 +17,9 @@ import { isUniqueViolation } from '../../database/postgres-errors.util';
 import { runInTransaction } from '../../database/transaction.util';
 import {
   SCHEDULED_PAYMENT_CREATED_EVENT,
+  SCHEDULED_PAYMENT_UPDATED_EVENT,
   ScheduledPaymentCreatedEventPayload,
+  ScheduledPaymentUpdatedEventPayload,
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
 import { AuthService } from '../auth/auth.service';
@@ -29,6 +31,7 @@ import { CreateScheduledPaymentDto } from './dto/create-scheduled-payment.dto';
 import { ListScheduledPaymentRunsQueryDto } from './dto/list-scheduled-payment-runs-query.dto';
 import { ListScheduledPaymentsQueryDto } from './dto/list-scheduled-payments-query.dto';
 import { ResumeScheduledPaymentDto } from './dto/resume-scheduled-payment.dto';
+import { UpdateScheduledPaymentDto } from './dto/update-scheduled-payment.dto';
 import { ScheduledPaymentRunResponseDto } from './dto/scheduled-payment-run-response.dto';
 import { ScheduledPaymentResponseDto } from './dto/scheduled-payment-response.dto';
 import { ScheduledPayment } from './entities/scheduled-payment.entity';
@@ -40,6 +43,7 @@ import {
   ScheduleAmountExceedsDailyLimitException,
   ScheduleLimitReachedException,
   ScheduleNothingToResumeException,
+  SchedulePinRequiredException,
   ScheduleRecurrenceInvalidException,
   ScheduleRecipientUnableToReceiveException,
   ScheduleReferenceReusedException,
@@ -55,6 +59,8 @@ import {
   lagosToday,
   startDateBounds,
 } from './internal/run-time';
+import { RunEngine } from './internal/run-engine.service';
+import { needsPin, pinGatedChanged, planEdit } from './internal/schedule-edit';
 
 const NGN = 'NGN';
 const UNIQUE_REFERENCE = 'UQ_scheduled_payments_user_id_reference';
@@ -79,6 +85,7 @@ export class SchedulingService {
     private readonly socialService: SocialService,
     private readonly authService: AuthService,
     private readonly eventBus: EventBusService,
+    private readonly runEngine: RunEngine,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
@@ -361,6 +368,77 @@ export class SchedulingService {
     return this.respond(schedule);
   }
 
+  async update(
+    userId: string,
+    scheduleId: string,
+    dto: UpdateScheduledPaymentDto,
+  ): Promise<ScheduledPaymentResponseDto> {
+    const { windowStart } = this.config.scheduledPayments;
+    const current = await this.dataSource
+      .getRepository(ScheduledPayment)
+      .findOneBy({ id: scheduleId, userId });
+    if (!current) {
+      throw new ScheduledPaymentNotFoundException();
+    }
+    assertEditable(current);
+    const pinNeeded = needsPin(dto);
+    if (pinNeeded && dto.pin === undefined) {
+      throw new SchedulePinRequiredException();
+    }
+
+    // Everything is validated before the PIN is checked, so an invalid edit
+    // doesn't cost an attempt at it.
+    const preview = planEdit(
+      current,
+      (await this.runsCreated([current.id])).get(current.id) ?? 0,
+      dto,
+      new Date(),
+      windowStart,
+    );
+    if (preview.changes.amount) {
+      await this.assertAmountAllowed(
+        userId,
+        current.recipientUserId,
+        dto.amount!,
+      );
+    }
+    if (pinNeeded) {
+      await this.authService.verifyTransactionPin(userId, dto.pin!);
+    }
+
+    const result = await runInTransaction(this.dataSource, async (manager) => {
+      const locked = await this.lockOwned(manager, userId, scheduleId);
+      assertEditable(locked);
+      const runsCreated =
+        (await this.runsCreated([locked.id], manager)).get(locked.id) ?? 0;
+      const plan = planEdit(locked, runsCreated, dto, new Date(), windowStart);
+      if (Object.keys(plan.changes).length === 0) {
+        return { schedule: locked, plan, changeId: null };
+      }
+      Object.assign(locked, plan.values);
+      const change = await manager.getRepository(ScheduledPaymentChange).save({
+        scheduledPaymentId: locked.id,
+        kind: 'updated',
+        actor: 'user',
+        changes: plan.changes,
+      });
+      if (locked.status === 'active' && locked.nextRunAt === null) {
+        await this.runEngine.completeIfFinished(manager, locked);
+      }
+      await manager.getRepository(ScheduledPayment).save(locked);
+      return { schedule: locked, plan, changeId: change.id };
+    });
+
+    if (result.changeId && pinGatedChanged(result.plan)) {
+      await this.publishUpdated(
+        result.schedule,
+        result.changeId,
+        Object.keys(result.plan.changes),
+      );
+    }
+    return this.respond(result.schedule);
+  }
+
   async listRuns(
     userId: string,
     scheduleId: string,
@@ -502,6 +580,23 @@ export class SchedulingService {
     return existing;
   }
 
+  private async assertAmountAllowed(
+    userId: string,
+    recipientUserId: string,
+    amount: number,
+  ): Promise<void> {
+    const prepared = await this.transfersService.prepareTransfer(
+      userId,
+      recipientUserId,
+      amount,
+    );
+    if (prepared.sender.isFrozen) {
+      throw new ScheduleSenderFrozenException();
+    }
+    await this.assertWithinDailyLimit(userId, prepared.amount);
+    await this.assertRecipientCanReceive(userId, prepared);
+  }
+
   private async assertWithinDailyLimit(
     userId: string,
     amount: Money,
@@ -609,6 +704,48 @@ export class SchedulingService {
         `create: scheduled payment "${schedule.id}" created, but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
       );
     }
+  }
+
+  private async publishUpdated(
+    schedule: ScheduledPayment,
+    changeId: string,
+    changedFields: string[],
+  ): Promise<void> {
+    try {
+      const [sender, recipient] = await Promise.all([
+        this.usersService.findById(schedule.userId),
+        this.usersService.findById(schedule.recipientUserId),
+      ]);
+      await this.eventBus.publish<string, ScheduledPaymentUpdatedEventPayload>({
+        name: SCHEDULED_PAYMENT_UPDATED_EVENT,
+        payload: {
+          userId: schedule.userId,
+          email: sender.email,
+          scheduledPaymentId: schedule.id,
+          changeId,
+          counterpartyUsername: recipient.username,
+          amount: Money.of(
+            schedule.amount,
+            schedule.currency,
+          ).toDecimalString(),
+          currency: schedule.currency,
+          changedFields,
+        },
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `update: scheduled payment "${schedule.id}" updated, but publishing the notification failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
+  }
+}
+
+function assertEditable(schedule: ScheduledPayment): void {
+  if (schedule.status === 'cancelled' || schedule.status === 'completed') {
+    throw new ScheduleStatusConflictException(
+      `A ${schedule.status} scheduled payment cannot be edited`,
+    );
   }
 }
 

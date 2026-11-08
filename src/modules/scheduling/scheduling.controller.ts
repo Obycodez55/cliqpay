@@ -3,6 +3,7 @@ import {
   Controller,
   Get,
   Param,
+  Patch,
   ParseUUIDPipe,
   Post,
   Query,
@@ -26,6 +27,7 @@ import { SchedulingService } from './scheduling.service';
 import { CreateScheduledPaymentDto } from './dto/create-scheduled-payment.dto';
 import { ListScheduledPaymentRunsQueryDto } from './dto/list-scheduled-payment-runs-query.dto';
 import { ResumeScheduledPaymentDto } from './dto/resume-scheduled-payment.dto';
+import { UpdateScheduledPaymentDto } from './dto/update-scheduled-payment.dto';
 import { ScheduledPaymentRunResponseDto } from './dto/scheduled-payment-run-response.dto';
 import { ListScheduledPaymentsQueryDto } from './dto/list-scheduled-payments-query.dto';
 import { ScheduledPaymentResponseDto } from './dto/scheduled-payment-response.dto';
@@ -78,6 +80,20 @@ export class SchedulingController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<ScheduledPaymentResponseDto> {
     return this.schedulingService.get(req.user.userId, id);
+  }
+
+  @Patch(':id')
+  @ApiOperation({
+    summary: 'Modify a scheduled payment',
+    description:
+      'Owner only. Edits apply from the next run: a run already created keeps its settings. Changing the amount, interval, next run date or end condition needs the PIN; the note and visibility do not. The payee cannot be changed.',
+  })
+  async update(
+    @Req() req: AuthenticatedRequest,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateScheduledPaymentDto,
+  ): Promise<ScheduledPaymentResponseDto> {
+    return this.schedulingService.update(req.user.userId, id, dto);
   }
 
   @Post(':id/cancel')

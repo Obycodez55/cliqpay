@@ -147,6 +147,19 @@ export interface ScheduledPaymentCreatedPayload {
   startDate: string;
 }
 
+export interface ScheduledPaymentUpdatedPayload {
+  userId: string;
+  email: string;
+  scheduledPaymentId: string;
+  // The edit's change row: a schedule can be edited many times, so the
+  // schedule's own id can't be the in-app channel's dedupe_key.
+  changeId: string;
+  counterpartyUsername: string;
+  amount: string;
+  currency: string;
+  changedFields: string[];
+}
+
 export interface ScheduledPaymentRunFailedPayload {
   userId: string;
   // The run's id: the in-app channel's dedupe_key.
@@ -304,6 +317,7 @@ export interface NotificationPayloadMap {
   money_request_paid: MoneyRequestPaidPayload;
   bill_split_completed: BillSplitCompletedPayload;
   scheduled_payment_created: ScheduledPaymentCreatedPayload;
+  scheduled_payment_updated: ScheduledPaymentUpdatedPayload;
   scheduled_payment_run_failed: ScheduledPaymentRunFailedPayload;
   scheduled_payment_paused: ScheduledPaymentPausedPayload;
   scheduled_payment_runs_missed: ScheduledPaymentRunsMissedPayload;
@@ -372,6 +386,7 @@ export const NOTIFICATION_CATALOG = {
   // Each payment already emailed the initiator, so completion skips email.
   bill_split_completed: { channels: ['push', 'in_app'] },
   scheduled_payment_created: { channels: ['email', 'in_app'] },
+  scheduled_payment_updated: { channels: ['email', 'in_app'] },
   scheduled_payment_run_failed: { channels: ['push', 'in_app'] },
   scheduled_payment_paused: { channels: ['push', 'email', 'in_app'] },
   scheduled_payment_runs_missed: { channels: ['push', 'in_app'] },

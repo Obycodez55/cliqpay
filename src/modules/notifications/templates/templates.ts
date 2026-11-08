@@ -17,6 +17,7 @@ import {
   PostCommentPayload,
   PostReactionPayload,
   ScheduledPaymentCreatedPayload,
+  ScheduledPaymentUpdatedPayload,
   ScheduledPaymentPausedPayload,
   ScheduledPaymentRunsMissedPayload,
   ScheduledPaymentUpcomingPayload,
@@ -46,6 +47,16 @@ const SCHEDULE_FAILURE_REASONS: Record<string, string> = {
 
 function scheduleReason(reason: string): string {
   return SCHEDULE_FAILURE_REASONS[reason] ?? 'it could not be completed';
+}
+
+const CHANGED_FIELD_LABELS: Record<string, string> = {
+  nextRunDate: 'next run date',
+  endDate: 'end date',
+  maxRuns: 'number of runs',
+};
+
+function changedLabels(fields: string[]): string {
+  return fields.map((field) => CHANGED_FIELD_LABELS[field] ?? field).join(', ');
 }
 
 const MISSED_DATES_SHOWN = 5;
@@ -177,6 +188,13 @@ export const emailTemplates: {
   scheduled_payment_created: (payload: ScheduledPaymentCreatedPayload) => ({
     subject: `You scheduled ${payload.currency} ${payload.amount} for ${payload.startDate}`,
     ...renderEmail('scheduled_payment_created', payload),
+  }),
+  scheduled_payment_updated: (payload: ScheduledPaymentUpdatedPayload) => ({
+    subject: `Your scheduled payment to ${payload.counterpartyUsername} was changed`,
+    ...renderEmail('scheduled_payment_updated', {
+      ...payload,
+      changedText: changedLabels(payload.changedFields),
+    }),
   }),
   scheduled_payment_paused: (payload: ScheduledPaymentPausedPayload) => ({
     subject: `Your scheduled payment to ${payload.counterpartyUsername} was paused`,
@@ -394,6 +412,18 @@ export const inAppTemplates: {
       startDate: payload.startDate,
     },
     dedupeKey: payload.scheduledPaymentId,
+  }),
+  scheduled_payment_updated: (payload: ScheduledPaymentUpdatedPayload) => ({
+    title: 'Scheduled payment changed',
+    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyUsername} was changed (${changedLabels(payload.changedFields)}).`,
+    data: {
+      scheduledPaymentId: payload.scheduledPaymentId,
+      amount: payload.amount,
+      currency: payload.currency,
+      counterpartyUsername: payload.counterpartyUsername,
+      changedFields: payload.changedFields,
+    },
+    dedupeKey: payload.changeId,
   }),
   scheduled_payment_run_failed: (
     payload: ScheduledPaymentRunFailedPayload,
