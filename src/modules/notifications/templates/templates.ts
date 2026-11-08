@@ -16,6 +16,12 @@ import {
   PhoneVerificationOtpPayload,
   PostCommentPayload,
   PostReactionPayload,
+  ScheduledPaymentCreatedPayload,
+  ScheduledPaymentUpdatedPayload,
+  ScheduledPaymentPausedPayload,
+  ScheduledPaymentRunsMissedPayload,
+  ScheduledPaymentUpcomingPayload,
+  ScheduledPaymentRunFailedPayload,
   ReconciliationMismatchPayload,
   RefundAttentionRequiredPayload,
   SecurityAlertPayload,
@@ -27,6 +33,62 @@ import {
 } from '../notification-catalog';
 import { StepUpAction } from '../../../shared/events/domain-events';
 import { renderEmail } from './render-email';
+
+const RECIPIENT_UNABLE_TO_RECEIVE =
+  "the recipient can't receive this payment right now";
+
+// A block, the recipient's balance cap and an unavailable recipient read the
+// same, as on a live send. Events published before the three were merged
+// still carry the old codes.
+const SCHEDULE_FAILURE_REASONS: Record<string, string> = {
+  insufficient_balance: 'your wallet balance was too low',
+  daily_limit_exceeded: 'it would have gone over your daily limit',
+  recipient_unable_to_receive: RECIPIENT_UNABLE_TO_RECEIVE,
+  recipient_cap: RECIPIENT_UNABLE_TO_RECEIVE,
+  blocked: RECIPIENT_UNABLE_TO_RECEIVE,
+  recipient_unavailable: RECIPIENT_UNABLE_TO_RECEIVE,
+  sender_frozen: 'your account is frozen',
+  sender_unverified: 'your account needs identity verification to send',
+  bank_account_removed: 'the bank account is no longer saved',
+  payout_rejected: 'the bank rejected the payment',
+  amount_below_minimum: 'the amount is below the current minimum',
+  infrastructure: 'of a problem on our side',
+  consecutive_failures: 'its last 3 payments failed',
+};
+
+function scheduleReason(reason: string): string {
+  return SCHEDULE_FAILURE_REASONS[reason] ?? 'it could not be completed';
+}
+
+const CHANGED_FIELD_LABELS: Record<string, string> = {
+  nextRunDate: 'next run date',
+  endDate: 'end date',
+  maxRuns: 'number of runs',
+};
+
+function changedLabels(fields: string[]): string {
+  return fields.map((field) => CHANGED_FIELD_LABELS[field] ?? field).join(', ');
+}
+
+const MISSED_DATES_SHOWN = 5;
+
+function missedDates(dates: string[]): string {
+  const shown = dates.slice(0, MISSED_DATES_SHOWN).join(', ');
+  const rest = dates.length - MISSED_DATES_SHOWN;
+  return rest > 0 ? `${shown} and ${rest} more` : shown;
+}
+
+function missedBody(payload: ScheduledPaymentRunsMissedPayload): string {
+  const count = payload.runDates.length;
+  return `We couldn't run your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyLabel} on ${missedDates(payload.runDates)} because of a problem on our side, so ${count === 1 ? 'it was' : 'they were'} skipped and not paid.`;
+}
+
+function upcomingBody(payload: ScheduledPaymentUpcomingPayload): string {
+  const fee = payload.fee
+    ? ` plus ${payload.currency} ${payload.fee} in fees`
+    : '';
+  return `Your ${payload.currency} ${payload.amount}${fee} payment to ${payload.counterpartyLabel} is scheduled for tomorrow (${payload.runDate}), but your wallet balance is ${payload.currency} ${payload.balance}. Add funds so it goes through.`;
+}
 
 export interface EmailContent {
   subject: string;
@@ -137,6 +199,24 @@ export const emailTemplates: {
     subject: `Your withdrawal of ${payload.currency} ${payload.amount} is on its way`,
     ...renderEmail('withdrawal_initiated', payload),
   }),
+  scheduled_payment_created: (payload: ScheduledPaymentCreatedPayload) => ({
+    subject: `You scheduled ${payload.currency} ${payload.amount} for ${payload.startDate}`,
+    ...renderEmail('scheduled_payment_created', payload),
+  }),
+  scheduled_payment_updated: (payload: ScheduledPaymentUpdatedPayload) => ({
+    subject: `Your scheduled payment to ${payload.counterpartyLabel} was changed`,
+    ...renderEmail('scheduled_payment_updated', {
+      ...payload,
+      changedText: changedLabels(payload.changedFields),
+    }),
+  }),
+  scheduled_payment_paused: (payload: ScheduledPaymentPausedPayload) => ({
+    subject: `Your scheduled payment to ${payload.counterpartyLabel} was paused`,
+    ...renderEmail('scheduled_payment_paused', {
+      ...payload,
+      reasonText: scheduleReason(payload.reason),
+    }),
+  }),
   withdrawal_completed: (payload: WithdrawalCompletedPayload) => ({
     subject: `Your withdrawal of ${payload.currency} ${payload.amount} is complete`,
     ...renderEmail('withdrawal_completed', payload),
@@ -206,6 +286,30 @@ export const pushTemplates: {
     title: 'Split complete',
     body: `Everyone has paid their share of "${payload.description}".`,
     data: { billSplitId: payload.billSplitId },
+  }),
+  scheduled_payment_run_failed: (
+    payload: ScheduledPaymentRunFailedPayload,
+  ) => ({
+    title: 'Scheduled payment failed',
+    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyLabel} on ${payload.runDate} failed because ${scheduleReason(payload.reason)}.`,
+    data: { scheduledPaymentId: payload.scheduledPaymentId },
+  }),
+  scheduled_payment_runs_missed: (
+    payload: ScheduledPaymentRunsMissedPayload,
+  ) => ({
+    title: 'Scheduled payments skipped',
+    body: missedBody(payload),
+    data: { scheduledPaymentId: payload.scheduledPaymentId },
+  }),
+  scheduled_payment_upcoming: (payload: ScheduledPaymentUpcomingPayload) => ({
+    title: 'Low balance for tomorrow’s payment',
+    body: upcomingBody(payload),
+    data: { scheduledPaymentId: payload.scheduledPaymentId },
+  }),
+  scheduled_payment_paused: (payload: ScheduledPaymentPausedPayload) => ({
+    title: 'Scheduled payment paused',
+    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyLabel} was paused because ${scheduleReason(payload.reason)}.`,
+    data: { scheduledPaymentId: payload.scheduledPaymentId },
   }),
   new_follower: (payload: NewFollowerPayload) => ({
     title: 'New follower',
@@ -310,6 +414,86 @@ export const inAppTemplates: {
       currency: payload.currency,
     },
     dedupeKey: payload.billSplitId,
+  }),
+  scheduled_payment_created: (payload: ScheduledPaymentCreatedPayload) => ({
+    title: 'Payment scheduled',
+    body: `${payload.currency} ${payload.amount} will be sent to ${payload.counterpartyLabel} on ${payload.startDate}.`,
+    data: {
+      scheduledPaymentId: payload.scheduledPaymentId,
+      amount: payload.amount,
+      currency: payload.currency,
+      counterpartyLabel: payload.counterpartyLabel,
+      startDate: payload.startDate,
+    },
+    dedupeKey: payload.scheduledPaymentId,
+  }),
+  scheduled_payment_updated: (payload: ScheduledPaymentUpdatedPayload) => ({
+    title: 'Scheduled payment changed',
+    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyLabel} was changed (${changedLabels(payload.changedFields)}).`,
+    data: {
+      scheduledPaymentId: payload.scheduledPaymentId,
+      amount: payload.amount,
+      currency: payload.currency,
+      counterpartyLabel: payload.counterpartyLabel,
+      changedFields: payload.changedFields,
+    },
+    dedupeKey: payload.changeId,
+  }),
+  scheduled_payment_run_failed: (
+    payload: ScheduledPaymentRunFailedPayload,
+  ) => ({
+    title: 'Scheduled payment failed',
+    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyLabel} on ${payload.runDate} failed because ${scheduleReason(payload.reason)}.`,
+    data: {
+      scheduledPaymentId: payload.scheduledPaymentId,
+      runId: payload.runId,
+      reason: payload.reason,
+      amount: payload.amount,
+      currency: payload.currency,
+      counterpartyLabel: payload.counterpartyLabel,
+      runDate: payload.runDate,
+    },
+    dedupeKey: payload.runId,
+  }),
+  scheduled_payment_runs_missed: (
+    payload: ScheduledPaymentRunsMissedPayload,
+  ) => ({
+    title: 'Scheduled payments skipped',
+    body: missedBody(payload),
+    data: {
+      scheduledPaymentId: payload.scheduledPaymentId,
+      runId: payload.runId,
+      runDates: payload.runDates,
+      amount: payload.amount,
+      currency: payload.currency,
+      counterpartyLabel: payload.counterpartyLabel,
+    },
+    dedupeKey: payload.runId,
+  }),
+  scheduled_payment_upcoming: (payload: ScheduledPaymentUpcomingPayload) => ({
+    title: 'Low balance for tomorrow’s payment',
+    body: upcomingBody(payload),
+    data: {
+      scheduledPaymentId: payload.scheduledPaymentId,
+      runDate: payload.runDate,
+      amount: payload.amount,
+      balance: payload.balance,
+      currency: payload.currency,
+      counterpartyLabel: payload.counterpartyLabel,
+    },
+    dedupeKey: `${payload.scheduledPaymentId}:${payload.runDate}`,
+  }),
+  scheduled_payment_paused: (payload: ScheduledPaymentPausedPayload) => ({
+    title: 'Scheduled payment paused',
+    body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyLabel} was paused because ${scheduleReason(payload.reason)}. Resume it in the app when you're ready.`,
+    data: {
+      scheduledPaymentId: payload.scheduledPaymentId,
+      reason: payload.reason,
+      amount: payload.amount,
+      currency: payload.currency,
+      counterpartyLabel: payload.counterpartyLabel,
+    },
+    dedupeKey: payload.changeId,
   }),
   new_follower: (payload: NewFollowerPayload) => ({
     title: 'New follower',

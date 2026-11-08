@@ -16,8 +16,13 @@ export class TransactionHistoryItemDto {
   })
   transactionId: string | null;
 
-  @ApiProperty()
-  reference: string;
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description:
+      'The transaction reference. Null on the recipient side of a P2P transfer whose reference is reserved for system use.',
+  })
+  reference: string | null;
 
   @ApiProperty({
     enum: [

@@ -101,6 +101,35 @@ const envSchema = z
     // Participants exclude the initiator.
     BILL_SPLIT_MAX_PARTICIPANTS: z.coerce.number().int().positive().default(20),
 
+    SCHEDULED_PAYMENT_SWEEP_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(60_000),
+    SCHEDULED_PAYMENT_WORKER_CONCURRENCY: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(5),
+    SCHEDULED_PAYMENT_WINDOW_START: z
+      .string()
+      .regex(
+        /^([01]\d|2[0-3]):[0-5]\d$/,
+        'SCHEDULED_PAYMENT_WINDOW_START must be HH:MM, 24-hour',
+      )
+      .default('06:00'),
+    SCHEDULED_PAYMENT_WINDOW_MINUTES: z.coerce
+      .number()
+      .int()
+      .positive()
+      .max(600)
+      .default(240),
+    SCHEDULED_PAYMENT_MAX_ACTIVE: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(20),
+
     WITHDRAWAL_MIN_AMOUNT: z.coerce
       .number()
       .int()
@@ -275,6 +304,13 @@ function buildConfig(env: Env) {
     },
     billSplits: {
       maxParticipants: env.BILL_SPLIT_MAX_PARTICIPANTS,
+    },
+    scheduledPayments: {
+      sweepIntervalMs: env.SCHEDULED_PAYMENT_SWEEP_INTERVAL_MS,
+      workerConcurrency: env.SCHEDULED_PAYMENT_WORKER_CONCURRENCY,
+      windowStart: env.SCHEDULED_PAYMENT_WINDOW_START,
+      windowMinutes: env.SCHEDULED_PAYMENT_WINDOW_MINUTES,
+      maxActive: env.SCHEDULED_PAYMENT_MAX_ACTIVE,
     },
     withdrawals: {
       minAmount: env.WITHDRAWAL_MIN_AMOUNT,

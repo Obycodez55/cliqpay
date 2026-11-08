@@ -228,6 +228,7 @@ export interface PostTransferParams {
   amount: Money;
   platformFee: Money;
   note?: string | null;
+  extraMetadata?: Record<string, unknown>;
 }
 
 export interface PostTransferResult {
@@ -256,6 +257,7 @@ export interface PostWithdrawalParams {
   platformFee: Money;
   providerFee: Money;
   bankAccount: WithdrawalBankAccountSnapshot;
+  extraMetadata?: Record<string, unknown>;
 }
 
 export interface PostWithdrawalResult {
@@ -460,6 +462,33 @@ export class LedgerService {
       : { outcome: 'diverged' };
   }
 
+  async findTransactionIdForUser(
+    reference: string,
+    userId: string,
+  ): Promise<string | null> {
+    const transaction = await this.dataSource
+      .getRepository(Transaction)
+      .findOneBy({ reference });
+    return transaction &&
+      (await this.transactionBelongsToUser(transaction, userId))
+      ? transaction.id
+      : null;
+  }
+
+  async findTransactionRefForUser(
+    reference: string,
+    userId: string,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<{ id: string; status: string } | null> {
+    const transaction = await manager
+      .getRepository(Transaction)
+      .findOneBy({ reference });
+    return transaction &&
+      (await this.transactionBelongsToUser(transaction, userId, manager))
+      ? { id: transaction.id, status: transaction.status }
+      : null;
+  }
+
   // `transactions` has no user_id column (ADR-0010 rejected adding one) —
   // participants live only in the denormalized sender/recipient wallet
   // columns, so ownership resolves by checking whether either wallet on the
@@ -467,6 +496,7 @@ export class LedgerService {
   private async transactionBelongsToUser(
     transaction: Transaction,
     userId: string,
+    manager: EntityManager = this.dataSource.manager,
   ): Promise<boolean> {
     const walletIds = [
       transaction.senderWalletId,
@@ -475,7 +505,7 @@ export class LedgerService {
     if (walletIds.length === 0) {
       return false;
     }
-    const count = await this.dataSource
+    const count = await manager
       .getRepository(Account)
       .count({ where: { id: In(walletIds), userId } });
     return count > 0;
@@ -604,6 +634,26 @@ export class LedgerService {
       .getRepository(Account)
       .findOneByOrFail({ userId, role: 'user_wallet' });
     return Money.of(wallet.balance, wallet.currency);
+  }
+
+  // A user without a wallet is absent from the map.
+  async getWalletBalances(
+    userIds: string[],
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<Map<string, Money>> {
+    if (userIds.length === 0) {
+      return new Map();
+    }
+    const wallets = await manager.getRepository(Account).findBy({
+      userId: In(userIds),
+      role: 'user_wallet',
+    });
+    return new Map(
+      wallets.map((wallet) => [
+        wallet.userId!,
+        Money.of(wallet.balance, wallet.currency),
+      ]),
+    );
   }
 
   // What a still-pending funding would credit and to whom, so a caller can
@@ -1754,6 +1804,7 @@ export class LedgerService {
         senderWalletId: params.senderWalletId,
         recipientWalletId: params.recipientWalletId,
         metadata: {
+          ...params.extraMetadata,
           platformFee: params.platformFee.toJSON(),
           ...(params.note ? { note: params.note } : {}),
         },
@@ -1942,6 +1993,7 @@ export class LedgerService {
         senderWalletId: wallet.id,
         recipientWalletId: null,
         metadata: {
+          ...params.extraMetadata,
           bankAccount: params.bankAccount,
           netAmount: params.amount.toJSON(),
           platformFee: params.platformFee.toJSON(),

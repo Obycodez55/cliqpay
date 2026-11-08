@@ -130,6 +130,42 @@ export interface ExecuteTransferParams {
   details: TransferPostDetails;
 }
 
+export interface ExecuteScheduledTransferParams {
+  recipientUserId: string;
+  amount: number; // minor units
+  reference: string;
+  details: TransferPostDetails;
+  scheduleId: string;
+  runNumber: number;
+}
+
+export interface ExecuteScheduledTransferOutcome {
+  transactionId: string;
+  reference: string;
+  replayed: boolean;
+}
+
+export type ScheduledRejectionCode =
+  | 'insufficient_balance'
+  | 'daily_limit_exceeded'
+  | 'recipient_cap'
+  | 'blocked'
+  | 'recipient_unavailable'
+  | 'sender_frozen'
+  | 'sender_unverified'
+  | 'amount_below_minimum';
+
+// A business refusal of a scheduled run, as opposed to an infrastructure
+// fault: every other error escapes executeScheduledTransfer untouched.
+export class ScheduledTransferRejectedError extends Error {
+  constructor(
+    readonly failureCode: ScheduledRejectionCode,
+    cause: unknown,
+  ) {
+    super(`Scheduled transfer rejected: ${failureCode}`, { cause });
+  }
+}
+
 export interface FinalizeTransferOutcome {
   result: PostTransferResult;
   // True when a duplicate request racing this one committed first and its
@@ -319,11 +355,32 @@ export class TransfersService {
     details: TransferPostDetails,
     manager?: EntityManager,
   ): Promise<FinalizeTransferOutcome> {
+    this.assertSenderNotFrozen(prepared);
+    await this.authService.verifyTransactionPin(senderId, pin);
+    return this.postPreparedTransfer(
+      senderId,
+      prepared,
+      reference,
+      details,
+      undefined,
+      manager,
+    );
+  }
+
+  private assertSenderNotFrozen(prepared: PreparedTransfer): void {
     if (prepared.sender.isFrozen) {
       throw new SenderAccountFrozenException();
     }
-    await this.authService.verifyTransactionPin(senderId, pin);
+  }
 
+  private async postPreparedTransfer(
+    senderId: string,
+    prepared: PreparedTransfer,
+    reference: string,
+    details: TransferPostDetails,
+    extraMetadata?: Record<string, unknown>,
+    manager?: EntityManager,
+  ): Promise<FinalizeTransferOutcome> {
     const fee = Money.of(this.config.transfers.platformFee, NGN);
     const postParams = {
       reference,
@@ -332,6 +389,7 @@ export class TransfersService {
       amount: prepared.amount,
       platformFee: fee,
       note: details.note,
+      extraMetadata,
     };
 
     const post = async (tx: EntityManager) => {
@@ -466,6 +524,70 @@ export class TransfersService {
       manager,
     );
     return { result, replayed, sender: prepared.sender };
+  }
+
+  /**
+   * STANDING-AUTHORISATION SEAM — scheduled execution only. Skips the PIN
+   * because the schedule's creator verified it once, as a mandate for every
+   * run; everything else executeTransfer checks still runs. Never call this
+   * from a controller or from anything reachable by a client request.
+   */
+  async executeScheduledTransfer(
+    senderId: string,
+    params: ExecuteScheduledTransferParams,
+  ): Promise<ExecuteScheduledTransferOutcome> {
+    const { scheduleId, runNumber } = params;
+    try {
+      const prepared = await this.prepareTransfer(
+        senderId,
+        params.recipientUserId,
+        params.amount,
+      );
+      const replay = await this.checkTransferReplay(
+        senderId,
+        prepared,
+        params.reference,
+        params.details,
+      );
+      if (replay) {
+        return {
+          transactionId: replay.transactionId,
+          reference: replay.reference,
+          replayed: true,
+        };
+      }
+
+      this.assertSenderNotFrozen(prepared);
+      const { result, replayed } = await this.postPreparedTransfer(
+        senderId,
+        prepared,
+        params.reference,
+        params.details,
+        { scheduleId, runNumber },
+      );
+      if (!replayed) {
+        await this.publishTransferEvents(
+          result,
+          prepared.sender,
+          params.recipientUserId,
+          params.details.note ?? undefined,
+        );
+      }
+      return {
+        transactionId: result.transactionId,
+        reference: result.reference,
+        replayed,
+      };
+    } catch (error) {
+      throw toScheduledRejection(error) ?? error;
+    }
+  }
+
+  async findTransferIdByReference(
+    senderId: string,
+    reference: string,
+  ): Promise<string | null> {
+    return this.ledgerService.findTransactionIdForUser(reference, senderId);
   }
 
   // Writes one group_share request per share inside the caller's
@@ -801,4 +923,34 @@ function resolveReplayAsPostResult(
     case 'none':
       return null;
   }
+}
+
+const REJECTION_BY_ERROR_CODE: Record<string, ScheduledRejectionCode> = {
+  INSUFFICIENT_FUNDS: 'insufficient_balance',
+  DAILY_LIMIT_EXCEEDED: 'daily_limit_exceeded',
+  KYC_VERIFICATION_REQUIRED: 'sender_unverified',
+  TRANSFER_AMOUNT_TOO_SMALL: 'amount_below_minimum',
+  SENDER_ACCOUNT_FROZEN: 'sender_frozen',
+  RECIPIENT_WALLET_NOT_FOUND: 'recipient_unavailable',
+};
+
+function toScheduledRejection(
+  error: unknown,
+): ScheduledTransferRejectedError | null {
+  if (error instanceof RecipientUnableToReceiveException) {
+    return new ScheduledTransferRejectedError('blocked', error);
+  }
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code !== 'string') {
+    return null;
+  }
+  // The recipient's balance cap shares a code with a block (one answer to the
+  // client), but comes from kyc rather than from this module's own exception.
+  const failureCode =
+    code === 'RECIPIENT_UNABLE_TO_RECEIVE'
+      ? 'recipient_cap'
+      : REJECTION_BY_ERROR_CODE[code];
+  return failureCode
+    ? new ScheduledTransferRejectedError(failureCode, error)
+    : null;
 }

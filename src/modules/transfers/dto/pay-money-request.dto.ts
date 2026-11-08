@@ -1,12 +1,14 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsIn, IsOptional, Matches, MaxLength } from 'class-validator';
 import { POST_VISIBILITIES, PostVisibility } from '../../social/social.service';
+import { IsNotReservedReference } from '../../../common/validation/reference';
 
 // No amount, no recipient — both come from the request row, never the
 // client (ADR-0012: exact-amount-only). Same idempotency/PIN contract as
 // SendTransferDto (ADR-0010, ADR-0009) — paying a request is still a
 // distinct client-initiated money movement and needs its own reference.
 export class PayMoneyRequestDto {
+  @IsNotReservedReference()
   @MaxLength(100)
   @Matches(/^[a-zA-Z0-9_-]+$/, {
     message: 'reference must contain only letters, numbers, - or _',

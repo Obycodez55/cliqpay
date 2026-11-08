@@ -192,6 +192,84 @@ export interface BillSplitCompletedEventPayload {
   currency: string;
 }
 
+export const SCHEDULED_PAYMENT_CREATED_EVENT = 'scheduled_payment_created';
+
+export interface ScheduledPaymentCreatedEventPayload {
+  userId: string;
+  email: string;
+  scheduledPaymentId: string;
+  counterpartyLabel: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  startDate: string; // Lagos calendar date, YYYY-MM-DD
+}
+
+export const SCHEDULED_PAYMENT_UPDATED_EVENT = 'scheduled_payment_updated';
+
+export interface ScheduledPaymentUpdatedEventPayload {
+  userId: string;
+  email: string;
+  scheduledPaymentId: string;
+  changeId: string;
+  counterpartyLabel: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  changedFields: string[];
+}
+
+export const SCHEDULED_PAYMENT_RUN_FAILED_EVENT =
+  'scheduled_payment_run_failed';
+
+export interface ScheduledPaymentRunFailedEventPayload {
+  userId: string;
+  scheduledPaymentId: string;
+  runId: string;
+  counterpartyLabel: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  runDate: string; // Lagos calendar date, YYYY-MM-DD
+  reason: string; // the last attempt's failure code
+}
+
+export const SCHEDULED_PAYMENT_RUNS_MISSED_EVENT =
+  'scheduled_payment_runs_missed';
+
+export interface ScheduledPaymentRunsMissedEventPayload {
+  userId: string;
+  scheduledPaymentId: string;
+  runId: string; // the first missed run in the batch
+  counterpartyLabel: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  runDates: string[]; // Lagos calendar dates, YYYY-MM-DD
+}
+
+export const SCHEDULED_PAYMENT_UPCOMING_EVENT = 'scheduled_payment_upcoming';
+
+export interface ScheduledPaymentUpcomingEventPayload {
+  userId: string;
+  scheduledPaymentId: string;
+  counterpartyLabel: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  balance: string; // decimal display string (Money.toDecimalString())
+  fee?: string; // a bank run's fees on top of amount (Money.toDecimalString())
+  currency: string;
+  runDate: string; // Lagos calendar date, YYYY-MM-DD
+}
+
+export const SCHEDULED_PAYMENT_PAUSED_EVENT = 'scheduled_payment_paused';
+
+export interface ScheduledPaymentPausedEventPayload {
+  userId: string;
+  email: string;
+  scheduledPaymentId: string;
+  changeId: string;
+  counterpartyLabel: string;
+  amount: string; // decimal display string (Money.toDecimalString())
+  currency: string;
+  reason: string; // a failure code, or 'consecutive_failures'
+}
+
 export const WITHDRAWAL_INITIATED_EVENT = 'withdrawal_initiated';
 
 export interface WithdrawalInitiatedEventPayload {

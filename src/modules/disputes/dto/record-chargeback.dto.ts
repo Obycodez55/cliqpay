@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsInt, IsPositive, Matches, MaxLength } from 'class-validator';
+import { IsNotReservedReference } from '../../../common/validation/reference';
 
 export class RecordChargebackDto {
   @MaxLength(100)
@@ -20,6 +21,7 @@ export class RecordChargebackDto {
   // The dedupe key (§5, ADR-0016) — a repeat submission with the same value
   // is rejected, not re-posted. Also becomes the chargeback transaction's
   // own `reference` (LedgerService.postChargeback).
+  @IsNotReservedReference()
   @MaxLength(100)
   @Matches(/^[a-zA-Z0-9_-]+$/, {
     message: 'disputeReference must contain only letters, numbers, - or _',

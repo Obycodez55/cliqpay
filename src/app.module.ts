@@ -23,6 +23,7 @@ import { DisputesModule } from './modules/disputes/disputes.module';
 import { KycModule } from './modules/kyc/kyc.module';
 import { SocialModule } from './modules/social/social.module';
 import { BillSplitModule } from './modules/billsplit/billsplit.module';
+import { SchedulingModule } from './modules/scheduling/scheduling.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { BillSplitModule } from './modules/billsplit/billsplit.module';
     KycModule,
     SocialModule,
     BillSplitModule,
+    SchedulingModule,
     TerminusModule,
   ],
   controllers: [AppController],

@@ -6,7 +6,7 @@ import {
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { AuthService } from '../auth/auth.service';
 import { PaymentsService } from '../payments/payments.service';
@@ -76,6 +76,78 @@ function maskAccountNumber(accountNumber: string): string {
   return (
     '*'.repeat(Math.max(accountNumber.length - 4, 0)) + accountNumber.slice(-4)
   );
+}
+
+export interface ExecuteScheduledWithdrawalParams {
+  bankAccountId: string;
+  amount: number; // minor units
+  reference: string;
+  scheduleId: string;
+  runNumber: number;
+}
+
+export interface ExecuteScheduledWithdrawalOutcome {
+  transactionId: string;
+  // `unknown` means the provider's answer is not known yet; either way the
+  // payout settles later through withdrawal_completed / withdrawal_failed.
+  outcome: 'accepted' | 'unknown';
+  replayed: boolean;
+}
+
+export type ScheduledWithdrawalRejectionCode =
+  | 'insufficient_balance'
+  | 'daily_limit_exceeded'
+  | 'sender_frozen'
+  | 'bank_account_removed'
+  | 'payout_rejected'
+  | 'sender_unverified'
+  | 'amount_below_minimum';
+
+// A business refusal of a scheduled run, as opposed to an infrastructure
+// fault: every other error escapes executeScheduledWithdrawal untouched.
+export class ScheduledWithdrawalRejectedError extends Error {
+  constructor(
+    readonly failureCode: ScheduledWithdrawalRejectionCode,
+    cause: unknown,
+  ) {
+    super(`Scheduled withdrawal rejected: ${failureCode}`, { cause });
+  }
+}
+
+const SCHEDULED_REJECTION_BY_ERROR_CODE: Record<
+  string,
+  ScheduledWithdrawalRejectionCode
+> = {
+  INSUFFICIENT_FUNDS: 'insufficient_balance',
+  DAILY_LIMIT_EXCEEDED: 'daily_limit_exceeded',
+  KYC_VERIFICATION_REQUIRED: 'sender_unverified',
+  WITHDRAWAL_AMOUNT_TOO_SMALL: 'amount_below_minimum',
+  INITIATOR_ACCOUNT_FROZEN: 'sender_frozen',
+  BANK_ACCOUNT_NOT_FOUND: 'bank_account_removed',
+  WITHDRAWAL_PAYOUT_FAILED: 'payout_rejected',
+};
+
+function toScheduledRejection(
+  error: unknown,
+): ScheduledWithdrawalRejectedError | null {
+  const code = (error as { code?: unknown } | null)?.code;
+  const failureCode =
+    typeof code === 'string' ? SCHEDULED_REJECTION_BY_ERROR_CODE[code] : null;
+  return failureCode
+    ? new ScheduledWithdrawalRejectedError(failureCode, error)
+    : null;
+}
+
+interface WithdrawalRun {
+  response: InitiateWithdrawalResponseDto;
+  transactionId: string;
+  outcome: 'accepted' | 'unknown';
+  replayed: boolean;
+}
+
+interface WithdrawalReplay {
+  response: InitiateWithdrawalResponseDto;
+  transactionId: string;
 }
 
 /**
@@ -224,6 +296,82 @@ export class WithdrawalsService {
     userId: string,
     dto: InitiateWithdrawalDto,
   ): Promise<InitiateWithdrawalResponseDto> {
+    const run = await this.processWithdrawal(userId, dto, dto.pin);
+    return run.response;
+  }
+
+  /**
+   * STANDING-AUTHORISATION SEAM — scheduled execution only. Skips the PIN
+   * because the schedule's creator verified it once, as a mandate for every
+   * run; everything else initiateWithdrawal checks still runs. Never call
+   * this from a controller or from anything reachable by a client request.
+   * A replay of a still-pending withdrawal succeeds; a replay of a reversed
+   * one throws, like the live path.
+   */
+  async executeScheduledWithdrawal(
+    userId: string,
+    params: ExecuteScheduledWithdrawalParams,
+  ): Promise<ExecuteScheduledWithdrawalOutcome> {
+    try {
+      const run = await this.processWithdrawal(userId, params, null, {
+        scheduleId: params.scheduleId,
+        runNumber: params.runNumber,
+      });
+      return {
+        transactionId: run.transactionId,
+        outcome: run.outcome,
+        replayed: run.replayed,
+      };
+    } catch (error) {
+      throw toScheduledRejection(error) ?? error;
+    }
+  }
+
+  async findScheduledWithdrawal(
+    userId: string,
+    reference: string,
+    manager?: EntityManager,
+  ): Promise<{
+    transactionId: string;
+    status: 'pending' | 'completed' | 'reversed';
+  } | null> {
+    const found = await this.ledgerService.findTransactionRefForUser(
+      reference,
+      userId,
+      manager,
+    );
+    if (!found) {
+      return null;
+    }
+    return {
+      transactionId: found.id,
+      status:
+        found.status === 'completed' || found.status === 'reversed'
+          ? found.status
+          : 'pending',
+    };
+  }
+
+  async getBankAccountLabel(
+    userId: string,
+    bankAccountId: string,
+  ): Promise<string | null> {
+    const bankAccount = await this.bankAccountRepo.findOneBy({
+      id: bankAccountId,
+      userId,
+    });
+    return bankAccount
+      ? `${bankAccount.bankName} ••${this.decryptAccountNumber(bankAccount).slice(-4)}`
+      : null;
+  }
+
+  // `pin` is null only for the scheduled seam.
+  private async processWithdrawal(
+    userId: string,
+    dto: { bankAccountId: string; amount: number; reference: string },
+    pin: string | null,
+    extraMetadata?: Record<string, unknown>,
+  ): Promise<WithdrawalRun> {
     const { minAmount, platformFee, providerFee } = this.config.withdrawals;
     if (dto.amount < minAmount) {
       throw new WithdrawalAmountTooSmallException(
@@ -266,12 +414,9 @@ export class WithdrawalsService {
       userId,
       fingerprint,
     );
-    const replayResponse = this.resolveWithdrawalReplay(
-      replay,
-      dto.bankAccountId,
-    );
-    if (replayResponse) {
-      return replayResponse;
+    const replayed = this.resolveWithdrawalReplay(replay, dto.bankAccountId);
+    if (replayed) {
+      return { ...replayed, outcome: 'accepted', replayed: true };
     }
 
     // PIN checked only after a replay match would have short-circuited
@@ -281,7 +426,9 @@ export class WithdrawalsService {
     if (user.isFrozen) {
       throw new InitiatorAccountFrozenException();
     }
-    await this.authService.verifyTransactionPin(userId, dto.pin);
+    if (pin !== null) {
+      await this.authService.verifyTransactionPin(userId, pin);
+    }
 
     const accountNumber = this.decryptAccountNumber(bankAccount);
 
@@ -308,6 +455,7 @@ export class WithdrawalsService {
             accountNumber: maskAccountNumber(accountNumber),
             accountName: bankAccount.accountName,
           },
+          extraMetadata,
         });
       });
     } catch (error) {
@@ -317,12 +465,12 @@ export class WithdrawalsService {
         userId,
         fingerprint,
       );
-      const racedResponse = this.resolveWithdrawalReplay(
+      const racedReplay = this.resolveWithdrawalReplay(
         raced,
         dto.bankAccountId,
       );
-      if (racedResponse) {
-        return racedResponse;
+      if (racedReplay) {
+        return { ...racedReplay, outcome: 'accepted', replayed: true };
       }
       throw error;
     }
@@ -364,12 +512,17 @@ export class WithdrawalsService {
     );
 
     return {
-      reference: posted.reference,
-      amount: posted.amount.toJSON(),
-      platformFee: posted.platformFee.toJSON(),
-      providerFee: posted.providerFee.toJSON(),
-      status: 'pending',
-      createdAt: posted.createdAt.toISOString(),
+      response: {
+        reference: posted.reference,
+        amount: posted.amount.toJSON(),
+        platformFee: posted.platformFee.toJSON(),
+        providerFee: posted.providerFee.toJSON(),
+        status: 'pending',
+        createdAt: posted.createdAt.toISOString(),
+      },
+      transactionId: posted.transactionId,
+      outcome: payoutResult.status === 'unknown' ? 'unknown' : 'accepted',
+      replayed: false,
     };
   }
 
@@ -385,7 +538,7 @@ export class WithdrawalsService {
   private resolveWithdrawalReplay(
     replay: IdempotentReplay,
     bankAccountId: string,
-  ): InitiateWithdrawalResponseDto | null {
+  ): WithdrawalReplay | null {
     switch (replay.outcome) {
       case 'match': {
         const metadata = replay.transaction
@@ -401,15 +554,18 @@ export class WithdrawalsService {
           );
         }
         return {
-          reference: replay.transaction.reference,
-          amount: Money.of(
-            replay.transaction.amount,
-            replay.transaction.currency,
-          ).toJSON(),
-          platformFee: metadata.platformFee,
-          providerFee: metadata.providerFee,
-          status: 'pending',
-          createdAt: replay.transaction.createdAt.toISOString(),
+          transactionId: replay.transaction.id,
+          response: {
+            reference: replay.transaction.reference,
+            amount: Money.of(
+              replay.transaction.amount,
+              replay.transaction.currency,
+            ).toJSON(),
+            platformFee: metadata.platformFee,
+            providerFee: metadata.providerFee,
+            status: 'pending',
+            createdAt: replay.transaction.createdAt.toISOString(),
+          },
         };
       }
       case 'foreign':

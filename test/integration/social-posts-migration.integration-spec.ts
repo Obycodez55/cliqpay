@@ -256,6 +256,7 @@ describe('GeneralisePostsToParticipants migration', () => {
 
     it('refuses to drop the published_at migration while bill split posts exist', async () => {
       await dataSource.runMigrations();
+      await undoNamed('AddPostPublishedAt');
       await dataSource.query(
         `INSERT INTO posts (id, kind, author_user_id, visibility, requested_visibility, is_public)
          VALUES ($1, 'bill_split', $2, 'private', 'private', false)`,

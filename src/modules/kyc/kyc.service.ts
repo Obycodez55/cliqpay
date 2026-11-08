@@ -576,6 +576,20 @@ export class KycService {
     await this.checkDailyLimitLocked(manager, userId, amount, readDebitedSince);
   }
 
+  // A tier with no daily limit (unverified) can't send at all, so it is
+  // refused here rather than reported as a zero limit.
+  async requireDailyLimit(
+    manager: EntityManager,
+    userId: string,
+    currency: string,
+  ): Promise<Money> {
+    const tierLimit = await this.tierLimitFor(manager, userId, currency);
+    if (tierLimit.dailyDebitLimitMinor === 0n) {
+      throw new KycVerificationRequiredException();
+    }
+    return Money.of(tierLimit.dailyDebitLimitMinor, currency);
+  }
+
   async checkBalanceCap(
     manager: EntityManager,
     userId: string,

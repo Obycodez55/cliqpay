@@ -136,6 +136,78 @@ export interface BillSplitCompletedPayload {
   currency: string;
 }
 
+export interface ScheduledPaymentCreatedPayload {
+  userId: string;
+  email: string;
+  // The schedule's id: the in-app channel's dedupe_key.
+  scheduledPaymentId: string;
+  counterpartyLabel: string;
+  amount: string;
+  currency: string;
+  startDate: string;
+}
+
+export interface ScheduledPaymentUpdatedPayload {
+  userId: string;
+  email: string;
+  scheduledPaymentId: string;
+  // The edit's change row: a schedule can be edited many times, so the
+  // schedule's own id can't be the in-app channel's dedupe_key.
+  changeId: string;
+  counterpartyLabel: string;
+  amount: string;
+  currency: string;
+  changedFields: string[];
+}
+
+export interface ScheduledPaymentRunFailedPayload {
+  userId: string;
+  // The run's id: the in-app channel's dedupe_key.
+  runId: string;
+  scheduledPaymentId: string;
+  counterpartyLabel: string;
+  amount: string;
+  currency: string;
+  runDate: string;
+  reason: string;
+}
+
+export interface ScheduledPaymentRunsMissedPayload {
+  userId: string;
+  // The batch's first missed run: the in-app channel's dedupe_key.
+  runId: string;
+  scheduledPaymentId: string;
+  counterpartyLabel: string;
+  amount: string;
+  currency: string;
+  runDates: string[];
+}
+
+export interface ScheduledPaymentUpcomingPayload {
+  userId: string;
+  scheduledPaymentId: string;
+  counterpartyLabel: string;
+  amount: string;
+  balance: string;
+  // A bank run's fees, debited on top of the amount.
+  fee?: string;
+  currency: string;
+  runDate: string;
+}
+
+export interface ScheduledPaymentPausedPayload {
+  userId: string;
+  email: string;
+  scheduledPaymentId: string;
+  // The pause's change row: a schedule can be paused more than once, so the
+  // schedule's own id can't be the in-app channel's dedupe_key.
+  changeId: string;
+  counterpartyLabel: string;
+  amount: string;
+  currency: string;
+  reason: string;
+}
+
 export interface WithdrawalInitiatedPayload {
   userId: string;
   email: string;
@@ -246,6 +318,12 @@ export interface NotificationPayloadMap {
   money_request_declined: MoneyRequestDeclinedPayload;
   money_request_paid: MoneyRequestPaidPayload;
   bill_split_completed: BillSplitCompletedPayload;
+  scheduled_payment_created: ScheduledPaymentCreatedPayload;
+  scheduled_payment_updated: ScheduledPaymentUpdatedPayload;
+  scheduled_payment_run_failed: ScheduledPaymentRunFailedPayload;
+  scheduled_payment_paused: ScheduledPaymentPausedPayload;
+  scheduled_payment_runs_missed: ScheduledPaymentRunsMissedPayload;
+  scheduled_payment_upcoming: ScheduledPaymentUpcomingPayload;
   withdrawal_initiated: WithdrawalInitiatedPayload;
   withdrawal_completed: WithdrawalCompletedPayload;
   withdrawal_failed: WithdrawalFailedPayload;
@@ -309,6 +387,12 @@ export const NOTIFICATION_CATALOG = {
   money_request_paid: { channels: ['email', 'push', 'in_app'] },
   // Each payment already emailed the initiator, so completion skips email.
   bill_split_completed: { channels: ['push', 'in_app'] },
+  scheduled_payment_created: { channels: ['email', 'in_app'] },
+  scheduled_payment_updated: { channels: ['email', 'in_app'] },
+  scheduled_payment_run_failed: { channels: ['push', 'in_app'] },
+  scheduled_payment_paused: { channels: ['push', 'email', 'in_app'] },
+  scheduled_payment_runs_missed: { channels: ['push', 'in_app'] },
+  scheduled_payment_upcoming: { channels: ['push', 'in_app'] },
   // Email only for this issue (#28) — push/in_app follow the same pattern
   // as transfer_sent if a later issue asks for them; not scaffolded ahead
   // of that need.

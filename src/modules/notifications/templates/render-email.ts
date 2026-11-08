@@ -27,6 +27,9 @@ const bodies = {
   money_request_created: compile('money-request-created.hbs'),
   money_request_declined: compile('money-request-declined.hbs'),
   money_request_paid: compile('money-request-paid.hbs'),
+  scheduled_payment_created: compile('scheduled-payment-created.hbs'),
+  scheduled_payment_updated: compile('scheduled-payment-updated.hbs'),
+  scheduled_payment_paused: compile('scheduled-payment-paused.hbs'),
   withdrawal_initiated: compile('withdrawal-initiated.hbs'),
   withdrawal_completed: compile('withdrawal-completed.hbs'),
   withdrawal_failed: compile('withdrawal-failed.hbs'),
@@ -51,11 +54,17 @@ const HTML_ENTITIES: Record<string, string> = {
 };
 
 function htmlToText(html: string): string {
-  return html
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&[a-z]+;|&#\d+;/gi, (entity) => HTML_ENTITIES[entity] ?? entity)
-    .replace(/\s+/g, ' ')
-    .trim();
+  return (
+    html
+      .replace(/<[^>]+>/g, ' ')
+      // Handlebars escapes ' ` = in interpolated values as hex entities.
+      .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) =>
+        String.fromCodePoint(parseInt(hex, 16)),
+      )
+      .replace(/&[a-z]+;|&#\d+;/gi, (entity) => HTML_ENTITIES[entity] ?? entity)
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
 }
 
 export function renderEmail<T extends keyof typeof bodies>(

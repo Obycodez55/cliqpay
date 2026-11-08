@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsInt, IsPositive, IsUUID, Matches, MaxLength } from 'class-validator';
+import { IsNotReservedReference } from '../../../common/validation/reference';
 
 export class InitiateWithdrawalDto {
   @IsUUID()
@@ -18,6 +19,7 @@ export class InitiateWithdrawalDto {
   // ADR-0010) — a repeat with the same value and parameters returns the
   // original result; reused across users returns 409; reused with different
   // parameters returns 422.
+  @IsNotReservedReference()
   @MaxLength(100)
   @Matches(/^[a-zA-Z0-9_-]+$/, {
     message: 'reference must contain only letters, numbers, - or _',
