@@ -1,121 +1,40 @@
-import { GenericContainer, StartedTestContainer } from 'testcontainers';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
-import { Test } from '@nestjs/testing';
-import { TypeOrmModule, getRepositoryToken } from '@nestjs/typeorm';
-import { JwtService } from '@nestjs/jwt';
-import { App } from 'supertest/types';
 import * as request from 'supertest';
-import { Repository } from 'typeorm';
-import { APP_CONFIG, AppConfig } from '../../src/config';
-import { buildDataSourceOptions } from '../../src/database/data-source.options';
-import {
-  buildTestAppConfig,
-  buildTestConfigModule,
-  buildTestJwtModule,
-  buildTestPipelineModules,
-} from './support/test-app-config';
-import { EventBusModule } from '../../src/shared/events/event-bus.module';
-import { EventBusService } from '../../src/shared/events/event-bus.service';
-import { NotificationsModule } from '../../src/modules/notifications/notifications.module';
-import { NotificationService } from '../../src/modules/notifications/notification.service';
-import { Notification } from '../../src/modules/notifications/entities/notification.entity';
 import { NotificationItemDto } from '../../src/modules/notifications/dto/notification-item.dto';
 import { UnreadCountResponseDto } from '../../src/modules/notifications/dto/unread-count-response.dto';
 import { PaginatedResult } from '../../src/common/interfaces/paginated-result.interface';
-import { closeBullmqWorkers } from './support/bullmq-teardown';
-import {
-  TestDatabase,
-  createTestDatabase,
-  dropTestDatabase,
-} from './support/test-database';
 import { dataOf } from './support/api-response';
+import {
+  NotificationsTestContext,
+  createNotificationsTestContext,
+  destroyNotificationsTestContext,
+  waitFor,
+} from './support/notifications-test-context';
 
 jest.setTimeout(120_000);
 
 const USER_A = 'aaaaaaaa-1111-4111-8111-111111111111';
 const USER_B = 'bbbbbbbb-2222-4222-8222-222222222222';
 
-async function waitFor(
-  predicate: () => Promise<boolean>,
-  timeoutMs = 10_000,
-): Promise<void> {
-  const start = Date.now();
-  while (!(await predicate())) {
-    if (Date.now() - start > timeoutMs) {
-      throw new Error('Timed out waiting for condition');
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-}
-
 // The HTTP surface added by issue #20 (docs/adr/0013): list/unread-count/
 // mark-read against a real Postgres and a real Redis, through the actual
 // JwtAuthGuard and the actual BullMQ dispatch path (publish -> per-channel
 // job -> in-app write), not a service called directly.
 describe('Notifications API — list/unread-count/mark-read', () => {
-  let database: TestDatabase;
-  let redis: StartedTestContainer;
-  let app: INestApplication<App>;
-  let eventBus: EventBusService;
-  let notificationService: NotificationService;
-  let notificationRepo: Repository<Notification>;
-  let jwtService: JwtService;
+  let ctx: NotificationsTestContext;
+  let app: NotificationsTestContext['app'];
+  let eventBus: NotificationsTestContext['eventBus'];
+  let notificationService: NotificationsTestContext['notificationService'];
+  let notificationRepo: NotificationsTestContext['notificationRepo'];
+  let tokenFor: NotificationsTestContext['tokenFor'];
 
   beforeAll(async () => {
-    database = await createTestDatabase();
-    redis = await new GenericContainer('redis:7-alpine')
-      .withExposedPorts(6379)
-      .start();
-
-    const config: AppConfig = buildTestAppConfig({
-      database: { url: database.url },
-      redis: {
-        url: `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`,
-      },
-    });
-
-    const moduleRef = await Test.createTestingModule({
-      imports: [
-        buildTestConfigModule(config),
-        buildTestJwtModule(),
-        ...buildTestPipelineModules(),
-        TypeOrmModule.forRootAsync({
-          inject: [APP_CONFIG],
-          useFactory: (cfg: AppConfig) => buildDataSourceOptions(cfg),
-        }),
-        EventBusModule,
-        NotificationsModule,
-      ],
-    }).compile();
-
-    app = moduleRef.createNestApplication<INestApplication<App>>();
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        forbidNonWhitelisted: true,
-        transform: true,
-      }),
-    );
-    await app.init();
-
-    eventBus = moduleRef.get(EventBusService);
-    notificationService = moduleRef.get(NotificationService);
-    notificationRepo = moduleRef.get(getRepositoryToken(Notification));
-    jwtService = moduleRef.get(JwtService);
+    ctx = await createNotificationsTestContext();
+    ({ app, eventBus, notificationService, notificationRepo, tokenFor } = ctx);
   });
 
   afterAll(async () => {
-    if (app) {
-      await closeBullmqWorkers(app);
-    }
-    await app?.close();
-    await dropTestDatabase(database);
-    await redis?.stop();
+    await destroyNotificationsTestContext(ctx ?? {});
   });
-
-  function tokenFor(userId: string): string {
-    return jwtService.sign({ sub: userId, sid: 'session-1' });
-  }
 
   it('persists a funding_completed event and returns it via GET /notifications', async () => {
     await eventBus.publish({
