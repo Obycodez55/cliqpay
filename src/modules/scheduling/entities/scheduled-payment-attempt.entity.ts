@@ -3,6 +3,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -30,6 +31,8 @@ export const FAILURE_CODES = [
   'sender_frozen',
   'bank_account_removed',
   'payout_rejected',
+  'amount_below_minimum',
+  'sender_unverified',
   'infrastructure',
 ] as const;
 export type FailureCode = (typeof FAILURE_CODES)[number];
@@ -53,6 +56,12 @@ export type FailureCode = (typeof FAILURE_CODES)[number];
 @Check(
   'CHK_scheduled_payment_attempts_failure_code',
   `"failure_code" IS NULL OR ${inList('failure_code', FAILURE_CODES)}`,
+)
+@Index('IDX_scheduled_payment_attempts_run_id', ['runId'])
+@Index(
+  'UQ_scheduled_payment_attempts_run_id_attempt_number',
+  ['runId', 'attemptNumber'],
+  { unique: true, where: `"kind" = 'attempt'` },
 )
 export class ScheduledPaymentAttempt {
   @PrimaryGeneratedColumn('uuid')

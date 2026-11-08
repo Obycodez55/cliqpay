@@ -447,6 +447,49 @@ describe('Scheduled payments to bank accounts: running and settling', () => {
       ).toHaveLength(0);
     });
 
+    it('cancels a later pending run, even one waiting to retry, when a reversal pauses the schedule', async () => {
+      const { sender, schedule } = await seedSchedule({ body: daily });
+      for (const runNumber of [1, 2]) {
+        const earlier = await insertRun(schedule.id, runNumber, {
+          keepNextRun: true,
+        });
+        await execute(earlier);
+        await h.settlePayout(
+          refOf(schedule.id, runNumber, 1),
+          'failed',
+          AMOUNT,
+        );
+        await waitForStatus(earlier.id, 'reversed');
+      }
+      const third = await insertRun(schedule.id, 3, { keepNextRun: true });
+      await execute(third);
+      const later = await insertRun(schedule.id, 4, { keepNextRun: true });
+      await h
+        .runRepo()
+        .update(
+          { id: later.id },
+          { attemptCount: 1, nextAttemptAt: new Date(Date.now() - 1_000) },
+        );
+
+      await h.settlePayout(refOf(schedule.id, 3, 1), 'failed', AMOUNT);
+      await waitForStatus(third.id, 'reversed');
+
+      expect((await scheduleOf(schedule.id)).status).toBe('paused');
+      expect(await reload(later.id)).toMatchObject({
+        status: 'cancelled',
+        nextAttemptAt: null,
+      });
+      const balance = await balanceOf(sender);
+      await execute(later);
+      expect((await reload(later.id)).status).toBe('cancelled');
+      expect(
+        await ctx.transactionRepo.countBy({
+          reference: refOf(schedule.id, 4, 2),
+        }),
+      ).toBe(0);
+      expect(await balanceOf(sender)).toBe(balance);
+    });
+
     it('does not let a succeeded run in between hide the streak', async () => {
       const { schedule } = await seedSchedule({ body: daily });
       const outcomes = ['failed', 'failed', 'success', 'failed'] as const;
@@ -850,6 +893,98 @@ describe('Scheduled payments to bank accounts: running and settling', () => {
       );
       expect(note.body).toContain('GTBank ••4821');
       expect(note.body).not.toContain('0123454821');
+    });
+  });
+
+  describe('a settling run whose event never arrives', () => {
+    // The payout resolves in the ledger without the event reaching
+    // scheduling, and the run is then old enough for the sweep to check.
+    async function strandRun(ledgerStatus?: 'completed' | 'reversed') {
+      const seeded = await seedSchedule({ body: daily });
+      const run = await insertRun(seeded.schedule.id, 1, {
+        keepNextRun: true,
+      });
+      await execute(run);
+      expect((await reload(run.id)).status).toBe('settling');
+      if (ledgerStatus) {
+        await ctx.dataSource.query(
+          `UPDATE transactions SET status = $1 WHERE reference = $2`,
+          [ledgerStatus, refOf(seeded.schedule.id, 1, 1)],
+        );
+      }
+      const age = () =>
+        ctx.dataSource.query(
+          `UPDATE scheduled_payment_runs SET updated_at = now() - interval '2 hours' WHERE id = $1`,
+          [run.id],
+        );
+      return { ...seeded, run, age };
+    }
+
+    it('is settled by the sweep once the withdrawal completed', async () => {
+      const { schedule, run, age } = await strandRun('completed');
+
+      await h.engine().sweep();
+      expect((await reload(run.id)).status).toBe('settling');
+
+      await age();
+      await h.engine().sweep();
+
+      expect((await reload(run.id)).status).toBe('succeeded');
+      expect(
+        (await attemptsOf(run.id)).map((a) => [a.kind, a.outcome]),
+      ).toEqual([
+        ['attempt', 'settling'],
+        ['settled', 'succeeded'],
+      ]);
+      expect((await scheduleOf(schedule.id)).consecutiveFailures).toBe(0);
+    });
+
+    it('is reversed by the sweep once the withdrawal was reversed, and counts toward the pause', async () => {
+      const { schedule, run, age } = await strandRun('reversed');
+
+      await age();
+      await h.engine().sweep();
+
+      expect((await reload(run.id)).status).toBe('reversed');
+      expect(
+        (await attemptsOf(run.id)).map((a) => [a.kind, a.outcome]),
+      ).toEqual([
+        ['attempt', 'settling'],
+        ['reversed', 'failed'],
+      ]);
+      expect((await scheduleOf(schedule.id)).consecutiveFailures).toBe(1);
+    });
+
+    it('leaves an old run alone while its payout is still pending', async () => {
+      const { run, age } = await strandRun();
+
+      await age();
+      await h.engine().sweep();
+
+      expect((await reload(run.id)).status).toBe('settling');
+    });
+  });
+
+  describe('a minimum raised above the amount', () => {
+    it('is amount_below_minimum and pauses the schedule', async () => {
+      const { sender, schedule } = await seedSchedule({ body: daily });
+      const run = await insertRun(schedule.id, 1, { keepNextRun: true });
+      ctx.config.withdrawals.minAmount = 200_000;
+      try {
+        await execute(run);
+      } finally {
+        ctx.config.withdrawals.minAmount = 10_000;
+      }
+
+      expect((await attemptsOf(run.id))[0].failureCode).toBe(
+        'amount_below_minimum',
+      );
+      expect((await reload(run.id)).status).toBe('failed');
+      expect(await scheduleOf(schedule.id)).toMatchObject({
+        status: 'paused',
+        pausedReason: 'amount_below_minimum',
+      });
+      expect(await balanceOf(sender)).toBe(5_000_000n);
     });
   });
 

@@ -34,6 +34,7 @@ import { ScheduledPaymentAttempt } from '../entities/scheduled-payment-attempt.e
 import { ScheduledPaymentChange } from '../entities/scheduled-payment-change.entity';
 import type { FailureCode } from '../entities/scheduled-payment-attempt.entity';
 import { RunJobData, SCHEDULED_PAYMENT_RUNS_QUEUE, runJobId } from './queues';
+import { toClientFailureReason } from './failure-reasons';
 import { targetLabel } from './target-label';
 
 // A pending first attempt this old with no result is assumed to have lost its
@@ -42,11 +43,13 @@ const STALE_RUN_AFTER_MINUTES = 5;
 const MAX_ATTEMPTS = 4;
 const RETRY_STEP_MS = 2 * 60 * 60 * 1000;
 const CONSECUTIVE_FAILURE_LIMIT = 3;
+const SETTLING_STALE_AFTER_MINUTES = 60;
 const PERMANENT_FAILURES: readonly FailureCode[] = [
   'blocked',
   'recipient_unavailable',
   'sender_frozen',
   'bank_account_removed',
+  'amount_below_minimum',
 ];
 
 const SCHED_REFERENCE = /^sched_([0-9a-f-]{36})_(\d+)_(\d+)$/;
@@ -115,6 +118,7 @@ export class RunEngine {
         batch.runDates,
       );
     }
+    await this.settleStuckRuns();
     const due = await this.findDuePendingRuns();
     const toEnqueue = [...claim.toEnqueue, ...due];
     if (toEnqueue.length === 0) {
@@ -255,6 +259,45 @@ export class RunEngine {
     return rows;
   }
 
+  // A bank run is settled by the withdrawal events; if both were lost it
+  // would stay `settling` for good, so old ones are checked against the
+  // withdrawal itself. A payout still pending is left alone.
+  private async settleStuckRuns(): Promise<void> {
+    const stuck = await this.dataSource
+      .getRepository(ScheduledPaymentRun)
+      .createQueryBuilder('run')
+      .innerJoin('run.scheduledPayment', 'schedule')
+      .select('schedule.userId', 'userId')
+      .addSelect(
+        `'sched_' || run.scheduledPaymentId || '_' || run.runNumber || '_' || run.attemptCount`,
+        'reference',
+      )
+      .where(`run.status = 'settling'`)
+      .andWhere(`run.updatedAt < now() - make_interval(mins => :minutes)`, {
+        minutes: SETTLING_STALE_AFTER_MINUTES,
+      })
+      .getRawMany<{ userId: string; reference: string }>();
+    for (const { userId, reference } of stuck) {
+      try {
+        const withdrawal =
+          await this.withdrawalsService.findScheduledWithdrawal(
+            userId,
+            reference,
+          );
+        if (withdrawal && withdrawal.status !== 'pending') {
+          await this.recordSettlement(
+            withdrawal.status === 'completed' ? 'completed' : 'failed',
+            reference,
+          );
+        }
+      } catch (error) {
+        this.logger.error(
+          `settling run ${reference}: repair failed (${(error as Error).message}); the next sweep will retry`,
+        );
+      }
+    }
+  }
+
   // Posts the run's payment under the current attempt's reference and records
   // the result. The attempt number is only advanced when a result is
   // recorded, so a crash after posting retries under the same reference and
@@ -280,6 +323,17 @@ export class RunEngine {
     const schedule = await this.dataSource
       .getRepository(ScheduledPayment)
       .findOneByOrFail({ id: run.scheduledPaymentId });
+    // A paused or cancelled schedule pays nothing more, whatever job is
+    // still waiting.
+    if (schedule.status !== 'active') {
+      await this.dataSource
+        .getRepository(ScheduledPaymentRun)
+        .update(
+          { id: run.id, status: 'pending' },
+          { status: 'cancelled', nextAttemptAt: null },
+        );
+      return;
+    }
 
     const attemptNumber = run.attemptCount + 1;
     const reference = `sched_${schedule.id}_${run.runNumber}_${attemptNumber}`;
@@ -562,17 +616,6 @@ export class RunEngine {
       .setLock('pessimistic_write')
       .getOneOrFail();
 
-    await manager.getRepository(ScheduledPaymentAttempt).save({
-      runId: run.id,
-      kind: 'attempt',
-      attemptNumber: attempt.attemptNumber,
-      reference: attempt.reference,
-      outcome: result.outcome,
-      failureCode: result.failureCode,
-      transactionId: result.transactionId,
-      startedAt: attempt.startedAt,
-    });
-
     const nextAttemptAt =
       result.outcome === 'failed'
         ? await this.nextAttemptTime(manager, run, attempt)
@@ -588,7 +631,8 @@ export class RunEngine {
 
     // A cancel or pause that landed while the attempt was executing leaves
     // the run `cancelled`; money that did move is still recorded, as
-    // succeeded or settling.
+    // succeeded or settling. Matching on the attempt count lets only one of
+    // two workers that executed the same attempt record it.
     const runRepo = manager.getRepository(ScheduledPaymentRun);
     const updated = await runRepo
       .createQueryBuilder()
@@ -600,6 +644,9 @@ export class RunEngine {
         nextAttemptAt,
       })
       .where('id = :id', { id: run.id })
+      .andWhere('attempt_count = :previous', {
+        previous: attempt.attemptNumber - 1,
+      })
       .andWhere(
         result.outcome === 'failed'
           ? `status = 'pending'`
@@ -609,6 +656,17 @@ export class RunEngine {
     if (!updated.affected) {
       return outcome;
     }
+
+    await manager.getRepository(ScheduledPaymentAttempt).save({
+      runId: run.id,
+      kind: 'attempt',
+      attemptNumber: attempt.attemptNumber,
+      reference: attempt.reference,
+      outcome: result.outcome,
+      failureCode: result.failureCode,
+      transactionId: result.transactionId,
+      startedAt: attempt.startedAt,
+    });
 
     // The settlement event may have been handled before this ran, finding
     // the run still pending and ignoring it; no second event will come, so
@@ -675,6 +733,12 @@ export class RunEngine {
         schedule.status = 'paused';
         schedule.pausedReason = pauseReason;
         schedule.nextRunAt = null;
+        await manager
+          .getRepository(ScheduledPaymentRun)
+          .update(
+            { scheduledPaymentId: schedule.id, status: 'pending' },
+            { status: 'cancelled', nextAttemptAt: null },
+          );
         const change = await manager
           .getRepository(ScheduledPaymentChange)
           .save({
@@ -818,13 +882,14 @@ export class RunEngine {
           .setLock('pessimistic_write')
           .setOnLocked('skip_locked')
           .getMany();
-        const balances = await this.ledgerService.getWalletBalances([
-          ...new Set(candidates.map((schedule) => schedule.userId)),
-        ]);
+        const balances = await this.ledgerService.getWalletBalances(
+          [...new Set(candidates.map((schedule) => schedule.userId))],
+          manager,
+        );
         const low: { schedule: ScheduledPayment; balance: Money }[] = [];
         for (const schedule of candidates) {
           const balance = balances.get(schedule.userId);
-          if (balance && balance.amount < this.requiredBalance(schedule)) {
+          if (balance && balance.lessThan(this.requiredBalance(schedule))) {
             schedule.lastRemindedRunDate = runDate;
             await repo.save(schedule);
             low.push({ schedule, balance });
@@ -869,17 +934,22 @@ export class RunEngine {
     }
   }
 
-  // A bank run debits its fees from the wallet on top of the amount.
+  // What a run debits on top of the amount; null when it debits nothing.
   private feesOf(schedule: ScheduledPayment): Money | null {
-    if (schedule.targetType !== 'bank_account') {
-      return null;
-    }
-    const { platformFee, providerFee } = this.config.withdrawals;
-    return Money.of(platformFee + providerFee, schedule.currency);
+    const { currency } = schedule;
+    const fees =
+      schedule.targetType === 'bank_account'
+        ? Money.of(this.config.withdrawals.platformFee, currency).add(
+            Money.of(this.config.withdrawals.providerFee, currency),
+          )
+        : Money.of(this.config.transfers.platformFee, currency);
+    return fees.isZero() ? null : fees;
   }
 
-  private requiredBalance(schedule: ScheduledPayment): bigint {
-    return schedule.amount + (this.feesOf(schedule)?.amount ?? 0n);
+  private requiredBalance(schedule: ScheduledPayment): Money {
+    const amount = Money.of(schedule.amount, schedule.currency);
+    const fees = this.feesOf(schedule);
+    return fees ? amount.add(fees) : amount;
   }
 
   private async publishRunsMissed(
@@ -954,7 +1024,7 @@ export class RunEngine {
             amount,
             currency: schedule.currency,
             runDate: lagosToday(run.dueAt),
-            reason: outcome.runFailedReason,
+            reason: toClientFailureReason(outcome.runFailedReason),
           },
           occurredAt: new Date(),
         });
@@ -971,7 +1041,7 @@ export class RunEngine {
               counterpartyLabel,
               amount,
               currency: schedule.currency,
-              reason: outcome.pause.reason,
+              reason: toClientFailureReason(outcome.pause.reason),
             },
             occurredAt: new Date(),
           },

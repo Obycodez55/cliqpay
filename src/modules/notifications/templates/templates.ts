@@ -34,15 +34,24 @@ import {
 import { StepUpAction } from '../../../shared/events/domain-events';
 import { renderEmail } from './render-email';
 
+const RECIPIENT_UNABLE_TO_RECEIVE =
+  "the recipient can't receive this payment right now";
+
+// A block, the recipient's balance cap and an unavailable recipient read the
+// same, as on a live send. Events published before the three were merged
+// still carry the old codes.
 const SCHEDULE_FAILURE_REASONS: Record<string, string> = {
   insufficient_balance: 'your wallet balance was too low',
   daily_limit_exceeded: 'it would have gone over your daily limit',
-  recipient_cap: "the recipient can't receive this amount right now",
-  blocked: "you or the recipient can't send or receive from the other",
-  recipient_unavailable: "the recipient can't receive money right now",
+  recipient_unable_to_receive: RECIPIENT_UNABLE_TO_RECEIVE,
+  recipient_cap: RECIPIENT_UNABLE_TO_RECEIVE,
+  blocked: RECIPIENT_UNABLE_TO_RECEIVE,
+  recipient_unavailable: RECIPIENT_UNABLE_TO_RECEIVE,
   sender_frozen: 'your account is frozen',
+  sender_unverified: 'your account needs identity verification to send',
   bank_account_removed: 'the bank account is no longer saved',
   payout_rejected: 'the bank rejected the payment',
+  amount_below_minimum: 'the amount is below the current minimum',
   infrastructure: 'of a problem on our side',
   consecutive_failures: 'its last 3 payments failed',
 };

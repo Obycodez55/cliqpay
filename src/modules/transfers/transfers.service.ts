@@ -151,7 +151,9 @@ export type ScheduledRejectionCode =
   | 'recipient_cap'
   | 'blocked'
   | 'recipient_unavailable'
-  | 'sender_frozen';
+  | 'sender_frozen'
+  | 'sender_unverified'
+  | 'amount_below_minimum';
 
 // A business refusal of a scheduled run, as opposed to an infrastructure
 // fault: every other error escapes executeScheduledTransfer untouched.
@@ -926,7 +928,8 @@ function resolveReplayAsPostResult(
 const REJECTION_BY_ERROR_CODE: Record<string, ScheduledRejectionCode> = {
   INSUFFICIENT_FUNDS: 'insufficient_balance',
   DAILY_LIMIT_EXCEEDED: 'daily_limit_exceeded',
-  KYC_VERIFICATION_REQUIRED: 'daily_limit_exceeded',
+  KYC_VERIFICATION_REQUIRED: 'sender_unverified',
+  TRANSFER_AMOUNT_TOO_SMALL: 'amount_below_minimum',
   SENDER_ACCOUNT_FROZEN: 'sender_frozen',
   RECIPIENT_WALLET_NOT_FOUND: 'recipient_unavailable',
 };

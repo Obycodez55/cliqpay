@@ -638,11 +638,14 @@ export class LedgerService {
 
   // Several users' stored balances in one read; a user without a wallet is
   // simply absent from the map.
-  async getWalletBalances(userIds: string[]): Promise<Map<string, Money>> {
+  async getWalletBalances(
+    userIds: string[],
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<Map<string, Money>> {
     if (userIds.length === 0) {
       return new Map();
     }
-    const wallets = await this.dataSource.getRepository(Account).findBy({
+    const wallets = await manager.getRepository(Account).findBy({
       userId: In(userIds),
       role: 'user_wallet',
     });

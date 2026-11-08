@@ -425,7 +425,7 @@ describe('Scheduled payment failures, retries and pausing', () => {
       ]);
       expect(await view(sender, schedule.id)).toMatchObject({
         status: 'paused',
-        pausedReason: 'blocked',
+        pausedReason: 'recipient_unable_to_receive',
         consecutiveFailures: 1,
         nextRunDate: null,
       });
@@ -445,7 +445,9 @@ describe('Scheduled payment failures, retries and pausing', () => {
         sender,
         'scheduled_payment_paused',
       );
-      expect(paused.data).toMatchObject({ reason: 'blocked' });
+      expect(paused.data).toMatchObject({
+        reason: 'recipient_unable_to_receive',
+      });
     });
 
     it('never sweeps a paused schedule', async () => {
@@ -623,6 +625,163 @@ describe('Scheduled payment failures, retries and pausing', () => {
           consecutiveFailures: 0,
         });
       });
+    });
+  });
+
+  describe('a schedule that stops while a run is waiting', () => {
+    it('is cancelled along with its other pending runs by a system pause, and pays nothing', async () => {
+      const { sender, recipient, schedule } = await seedSchedule({
+        body: daily,
+      });
+      const first = await claimRun(schedule.id);
+      const second = await claimRun(schedule.id);
+      await blockSender(sender, recipient);
+
+      await execute(first.id);
+
+      expect(await reload(first.id)).toMatchObject({ status: 'failed' });
+      expect(await reload(second.id)).toMatchObject({
+        status: 'cancelled',
+        nextAttemptAt: null,
+      });
+      await execute(second.id);
+      expect(await reload(second.id).then((r) => r.status)).toBe('cancelled');
+      expect(await attemptsOf(second.id)).toHaveLength(0);
+      expect(
+        await ctx.transactionRepo.countBy({
+          reference: `sched_${schedule.id}_${second.runNumber}_1`,
+        }),
+      ).toBe(0);
+    });
+
+    it.each(['paused', 'cancelled'] as const)(
+      'is not paid when the schedule is %s, and the run ends cancelled',
+      async (status) => {
+        const { sender, schedule } = await seedSchedule({ body: daily });
+        const run = await claimRun(schedule.id);
+        await h
+          .scheduleRepo()
+          .update({ id: schedule.id }, { status, nextRunAt: null });
+
+        await execute(run.id);
+
+        expect(await reload(run.id)).toMatchObject({
+          status: 'cancelled',
+          nextAttemptAt: null,
+          attemptCount: 0,
+        });
+        expect(await attemptsOf(run.id)).toHaveLength(0);
+        expect(
+          await ctx.transactionRepo.countBy({
+            reference: `sched_${schedule.id}_${run.runNumber}_1`,
+          }),
+        ).toBe(0);
+        expect(
+          (await ctx.accountRepo.findOneByOrFail({ id: sender.walletId }))
+            .balance,
+        ).toBe(5_000_000n);
+      },
+    );
+
+    it('records an attempt once when two workers execute it together', async () => {
+      const { schedule } = await seedSchedule({
+        body: daily,
+        balanceMinor: 50_000n,
+      });
+      const run = await claimRun(schedule.id);
+
+      await atClock(lagosAt(lagosToday(run.dueAt), '23:30'), () =>
+        Promise.all([execute(run.id), execute(run.id)]),
+      );
+
+      expect(await attemptsOf(run.id)).toHaveLength(1);
+      expect(await reload(run.id)).toMatchObject({
+        status: 'failed',
+        attemptCount: 1,
+      });
+      expect(
+        (await h.scheduleRepo().findOneByOrFail({ id: schedule.id }))
+          .consecutiveFailures,
+      ).toBe(1);
+    });
+  });
+
+  describe('failures that are not about the recipient', () => {
+    const setMinimum = (key: 'transfers' | 'withdrawals', value: number) => {
+      (ctx.config[key] as { minAmount: number }).minAmount = value;
+    };
+
+    it('amount_below_minimum: a minimum raised above the amount is permanent and pauses', async () => {
+      const { sender, schedule } = await seedSchedule({ body: daily });
+      const run = await claimRun(schedule.id);
+      setMinimum('transfers', 200_000);
+      try {
+        await execute(run.id);
+      } finally {
+        setMinimum('transfers', 10_000);
+      }
+
+      expect((await attemptsOf(run.id))[0].failureCode).toBe(
+        'amount_below_minimum',
+      );
+      expect(await reload(run.id)).toMatchObject({
+        status: 'failed',
+        attemptCount: 1,
+      });
+      expect(await view(sender, schedule.id)).toMatchObject({
+        status: 'paused',
+        pausedReason: 'amount_below_minimum',
+      });
+      await waitFor(
+        async () =>
+          (await notificationsOf(sender, 'scheduled_payment_paused')).length ===
+          1,
+      );
+      const [paused] = await notificationsOf(
+        sender,
+        'scheduled_payment_paused',
+      );
+      expect(paused.body).toContain('the amount is below the current minimum');
+    });
+
+    it('sender_unverified: a sender dropped to tier 0 is retried like any transient failure', async () => {
+      const { sender, schedule } = await seedSchedule({ body: daily });
+      const run = await claimRun(schedule.id);
+      await ctx.userRepo.update({ id: sender.userId }, { kycTier: 'tier0' });
+
+      await atClock(lagosAt(lagosToday(run.dueAt), '08:00'), () =>
+        execute(run.id),
+      );
+
+      expect((await attemptsOf(run.id))[0].failureCode).toBe(
+        'sender_unverified',
+      );
+      const after = await reload(run.id);
+      expect(after.status).toBe('pending');
+      expect(after.nextAttemptAt).not.toBeNull();
+      expect((await view(sender, schedule.id)).status).toBe('active');
+    });
+
+    it('tells the sender their account needs identity verification when the last attempt fails', async () => {
+      const { sender, schedule } = await seedSchedule({ body: daily });
+      const run = await claimRun(schedule.id);
+      await ctx.userRepo.update({ id: sender.userId }, { kycTier: 'tier0' });
+
+      expect((await executeAtNightfall(run)).status).toBe('failed');
+
+      await waitFor(
+        async () =>
+          (await notificationsOf(sender, 'scheduled_payment_run_failed'))
+            .length === 1,
+      );
+      const [failed] = await notificationsOf(
+        sender,
+        'scheduled_payment_run_failed',
+      );
+      expect(failed.body).toContain(
+        'your account needs identity verification to send',
+      );
+      expect((await view(sender, schedule.id)).status).toBe('active');
     });
   });
 

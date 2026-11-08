@@ -3,6 +3,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -27,6 +28,9 @@ export type ChangeActor = (typeof CHANGE_ACTORS)[number];
 @Entity('scheduled_payment_changes')
 @Check('CHK_scheduled_payment_changes_kind', inList('kind', CHANGE_KINDS))
 @Check('CHK_scheduled_payment_changes_actor', inList('actor', CHANGE_ACTORS))
+@Index('IDX_scheduled_payment_changes_scheduled_payment_id', [
+  'scheduledPaymentId',
+])
 export class ScheduledPaymentChange {
   @PrimaryGeneratedColumn('uuid')
   id: string;

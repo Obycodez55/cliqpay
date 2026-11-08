@@ -5,7 +5,10 @@ import { getQueueToken } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { SchedulingModule } from '../../../src/modules/scheduling/scheduling.module';
 import { RunEngine } from '../../../src/modules/scheduling/internal/run-engine.service';
-import { SCHEDULED_PAYMENT_RUNS_QUEUE } from '../../../src/modules/scheduling/internal/queues';
+import {
+  SCHEDULED_PAYMENT_RUNS_QUEUE,
+  SCHEDULED_PAYMENT_SWEEP_QUEUE,
+} from '../../../src/modules/scheduling/internal/queues';
 import { ScheduledPayment } from '../../../src/modules/scheduling/entities/scheduled-payment.entity';
 import { ScheduledPaymentRun } from '../../../src/modules/scheduling/entities/scheduled-payment-run.entity';
 import { KycTier } from '../../../src/modules/users/users.service';
@@ -61,8 +64,23 @@ export interface ScheduleBody {
   nextRunAt: string | null;
 }
 
-export function createSchedulingTestContext() {
-  return createTransfersTestContext(0, [SchedulingModule]);
+export async function createSchedulingTestContext() {
+  const ctx = await createTransfersTestContext(0, [SchedulingModule]);
+  // BullMQ runs an `every` scheduler's first job at once. Let that boot tick
+  // finish, with nothing to sweep yet, before any test seeds data.
+  const sweepQueue = ctx.app.get<Queue>(
+    getQueueToken(SCHEDULED_PAYMENT_SWEEP_QUEUE),
+    { strict: false },
+  );
+  await waitFor(async () => {
+    const counts = await sweepQueue.getJobCounts(
+      'waiting',
+      'active',
+      'delayed',
+    );
+    return counts.waiting + counts.active === 0 && counts.delayed > 0;
+  });
+  return ctx;
 }
 
 export function tomorrow(): string {

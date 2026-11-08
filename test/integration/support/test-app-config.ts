@@ -52,7 +52,9 @@ function defaultTestAppConfig(): AppConfig {
     moneyRequests: { expiryDays: 7, maxPendingPerPair: 3 },
     billSplits: { maxParticipants: 20 },
     scheduledPayments: {
-      sweepIntervalMs: 60_000,
+      // Tests drive the sweep through RunEngine.sweep(); a background tick
+      // mid-test would act on their half-built state.
+      sweepIntervalMs: 604_800_000,
       workerConcurrency: 5,
       windowStart: '06:00',
       windowMinutes: 240,

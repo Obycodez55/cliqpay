@@ -98,7 +98,7 @@ export class ScheduledPaymentResponseDto {
   @ApiProperty({
     nullable: true,
     description:
-      'Why the schedule is paused: `user`, a failure code (blocked, recipient_unavailable, sender_frozen, bank_account_removed), or `consecutive_failures`. Null unless paused.',
+      'Why the schedule is paused: `user`, a failure code (recipient_unable_to_receive, sender_frozen, bank_account_removed, amount_below_minimum), or `consecutive_failures`. Null unless paused.',
   })
   pausedReason: string | null;
 

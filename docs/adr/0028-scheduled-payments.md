@@ -115,15 +115,25 @@ pure function, test-first, with no new dependency.
 | class | failures | handling |
 |---|---|---|
 | transient | insufficient balance, daily limit exceeded, recipient balance cap, payout rejected synchronously | retry the same day |
-| permanent | blocked either way, recipient unavailable, bank account removed, sender frozen | run fails, schedule pauses at once |
+| permanent | blocked either way, recipient unavailable, bank account removed, sender frozen, amount below the current minimum | run fails, schedule pauses at once |
 | infrastructure | DB/Redis errors, timeouts, crashes | BullMQ's own fast retries first, then treated as transient |
 
+- The database keeps the precise failure code. Everywhere a client sees it
+  (`GET /:id/runs`, the schedule's `pausedReason`, event payloads and
+  notification text) a block, the recipient's balance cap and an unavailable
+  recipient all read `recipient_unable_to_receive`, since the live send path
+  gives one generic answer for the three and a schedule must not reveal a
+  block. A tier-0 sender is the transient `sender_unverified` (the retry and
+  pause behaviour of `daily_limit_exceeded`), worded as needing identity
+  verification.
 - Up to 4 attempts per run, at +2h, +4h and +6h after the first, all inside
   the Lagos day: a run that slipped past midnight would count against the next
   day's KYC limit. After the last, the run is `failed`, the sender is
   notified, and the schedule continues.
 - 3 consecutive failed or reversed runs pause the schedule. Only `succeeded`
-  resets the count. Resume starts from the next future date and never runs
+  resets the count. A system pause cancels the schedule's other `pending`
+  runs, as a user pause does, and `executeRun` refuses to pay for a schedule
+  that is not `active`, ending its pending run as `cancelled`. Resume starts from the next future date and never runs
   missed ones.
 - Only the sender is notified, and only on final outcomes, never per attempt.
 
@@ -171,7 +181,12 @@ schedules. No balance check. A client `reference`, unique per user, makes
 create idempotent (same contents replays, different contents 409). Note
 follows transfer rules (optional, 1–500). Visibility is required for P2P
 targets and forbidden for bank targets; each run's post uses it like a live
-send. Runs are plain transfer posts, with nothing marking them as scheduled.
+send. Runs are plain transfer posts, with nothing marking them as scheduled to
+anyone but the sender: the feed post, the recipient's history (the `sched_`
+reference is returned as null on the recipient's side) and every notification
+or view a counterparty sees are identical to a live send's.
+`transactions.metadata` carries `scheduleId` and `runNumber` internally, and
+is never returned to a client.
 
 **Visibility of schedules.** Only the owner. Recipients are never told a
 schedule exists.
@@ -250,11 +265,12 @@ Anyone but the owner gets 404.
 - The run's reference format couples `scheduling` and the
   `withdrawal_completed`/`withdrawal_failed` handler through the `sched_`
   prefix. Those events must carry the withdrawal reference.
-- A lost `withdrawal_completed`/`withdrawal_failed` leaves a run `settling`
-  until something re-delivers it; with no outbox there is no repair-on-read
-  here, because the withdrawal's state lives in `transactions`. A periodic
-  check of old `settling` runs against `LedgerService` is the fix if it shows
-  up.
+- A lost `withdrawal_completed`/`withdrawal_failed` is repaired by the sweep
+  (see Run states), not by the events being re-delivered.
+- If bank-account deletion is ever added, `executeScheduledWithdrawal`'s
+  replay check must run before the bank-account lookup. A crash-retry after
+  the deletion would otherwise not find the account, and record a run whose
+  payout already debited the wallet as `bank_account_removed`.
 - Claims are unbatched: a very large number of runs due in one tick is one
   long transaction. Batching is the first change if that becomes real.
 - Many schedules paying one recipient serialise on that wallet's row lock.

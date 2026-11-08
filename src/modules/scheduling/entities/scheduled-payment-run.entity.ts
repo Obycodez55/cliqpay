@@ -53,6 +53,9 @@ export type RunStatus = (typeof RUN_STATUSES)[number];
 @Index('IDX_scheduled_payment_runs_next_attempt_at', ['nextAttemptAt'], {
   where: `"status" = 'pending'`,
 })
+@Index('IDX_scheduled_payment_runs_updated_at_settling', ['updatedAt'], {
+  where: `"status" = 'settling'`,
+})
 export class ScheduledPaymentRun {
   @PrimaryGeneratedColumn('uuid')
   id: string;

@@ -5,9 +5,11 @@ import {
   ATTEMPT_OUTCOMES,
   AttemptKind,
   AttemptOutcome,
-  FAILURE_CODES,
-  FailureCode,
 } from '../entities/scheduled-payment-attempt.entity';
+import {
+  CLIENT_FAILURE_CODES,
+  ClientFailureCode,
+} from '../internal/failure-reasons';
 import { ScheduleFeesDto } from './scheduled-payment-response.dto';
 import {
   RUN_STATUSES,
@@ -28,8 +30,13 @@ export class ScheduledPaymentAttemptResponseDto {
   })
   outcome: AttemptOutcome | null;
 
-  @ApiProperty({ enum: FAILURE_CODES, nullable: true })
-  failureCode: FailureCode | null;
+  @ApiProperty({
+    enum: CLIENT_FAILURE_CODES,
+    nullable: true,
+    description:
+      "Why the attempt failed. A block, the recipient's balance cap and an unavailable recipient all read `recipient_unable_to_receive`.",
+  })
+  failureCode: ClientFailureCode | null;
 
   @ApiProperty({ nullable: true })
   transactionId: string | null;

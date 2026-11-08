@@ -1,3 +1,4 @@
+import { SCHEDULED_REFERENCE_PREFIX } from '../../../common/validation/reference';
 import { Money } from '../../../shared/primitives/money';
 import {
   LedgerEntry,
@@ -17,7 +18,9 @@ import {
 export interface TransactionHistoryEntry {
   id: string;
   transactionId: string | null;
-  reference: string;
+  // Null when a scheduled payment's reference would tell the recipient the
+  // payment was scheduled.
+  reference: string | null;
   type: TransactionType;
   status: TransactionStatus;
   // Null for a funding held or refunded: the wallet was never
@@ -51,11 +54,18 @@ export function toTransactionHistoryEntry(
         : entry.transaction.senderWalletId
       : null;
 
+  const hideReference =
+    entry.transaction.type === 'p2p_transfer' &&
+    entry.transaction.senderWalletId !== viewerWalletId &&
+    entry.transaction.reference
+      .toLowerCase()
+      .startsWith(SCHEDULED_REFERENCE_PREFIX);
+
   return {
     id: entry.id,
     transactionId:
       entry.transaction.type === 'p2p_transfer' ? entry.transaction.id : null,
-    reference: entry.transaction.reference,
+    reference: hideReference ? null : entry.transaction.reference,
     type: entry.transaction.type,
     status: entry.transaction.status,
     direction: entry.direction,

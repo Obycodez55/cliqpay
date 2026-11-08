@@ -36,7 +36,13 @@ import {
     SocialModule,
     EventBusModule,
     BullModule.registerQueue(
-      { name: SCHEDULED_PAYMENT_SWEEP_QUEUE },
+      {
+        name: SCHEDULED_PAYMENT_SWEEP_QUEUE,
+        defaultJobOptions: {
+          removeOnComplete: { age: 3_600, count: 1_000 },
+          removeOnFail: { age: 86_400, count: 5_000 },
+        },
+      },
       {
         name: SCHEDULED_PAYMENT_SETTLEMENT_QUEUE,
         defaultJobOptions: {

@@ -328,6 +328,27 @@ describe('Missed scheduled runs and the low-balance reminder', () => {
       expect((await scheduleOf(schedule.id)).lastRemindedRunDate).toBe(day);
     });
 
+    it('counts a transfer platform fee: warns at amount + fee − 1, not at amount + fee', async () => {
+      ctx.config.transfers.platformFee = 5_000;
+      try {
+        const short = await seedSchedule({ balanceMinor: 104_999n });
+        const covered = await seedSchedule({ balanceMinor: 105_000n });
+
+        await h.engine().sendUpcomingReminders(eveningBefore);
+
+        await waitFor(
+          async () =>
+            (await notificationsOf(short.sender, UPCOMING)).length === 1,
+        );
+        await h.waitForQueuesDrained();
+        expect(await notificationsOf(covered.sender, UPCOMING)).toHaveLength(0);
+        const [note] = await notificationsOf(short.sender, UPCOMING);
+        expect(note.body).toContain('NGN 50.00 in fees');
+      } finally {
+        ctx.config.transfers.platformFee = 0;
+      }
+    });
+
     it('stays quiet when the balance covers the run, or the run is not tomorrow', async () => {
       const covered = await seedSchedule({ balanceMinor: 100_000n });
       const later = await seedSchedule({

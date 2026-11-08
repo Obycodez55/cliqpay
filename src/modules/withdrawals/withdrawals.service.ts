@@ -99,7 +99,9 @@ export type ScheduledWithdrawalRejectionCode =
   | 'daily_limit_exceeded'
   | 'sender_frozen'
   | 'bank_account_removed'
-  | 'payout_rejected';
+  | 'payout_rejected'
+  | 'sender_unverified'
+  | 'amount_below_minimum';
 
 // A business refusal of a scheduled run, as opposed to an infrastructure
 // fault: every other error escapes executeScheduledWithdrawal untouched.
@@ -118,7 +120,8 @@ const SCHEDULED_REJECTION_BY_ERROR_CODE: Record<
 > = {
   INSUFFICIENT_FUNDS: 'insufficient_balance',
   DAILY_LIMIT_EXCEEDED: 'daily_limit_exceeded',
-  KYC_VERIFICATION_REQUIRED: 'daily_limit_exceeded',
+  KYC_VERIFICATION_REQUIRED: 'sender_unverified',
+  WITHDRAWAL_AMOUNT_TOO_SMALL: 'amount_below_minimum',
   INITIATOR_ACCOUNT_FROZEN: 'sender_frozen',
   BANK_ACCOUNT_NOT_FOUND: 'bank_account_removed',
   WITHDRAWAL_PAYOUT_FAILED: 'payout_rejected',

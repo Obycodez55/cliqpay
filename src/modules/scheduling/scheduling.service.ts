@@ -70,6 +70,10 @@ import {
   lagosToday,
   startDateBounds,
 } from './internal/run-time';
+import {
+  toClientFailureCode,
+  toClientFailureReason,
+} from './internal/failure-reasons';
 import { RunEngine } from './internal/run-engine.service';
 import { targetLabel } from './internal/target-label';
 import { needsPin, pinGatedChanged, planEdit } from './internal/schedule-edit';
@@ -515,7 +519,7 @@ export class SchedulingService {
             kind: attempt.kind,
             attemptNumber: attempt.attemptNumber,
             outcome: attempt.outcome,
-            failureCode: attempt.failureCode,
+            failureCode: toClientFailureCode(attempt.failureCode),
             transactionId: attempt.transactionId,
             startedAt: attempt.startedAt?.toISOString() ?? null,
           })),
@@ -841,7 +845,9 @@ export class SchedulingService {
       runsUsed,
       status: schedule.status,
       consecutiveFailures: schedule.consecutiveFailures,
-      pausedReason: schedule.pausedReason,
+      pausedReason: schedule.pausedReason
+        ? toClientFailureReason(schedule.pausedReason)
+        : null,
       nextRunDate: schedule.nextRunAt ? lagosToday(schedule.nextRunAt) : null,
       nextRunAt: schedule.nextRunAt?.toISOString() ?? null,
       createdAt: schedule.createdAt.toISOString(),
