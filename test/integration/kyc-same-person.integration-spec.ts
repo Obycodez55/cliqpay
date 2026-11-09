@@ -28,7 +28,6 @@ describe('BVN and NIN must belong to the same person', () => {
   beforeAll(async () => {
     ctx = await createKycTestContext();
     jwtService = new JwtService({ secret: TEST_JWT_SECRET });
-    await ctx.app.listen(0);
   });
 
   afterAll(async () => {

@@ -11,6 +11,7 @@
   ],
   "testTimeout": 60000,
   "maxWorkers": 2,
+  "setupFiles": ["<rootDir>/integration/support/loopback-listen.ts"],
   "globalSetup": "<rootDir>/integration/support/global-setup.ts",
   "globalTeardown": "<rootDir>/integration/support/global-teardown.ts"
 }
