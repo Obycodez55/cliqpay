@@ -44,6 +44,11 @@ describe('Refunding a held funding through Kora', () => {
       .send(body);
   };
 
+  const providerReports = (
+    reference: string,
+    result: Parameters<typeof ctx.fakeAdapter.setVerifyRefundResult>[1],
+  ) => ctx.fakeAdapter.setVerifyRefundResult(reference, result);
+
   const emailsTo = (address: string) =>
     ctx.emailAdapter.sent.filter((m) => m.to === address);
 
@@ -127,6 +132,10 @@ describe('Refunding a held funding through Kora', () => {
         id: held.walletId,
       });
 
+      providerReports(held.refundReference, {
+        status: 'success',
+        amount: Money.of(AMOUNT, 'NGN'),
+      });
       await deliver(
         'refund.success',
         refundWebhookData(held.refundReference, AMOUNT),
@@ -149,6 +158,10 @@ describe('Refunding a held funding through Kora', () => {
     it('a duplicate delivery posts nothing and sends no second email', async () => {
       const held = await holdAFunding(ctx);
       const data = refundWebhookData(held.refundReference, AMOUNT);
+      providerReports(held.refundReference, {
+        status: 'success',
+        amount: Money.of(AMOUNT, 'NGN'),
+      });
 
       await deliver('refund.success', data).expect(200);
       await waitFor(() =>
@@ -176,6 +189,10 @@ describe('Refunding a held funding through Kora', () => {
 
     it('leaves the attempt pending when the reported amount differs', async () => {
       const held = await holdAFunding(ctx);
+      providerReports(held.refundReference, {
+        status: 'success',
+        amount: Money.of(AMOUNT + 100n, 'NGN'),
+      });
 
       await deliver(
         'refund.success',
@@ -195,6 +212,10 @@ describe('Refunding a held funding through Kora', () => {
 
     it('rejects an invalid signature with 401 and settles nothing', async () => {
       const held = await holdAFunding(ctx);
+      providerReports(held.refundReference, {
+        status: 'success',
+        amount: Money.of(AMOUNT, 'NGN'),
+      });
 
       await deliver(
         'refund.success',
@@ -218,14 +239,46 @@ describe('Refunding a held funding through Kora', () => {
       expect(await statusOf(held.refundReference)).toBe('pending');
     });
 
-    it('rejects a malformed payload with 400', async () => {
+    it('rejects a payload without a reference with 400', async () => {
       await deliver('refund.success', { status: 'success' }).expect(400);
+    });
+
+    it('changes nothing when the provider reports the refund still pending', async () => {
+      const held = await holdAFunding(ctx);
+
+      await deliver(
+        'refund.success',
+        refundWebhookData(held.refundReference, AMOUNT),
+      ).expect(200);
+
+      expect(await statusOf(held.refundReference)).toBe('pending');
+      expect(await statusOf(held.reference)).toBe('held');
+    });
+
+    it('changes nothing and answers 200 when the provider cannot be reached', async () => {
+      const held = await holdAFunding(ctx);
+      ctx.fakeAdapter.setVerifyError(
+        held.refundReference,
+        new Error('request timed out'),
+      );
+
+      await deliver(
+        'refund.success',
+        refundWebhookData(held.refundReference, AMOUNT),
+      ).expect(200);
+
+      expect(await statusOf(held.refundReference)).toBe('pending');
+      expect(await statusOf(held.reference)).toBe('held');
     });
   });
 
   describe('refund.failed webhook', () => {
     it('fails the attempt with Kora’s reason, posts nothing, and leaves the funding held', async () => {
       const held = await holdAFunding(ctx);
+      providerReports(held.refundReference, {
+        status: 'failed',
+        reason: 'Insufficient balance',
+      });
 
       await deliver(
         'refund.failed',
@@ -244,6 +297,50 @@ describe('Refunding a held funding through Kora', () => {
       });
       expect(await statusOf(held.reference)).toBe('held');
       await assertInvariantHolds(ctx.accountRepo);
+    });
+
+    it('settles the refund, and starts no retry, when the provider reports success although the webhook claims failure', async () => {
+      const held = await holdAFunding(ctx);
+      providerReports(held.refundReference, {
+        status: 'success',
+        amount: Money.of(AMOUNT, 'NGN'),
+      });
+
+      await deliver(
+        'refund.failed',
+        refundWebhookData(held.refundReference, AMOUNT, {
+          status: 'failed',
+          status_reason: 'Insufficient balance',
+        }),
+      ).expect(200);
+
+      expect(await statusOf(held.refundReference)).toBe('completed');
+      expect(await statusOf(held.reference)).toBe('refunded');
+      const attempts = await ctx.transactionRepo.findBy({
+        type: 'funding_refund',
+      });
+      expect(
+        attempts.filter((a) =>
+          a.reference.startsWith(`rfd-${held.fundingId}-`),
+        ),
+      ).toHaveLength(1);
+      await assertInvariantHolds(ctx.accountRepo);
+    });
+
+    it('does nothing when the provider has no such refund, and creates no new attempt', async () => {
+      const held = await holdAFunding(ctx);
+      providerReports(held.refundReference, { status: 'not_found' });
+      const initiatedBefore = ctx.fakeAdapter.refundsInitiated.length;
+
+      await deliver(
+        'refund.failed',
+        refundWebhookData(held.refundReference, AMOUNT, {
+          status: 'failed',
+        }),
+      ).expect(200);
+
+      expect(await statusOf(held.refundReference)).toBe('pending');
+      expect(ctx.fakeAdapter.refundsInitiated).toHaveLength(initiatedBefore);
     });
   });
 });

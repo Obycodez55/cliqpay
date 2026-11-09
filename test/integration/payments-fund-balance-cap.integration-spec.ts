@@ -71,6 +71,11 @@ describe('Balance cap at funding initiation', () => {
       amount: (netKobo / 100).toFixed(2),
       fee: 0,
     };
+    ctx.fakeAdapter.setVerifyChargeResult(reference, {
+      status: 'success',
+      netAmount: Money.of(BigInt(netKobo), 'NGN'),
+      providerFee: Money.zero('NGN'),
+    });
     await request(ctx.app.getHttpServer())
       .post('/wallet/webhook/kora')
       .set('Content-Type', 'application/json')

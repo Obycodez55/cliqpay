@@ -94,6 +94,11 @@ export function deliverChargeSuccess(
   amountMinor: bigint,
 ): Promise<void> {
   const { body, signature } = signedChargeSuccess(reference, amountMinor);
+  ctx.fakeAdapter.setVerifyChargeResult(reference, {
+    status: 'success',
+    netAmount: Money.of(amountMinor, 'NGN'),
+    providerFee: Money.of(5_000n, 'NGN'),
+  });
   return ctx.paymentsService.handleKoraWebhook(Buffer.from(body), signature);
 }
 

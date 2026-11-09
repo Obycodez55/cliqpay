@@ -140,6 +140,11 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
     };
     eventBus = { publish: jest.fn() };
     adapter = mockAdapter();
+    adapter.verifyCharge.mockResolvedValue({
+      status: 'success',
+      netAmount: Money.of(500_000n, 'NGN'),
+      providerFee: Money.of(5_000n, 'NGN'),
+    });
     service = new PaymentsService(
       inlineTransaction,
       ledgerService as unknown as LedgerService,
@@ -341,10 +346,7 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
     });
   });
 
-  describe('the amount a charge.success webhook reports', () => {
-    const creditedFacts = () =>
-      ledgerService.postFundingWithinTransaction.mock.calls[0][1];
-
+  describe('what a charge webhook is allowed to decide', () => {
     beforeEach(() => {
       ledgerService.postFundingWithinTransaction.mockResolvedValue(
         postFundingResult,
@@ -354,50 +356,45 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
       } as Awaited<ReturnType<UsersService['findById']>>);
     });
 
-    it('is the payer’s gross when the payer bears the fee: the credited net is the amount minus the fee', async () => {
-      await service.handleKoraWebhook(
-        webhookBody({ amount: 5013.97, fee: 13.97 }),
-        'sig',
-      );
-
-      expect(creditedFacts()).toEqual({
-        reference: 'cliqpay-ref-1',
-        netAmount: Money.of(500_000n, 'NGN'),
-        providerFee: Money.of(1_397n, 'NGN'),
-        providerStatus: 'success',
-      });
-    });
-
-    it('is already the requested amount when the merchant bears the fee, and is credited as reported', async () => {
-      await service.handleKoraWebhook(
-        webhookBody({ amount: 5000, fee: 13.97 }),
-        'sig',
-      );
-
-      expect(creditedFacts().netAmount).toEqual(Money.of(500_000n, 'NGN'));
-    });
-
-    it('still gets the fee subtracted when it matches neither, so the ledger cross-check fails it instead of crediting it', async () => {
+    it('posts the provider-verified amount, not the one in the signed body', async () => {
       await service.handleKoraWebhook(
         webhookBody({ amount: 7000, fee: 50 }),
         'sig',
       );
 
-      expect(creditedFacts().netAmount).toEqual(Money.of(695_000n, 'NGN'));
+      expect(adapter.verifyCharge.mock.calls[0]).toEqual(['cliqpay-ref-1']);
+      expect(
+        ledgerService.postFundingWithinTransaction.mock.calls[0][1],
+      ).toEqual({
+        reference: 'cliqpay-ref-1',
+        netAmount: Money.of(500_000n, 'NGN'),
+        providerFee: Money.of(5_000n, 'NGN'),
+        providerStatus: 'success',
+      });
     });
 
-    it('leaves a reported amount untouched when there is no pending funding to compare with', async () => {
-      ledgerService.findPendingFunding.mockResolvedValue(null);
+    it('posts nothing when the provider reports the charge failed or unfinished, whatever the body claims', async () => {
+      adapter.verifyCharge.mockResolvedValue({ status: 'pending' });
+      await service.handleKoraWebhook(webhookBody(), 'sig');
+      adapter.verifyCharge.mockResolvedValue({ status: 'failed' });
       ledgerService.postFunding.mockResolvedValue(null);
+      await service.handleKoraWebhook(webhookBody(), 'sig');
 
-      await service.handleKoraWebhook(
-        webhookBody({ amount: 5013.97, fee: 13.97 }),
-        'sig',
+      expect(ledgerService.postFundingWithinTransaction).not.toHaveBeenCalled();
+      expect(ledgerService.postFunding.mock.calls[0][0].providerStatus).toBe(
+        'failed',
       );
+    });
 
-      expect(ledgerService.postFunding.mock.calls[0][0].netAmount).toEqual(
-        Money.of(501_397n, 'NGN'),
-      );
+    it('leaves the funding pending and does not throw when the provider cannot be reached', async () => {
+      adapter.verifyCharge.mockRejectedValue(new Error('timeout'));
+
+      await expect(
+        service.handleKoraWebhook(webhookBody(), 'sig'),
+      ).resolves.toBeUndefined();
+
+      expect(ledgerService.postFunding).not.toHaveBeenCalled();
+      expect(ledgerService.postFundingWithinTransaction).not.toHaveBeenCalled();
     });
   });
 
@@ -413,6 +410,7 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
 
   it('records a provider-reported failure through postFunding without a cap check', async () => {
     ledgerService.postFunding.mockResolvedValue(null);
+    adapter.verifyCharge.mockResolvedValue({ status: 'failed' });
 
     await service.handleKoraWebhook(webhookBody({ status: 'failed' }), 'sig');
 
@@ -496,6 +494,7 @@ describe('PaymentsService.handleKoraWebhook (refund events)', () => {
     Pick<UsersService, 'findById' | 'getRestrictionState'>
   >;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
+  let adapter: jest.Mocked<PaymentProviderAdapter>;
   let service: PaymentsService;
 
   function refundBody(
@@ -527,13 +526,18 @@ describe('PaymentsService.handleKoraWebhook (refund events)', () => {
         .mockResolvedValue({ blocksOutbound: false, blocksInbound: false }),
     };
     eventBus = { publish: jest.fn() };
+    adapter = mockAdapter();
+    adapter.verifyRefund.mockResolvedValue({
+      status: 'success',
+      amount: Money.of(500_000n, 'NGN'),
+    });
     service = new PaymentsService(
       inlineTransaction,
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
       completionKyc() as unknown as KycService,
       eventBus as unknown as EventBusService,
-      mockAdapter(),
+      adapter,
       testConfig,
     );
   });
@@ -614,7 +618,11 @@ describe('PaymentsService.handleKoraWebhook (refund events)', () => {
     expect(eventBus.publish).not.toHaveBeenCalled();
   });
 
-  it('fails the attempt with Kora’s status_reason on refund.failed', async () => {
+  it('fails the attempt with the verified reason on refund.failed', async () => {
+    adapter.verifyRefund.mockResolvedValue({
+      status: 'failed',
+      reason: 'Insufficient balance',
+    });
     await service.handleKoraWebhook(
       refundBody('refund.failed', { status_reason: 'Insufficient balance' }),
       'sig',
@@ -627,7 +635,47 @@ describe('PaymentsService.handleKoraWebhook (refund events)', () => {
     expect(ledgerService.settleRefund).not.toHaveBeenCalled();
   });
 
+  it('settles a refund the provider reports successful even when the webhook claims it failed', async () => {
+    ledgerService.settleRefund.mockResolvedValue(null);
+
+    await service.handleKoraWebhook(refundBody('refund.failed'), 'sig');
+
+    expect(ledgerService.settleRefund).toHaveBeenCalledTimes(1);
+    expect(ledgerService.failRefund).not.toHaveBeenCalled();
+  });
+
+  it('changes nothing on a success webhook while the provider reports the refund pending', async () => {
+    adapter.verifyRefund.mockResolvedValue({ status: 'pending' });
+
+    await service.handleKoraWebhook(refundBody('refund.success'), 'sig');
+
+    expect(ledgerService.settleRefund).not.toHaveBeenCalled();
+    expect(ledgerService.failRefund).not.toHaveBeenCalled();
+  });
+
+  it('does nothing, and starts no new attempt, when the provider has no such refund', async () => {
+    adapter.verifyRefund.mockResolvedValue({ status: 'not_found' });
+
+    await service.handleKoraWebhook(refundBody('refund.failed'), 'sig');
+
+    expect(ledgerService.settleRefund).not.toHaveBeenCalled();
+    expect(ledgerService.failRefund).not.toHaveBeenCalled();
+    expect(adapter.initiateRefund.mock.calls).toHaveLength(0);
+  });
+
+  it('changes nothing and does not throw when the provider cannot be reached', async () => {
+    adapter.verifyRefund.mockRejectedValue(new Error('timeout'));
+
+    await expect(
+      service.handleKoraWebhook(refundBody('refund.success'), 'sig'),
+    ).resolves.toBeUndefined();
+
+    expect(ledgerService.settleRefund).not.toHaveBeenCalled();
+    expect(ledgerService.failRefund).not.toHaveBeenCalled();
+  });
+
   it('ignores a refund that is still processing', async () => {
+    adapter.verifyRefund.mockResolvedValue({ status: 'pending' });
     await service.handleKoraWebhook(
       refundBody('refund.success', { status: 'processing' }),
       'sig',

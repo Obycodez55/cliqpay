@@ -328,6 +328,10 @@ describe('refund recovery poll', () => {
 
   describe('late success', () => {
     const deliverSuccess = (reference: string) => {
+      ctx.fakeAdapter.setVerifyRefundResult(reference, {
+        status: 'success',
+        amount: Money.of(AMOUNT, 'NGN'),
+      });
       const { body, signature } = signedRefundWebhook(
         'refund.success',
         refundWebhookData(reference, AMOUNT),
