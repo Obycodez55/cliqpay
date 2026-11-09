@@ -48,7 +48,6 @@ describe('KYC liveness (Tier 3)', () => {
   beforeAll(async () => {
     ctx = await createKycTestContext();
     jwtService = new JwtService({ secret: TEST_JWT_SECRET });
-    await ctx.app.listen(0);
   });
 
   afterAll(async () => {
