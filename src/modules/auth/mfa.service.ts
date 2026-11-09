@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { generateSecret, generateURI, verify } from 'otplib';
-import { DataSource, EntityManager } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import {
   MFA_CHALLENGE_OTP_EVENT,
@@ -11,7 +11,10 @@ import {
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
 import { UsersService } from '../users/users.service';
+import { AuditService } from '../../shared/audit/audit.service';
 import { MfaChallenge } from './entities/mfa-challenge.entity';
+import { Session } from './entities/session.entity';
+import { RegisteredDevice } from './device-binding.service';
 import { MfaMethod, MfaMethodType } from './entities/mfa-method.entity';
 import { TrustedDevice } from './entities/trusted-device.entity';
 import {
@@ -55,6 +58,7 @@ export class MfaService {
     @Inject(APP_CONFIG) config: AppConfig,
     private readonly eventBus: EventBusService,
     private readonly usersService: UsersService,
+    private readonly auditService: AuditService,
   ) {
     this.encryptionKey = encryptionKeyFromHex(config.encryption.key);
   }
@@ -269,7 +273,12 @@ export class MfaService {
     const device = await this.dataSource
       .getRepository(TrustedDevice)
       .findOneBy({ tokenHash: hashOpaqueToken(rawToken) });
-    if (!device || device.userId !== userId || device.expiresAt <= new Date()) {
+    if (
+      !device ||
+      device.userId !== userId ||
+      device.revokedAt !== null ||
+      device.expiresAt <= new Date()
+    ) {
       return null;
     }
     return device;
@@ -284,23 +293,95 @@ export class MfaService {
     await manager.getRepository(TrustedDevice).save(device);
   }
 
+  // One trusted device per user: trusting a new device revokes the user's
+  // other trusted devices (and their keys) and every active session, so the
+  // caller creates the new session afterwards. Returns what was replaced.
   async issueTrustedDevice(
     manager: EntityManager,
     userId: string,
+    deviceId: string,
     device: DeviceMetadata,
-  ): Promise<{ device: TrustedDevice; rawToken: string }> {
-    const now = new Date();
-    const rawToken = generateOpaqueToken();
+    registered: RegisteredDevice,
+  ): Promise<{
+    device: TrustedDevice;
+    rawToken: string;
+    replaced: TrustedDevice[];
+  }> {
     const repo = manager.getRepository(TrustedDevice);
-    const trustedDevice = repo.create({
-      userId,
-      tokenHash: hashOpaqueToken(rawToken),
-      device,
-      expiresAt: new Date(now.getTime() + TRUSTED_DEVICE_TTL_MS),
-      lastUsedAt: now,
+    const now = new Date();
+
+    const replaced = await repo.findBy({ userId, revokedAt: IsNull() });
+    if (replaced.length > 0) {
+      await repo.update(
+        { id: In(replaced.map((d) => d.id)) },
+        { revokedAt: now },
+      );
+    }
+    await manager
+      .getRepository(Session)
+      .update({ userId, status: 'active' }, { status: 'revoked' });
+
+    const rawToken = generateOpaqueToken();
+    const trustedDevice = await repo.save(
+      repo.create({
+        userId,
+        tokenHash: hashOpaqueToken(rawToken),
+        deviceId,
+        publicKey: registered.publicKey,
+        attestationResult: registered.attestationResult,
+        device,
+        expiresAt: new Date(now.getTime() + TRUSTED_DEVICE_TTL_MS),
+        lastUsedAt: now,
+        revokedAt: null,
+      }),
+    );
+
+    for (const old of replaced) {
+      await this.auditService.record(manager, {
+        actor: { type: 'user', id: userId },
+        action: 'device_revoked',
+        subject: { type: 'trusted_device', id: old.id },
+        metadata: {
+          reason: 'device_switch',
+          deviceId: old.deviceId,
+          replacedByDeviceId: deviceId,
+        },
+      });
+    }
+    await this.auditService.record(manager, {
+      actor: { type: 'user', id: userId },
+      action: 'device_trusted',
+      subject: { type: 'trusted_device', id: trustedDevice.id },
+      metadata: {
+        deviceId,
+        hasKey: registered.publicKey !== null,
+        attestationResult: registered.attestationResult,
+      },
     });
-    await repo.save(trustedDevice);
-    return { device: trustedDevice, rawToken };
+
+    return { device: trustedDevice, rawToken, replaced };
+  }
+
+  async revokeTrustedDevice(
+    manager: EntityManager,
+    device: TrustedDevice,
+    reason: 'device_mismatch' | 'bad_signature',
+  ): Promise<void> {
+    await manager
+      .getRepository(TrustedDevice)
+      .update({ id: device.id }, { revokedAt: new Date() });
+    await manager
+      .getRepository(Session)
+      .update(
+        { trustedDeviceId: device.id, status: 'active' },
+        { status: 'revoked' },
+      );
+    await this.auditService.record(manager, {
+      actor: { type: 'system', id: null },
+      action: 'device_revoked',
+      subject: { type: 'trusted_device', id: device.id },
+      metadata: { reason, deviceId: device.deviceId },
+    });
   }
 
   async enrollTotp(

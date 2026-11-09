@@ -47,6 +47,9 @@ export class Session {
   @JoinColumn({ name: 'trusted_device_id' })
   trustedDevice?: TrustedDevice;
 
+  @Column('varchar')
+  deviceId: string;
+
   @Column({ type: 'jsonb' })
   device: DeviceMetadata;
 

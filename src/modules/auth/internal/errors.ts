@@ -147,3 +147,44 @@ export class TransactionPinLockedException extends DomainException {
     );
   }
 }
+
+export class DeviceChallengeInvalidException extends DomainException {
+  readonly code = 'DEVICE_CHALLENGE_INVALID';
+  constructor() {
+    super(
+      'Device challenge is unknown, expired, already used, or for a different device or purpose',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+export class DeviceSignatureRequiredException extends DomainException {
+  readonly code = 'DEVICE_SIGNATURE_REQUIRED';
+  constructor() {
+    super(
+      'A device challenge nonce and signature are required',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+export class DevicePublicKeyRequiredException extends DomainException {
+  readonly code = 'DEVICE_PUBLIC_KEY_REQUIRED';
+  constructor() {
+    super('devicePublicKey is required', HttpStatus.BAD_REQUEST);
+  }
+}
+
+export class DevicePublicKeyInvalidException extends DomainException {
+  readonly code = 'DEVICE_PUBLIC_KEY_INVALID';
+  constructor(reason: string) {
+    super(reason, HttpStatus.BAD_REQUEST);
+  }
+}
+
+export class DeviceAttestationFailedException extends DomainException {
+  readonly code = 'DEVICE_ATTESTATION_FAILED';
+  constructor() {
+    super('This device could not be attested', HttpStatus.FORBIDDEN);
+  }
+}

@@ -6,6 +6,10 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
+import {
+  DeviceMismatchException,
+  readDeviceId,
+} from '../device/device-id.util';
 
 export interface AuthenticatedRequest extends Request {
   user: { userId: string; sessionId: string };
@@ -14,6 +18,7 @@ export interface AuthenticatedRequest extends Request {
 interface AccessTokenClaims {
   sub: string;
   sid: string;
+  did?: string;
 }
 
 // Cross-cutting infra, not auth-internal — users and ledger both guard
@@ -35,16 +40,20 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException();
     }
 
+    let claims: AccessTokenClaims;
     try {
-      const claims =
-        await this.jwtService.verifyAsync<AccessTokenClaims>(token);
-      (request as AuthenticatedRequest).user = {
-        userId: claims.sub,
-        sessionId: claims.sid,
-      };
-      return true;
+      claims = await this.jwtService.verifyAsync<AccessTokenClaims>(token);
     } catch {
       throw new UnauthorizedException();
     }
+
+    if (!claims.did || readDeviceId(request) !== claims.did) {
+      throw new DeviceMismatchException();
+    }
+    (request as AuthenticatedRequest).user = {
+      userId: claims.sub,
+      sessionId: claims.sid,
+    };
+    return true;
   }
 }

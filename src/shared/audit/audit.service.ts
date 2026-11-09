@@ -2,7 +2,11 @@ import { Injectable } from '@nestjs/common';
 import { EntityManager } from 'typeorm';
 import { AuditActorType, AuditEvent } from './entities/audit-event.entity';
 
-export type AuditAction = 'restriction_added' | 'restriction_lifted';
+export type AuditAction =
+  | 'restriction_added'
+  | 'restriction_lifted'
+  | 'device_trusted'
+  | 'device_revoked';
 
 export interface AuditActor {
   type: AuditActorType;

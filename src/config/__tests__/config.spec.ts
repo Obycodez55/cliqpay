@@ -127,3 +127,61 @@ describe('scheduled payments', () => {
     ).toThrow('SCHEDULED_PAYMENT_WINDOW_START');
   });
 });
+
+describe('device binding', () => {
+  it('requires device keys and shadows attestation by default', () => {
+    const config = loadConfig(baseEnv());
+
+    expect(config.device.keyRequired).toBe(true);
+    expect(config.device.attestation.mode).toBe('shadow');
+    expect(config.device.attestation.provider).toBe('fake');
+  });
+
+  it('allows DEVICE_KEY_REQUIRED=false outside production', () => {
+    expect(
+      loadConfig({ ...baseEnv(), DEVICE_KEY_REQUIRED: 'false' }).device
+        .keyRequired,
+    ).toBe(false);
+  });
+
+  it('refuses DEVICE_KEY_REQUIRED=false in production', () => {
+    expect(() =>
+      loadConfig({
+        ...productionEnv(),
+        DEVICE_KEY_REQUIRED: 'false',
+      }),
+    ).toThrow('DEVICE_KEY_REQUIRED must not be "false" in production');
+  });
+
+  it('refuses the fake attestation provider in production unless attestation is off', () => {
+    expect(() =>
+      loadConfig({ ...productionEnv(), DEVICE_ATTESTATION_PROVIDER: 'fake' }),
+    ).toThrow('DEVICE_ATTESTATION_PROVIDER');
+    expect(
+      loadConfig({
+        ...productionEnv(),
+        DEVICE_ATTESTATION_PROVIDER: 'fake',
+        DEVICE_ATTESTATION_MODE: 'off',
+      }).device.attestation.mode,
+    ).toBe('off');
+  });
+
+  it('requires the Apple and Google settings for the platform provider', () => {
+    expect(() =>
+      loadConfig({ ...baseEnv(), DEVICE_ATTESTATION_PROVIDER: 'platform' }),
+    ).toThrow('APPLE_TEAM_ID');
+  });
+});
+
+function productionEnv(): NodeJS.ProcessEnv {
+  return {
+    ...baseEnv(),
+    NODE_ENV: 'production',
+    PAYMENT_PROVIDER: 'kora',
+    KORA_SECRET_KEY: 'k',
+    KORA_WEBHOOK_URL: 'https://example.com/hook',
+    PAYMENT_REDIRECT_URL: 'https://example.com/back',
+    KYC_PROVIDER: 'prembly',
+    PREMBLY_SECRET_KEY: 'p',
+  };
+}

@@ -155,6 +155,26 @@ const envSchema = z
     KYC_PROVIDER: z.enum(['prembly', 'fake']).default('fake'),
     KYC_RETENTION_DAYS: z.coerce.number().int().min(2).default(30),
     PREMBLY_SECRET_KEY: z.string().optional(),
+
+    // false skips only the login/refresh/money-action signature checks;
+    // X-Device-Id is still required. Refused under production.
+    DEVICE_KEY_REQUIRED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((value) => value === 'true'),
+    DEVICE_ATTESTATION_MODE: z
+      .enum(['off', 'shadow', 'enforce'])
+      .default('shadow'),
+    DEVICE_ATTESTATION_PROVIDER: z.enum(['platform', 'fake']).default('fake'),
+    APPLE_TEAM_ID: z.string().optional(),
+    APPLE_BUNDLE_ID: z.string().optional(),
+    // PEM of Apple's App Attestation Root CA, from Apple's developer documentation.
+    APPLE_APP_ATTEST_ROOT_CA: z.string().optional(),
+    GOOGLE_PLAY_PACKAGE_NAME: z.string().optional(),
+    // Base64 AES-256 key and base64 X.509 EC public key from the Play Console
+    // app-integrity settings (the "manage and download your response encryption keys" flow).
+    GOOGLE_PLAY_INTEGRITY_DECRYPTION_KEY: z.string().optional(),
+    GOOGLE_PLAY_INTEGRITY_VERIFICATION_KEY: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     // A provider's own credentials are only required when it's the one actually selected
@@ -218,6 +238,52 @@ const envSchema = z
         code: 'custom',
         path: ['PAYMENT_PROVIDER'],
         message: 'PAYMENT_PROVIDER must not be "fake" in production',
+      });
+    }
+
+    requireWhen(
+      env.DEVICE_ATTESTATION_PROVIDER === 'platform' &&
+        env.DEVICE_ATTESTATION_MODE !== 'off',
+      [
+        { path: 'APPLE_TEAM_ID', value: env.APPLE_TEAM_ID },
+        { path: 'APPLE_BUNDLE_ID', value: env.APPLE_BUNDLE_ID },
+        {
+          path: 'APPLE_APP_ATTEST_ROOT_CA',
+          value: env.APPLE_APP_ATTEST_ROOT_CA,
+        },
+        {
+          path: 'GOOGLE_PLAY_PACKAGE_NAME',
+          value: env.GOOGLE_PLAY_PACKAGE_NAME,
+        },
+        {
+          path: 'GOOGLE_PLAY_INTEGRITY_DECRYPTION_KEY',
+          value: env.GOOGLE_PLAY_INTEGRITY_DECRYPTION_KEY,
+        },
+        {
+          path: 'GOOGLE_PLAY_INTEGRITY_VERIFICATION_KEY',
+          value: env.GOOGLE_PLAY_INTEGRITY_VERIFICATION_KEY,
+        },
+      ],
+    );
+
+    if (env.NODE_ENV === 'production' && !env.DEVICE_KEY_REQUIRED) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['DEVICE_KEY_REQUIRED'],
+        message: 'DEVICE_KEY_REQUIRED must not be "false" in production',
+      });
+    }
+
+    if (
+      env.NODE_ENV === 'production' &&
+      env.DEVICE_ATTESTATION_PROVIDER === 'fake' &&
+      env.DEVICE_ATTESTATION_MODE !== 'off'
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['DEVICE_ATTESTATION_PROVIDER'],
+        message:
+          'DEVICE_ATTESTATION_PROVIDER must not be "fake" in production unless DEVICE_ATTESTATION_MODE is "off"',
       });
     }
 
@@ -343,6 +409,24 @@ function buildConfig(env: Env) {
       retentionDays: env.KYC_RETENTION_DAYS,
       prembly: {
         secretKey: env.PREMBLY_SECRET_KEY,
+      },
+    },
+    device: {
+      keyRequired: env.DEVICE_KEY_REQUIRED,
+      attestation: {
+        mode: env.DEVICE_ATTESTATION_MODE,
+        provider: env.DEVICE_ATTESTATION_PROVIDER,
+        allowDevelopmentApple: env.NODE_ENV !== 'production',
+        apple: {
+          teamId: env.APPLE_TEAM_ID,
+          bundleId: env.APPLE_BUNDLE_ID,
+          rootCaPem: env.APPLE_APP_ATTEST_ROOT_CA,
+        },
+        google: {
+          packageName: env.GOOGLE_PLAY_PACKAGE_NAME,
+          decryptionKey: env.GOOGLE_PLAY_INTEGRITY_DECRYPTION_KEY,
+          verificationKey: env.GOOGLE_PLAY_INTEGRITY_VERIFICATION_KEY,
+        },
       },
     },
   };

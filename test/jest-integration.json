@@ -12,5 +12,6 @@
   "testTimeout": 60000,
   "maxWorkers": 2,
   "globalSetup": "<rootDir>/integration/support/global-setup.ts",
-  "globalTeardown": "<rootDir>/integration/support/global-teardown.ts"
+  "globalTeardown": "<rootDir>/integration/support/global-teardown.ts",
+  "setupFiles": ["<rootDir>/integration/support/device-defaults.ts"]
 }

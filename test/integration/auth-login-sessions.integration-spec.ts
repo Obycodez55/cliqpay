@@ -12,6 +12,7 @@ import {
 import {
   createAuthTestHelpers,
   TEST_DEVICE,
+  TEST_DEVICE_ID,
   waitFor,
 } from './support/auth-test-helpers';
 
@@ -54,6 +55,7 @@ describe('login, sessions, and lockout', () => {
     expect(session.currentTokenHash).toHaveLength(64); // sha256 hex
     expect(session.trustedDeviceId).not.toBeNull();
     expect(session.device).toEqual(TEST_DEVICE);
+    expect(session.deviceId).toBe(TEST_DEVICE_ID);
 
     const device = await ctx.trustedDeviceRepo.findOneByOrFail({
       id: session.trustedDeviceId!,
@@ -73,6 +75,7 @@ describe('login, sessions, and lockout', () => {
       ctx.sessionService.login(
         { email: 'no-such-user@example.com', password: 'whatever' },
         null,
+        TEST_DEVICE_ID,
         TEST_DEVICE,
       ),
     ).rejects.toBeInstanceOf(InvalidCredentialsException);
@@ -81,6 +84,7 @@ describe('login, sessions, and lockout', () => {
       ctx.sessionService.login(
         { email: 'login-bad@example.com', password: 'wrong-password' },
         null,
+        TEST_DEVICE_ID,
         TEST_DEVICE,
       ),
     ).rejects.toBeInstanceOf(InvalidCredentialsException);
@@ -98,15 +102,13 @@ describe('login, sessions, and lockout', () => {
     );
     const firstToken = tokens.refreshToken;
 
-    const { refreshToken: secondToken } = await ctx.sessionService.refresh({
-      refreshToken: firstToken,
-    });
+    const { refreshToken: secondToken } =
+      await helpers.refreshSigned(firstToken);
     expect(secondToken).not.toBe(firstToken);
 
     // Normal rotation: the new token works, rotating again.
-    const { refreshToken: thirdToken } = await ctx.sessionService.refresh({
-      refreshToken: secondToken,
-    });
+    const { refreshToken: thirdToken } =
+      await helpers.refreshSigned(secondToken);
     expect(thirdToken).not.toBe(secondToken);
 
     // Replaying the very first (now two generations stale) token isn't
@@ -114,14 +116,14 @@ describe('login, sessions, and lockout', () => {
     // token is. Replaying the token one generation back (secondToken, which
     // is now previousTokenHash) is the reuse case that must revoke.
     const emailsBefore = ctx.emailAdapter.sent.length;
-    await expect(
-      ctx.sessionService.refresh({ refreshToken: secondToken }),
-    ).rejects.toBeInstanceOf(SessionRevokedException);
+    await expect(helpers.refreshSigned(secondToken)).rejects.toBeInstanceOf(
+      SessionRevokedException,
+    );
 
     // The session is now fully revoked — even the latest valid token stops working.
-    await expect(
-      ctx.sessionService.refresh({ refreshToken: thirdToken }),
-    ).rejects.toBeInstanceOf(InvalidRefreshTokenException);
+    await expect(helpers.refreshSigned(thirdToken)).rejects.toBeInstanceOf(
+      InvalidRefreshTokenException,
+    );
 
     // The reuse-detected revoke also fires a security_alert through the
     // real domain-events queue — not just an EventBusService.publish()
@@ -146,7 +148,7 @@ describe('login, sessions, and lockout', () => {
     const before = await ctx.sessionRepo.find();
 
     await expect(
-      ctx.sessionService.refresh({ refreshToken: 'never-issued-token' }),
+      helpers.refreshSigned('never-issued-token'),
     ).rejects.toBeInstanceOf(InvalidRefreshTokenException);
 
     const after = await ctx.sessionRepo.find();
@@ -171,7 +173,7 @@ describe('login, sessions, and lockout', () => {
     });
     expect(session.status).toBe('revoked');
     await expect(
-      ctx.sessionService.refresh({ refreshToken: tokens.refreshToken }),
+      helpers.refreshSigned(tokens.refreshToken),
     ).rejects.toBeInstanceOf(InvalidRefreshTokenException);
   });
 
@@ -187,6 +189,7 @@ describe('login, sessions, and lockout', () => {
         ctx.sessionService.login(
           { email: 'lockout@example.com', password: 'wrong-password' },
           null,
+          TEST_DEVICE_ID,
           TEST_DEVICE,
         ),
       ).rejects.toBeInstanceOf(InvalidCredentialsException);
@@ -197,6 +200,7 @@ describe('login, sessions, and lockout', () => {
       ctx.sessionService.login(
         { email: 'lockout@example.com', password: 'wrong-password' },
         null,
+        TEST_DEVICE_ID,
         TEST_DEVICE,
       ),
     ).rejects.toBeInstanceOf(InvalidCredentialsException);
@@ -219,6 +223,7 @@ describe('login, sessions, and lockout', () => {
           password: 'a-strong-unique-passphrase',
         },
         null,
+        TEST_DEVICE_ID,
         TEST_DEVICE,
       ),
     ).rejects.toBeInstanceOf(AccountLockedException);

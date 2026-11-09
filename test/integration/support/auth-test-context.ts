@@ -30,6 +30,8 @@ import { MfaMethod } from '../../../src/modules/auth/entities/mfa-method.entity'
 import { Session } from '../../../src/modules/auth/entities/session.entity';
 import { TrustedDevice } from '../../../src/modules/auth/entities/trusted-device.entity';
 import { VerificationCode } from '../../../src/modules/auth/entities/verification-code.entity';
+import { DeviceBindingService } from '../../../src/modules/auth/device-binding.service';
+import { DeviceChallenge } from '../../../src/modules/auth/entities/device-challenge.entity';
 import { MfaService } from '../../../src/modules/auth/mfa.service';
 import { SessionService } from '../../../src/modules/auth/session.service';
 import { Account } from '../../../src/modules/ledger/entities/account.entity';
@@ -51,6 +53,8 @@ export interface AuthTestContext {
   authService: AuthService;
   mfaService: MfaService;
   sessionService: SessionService;
+  deviceBindingService: DeviceBindingService;
+  deviceChallengeRepo: Repository<DeviceChallenge>;
   dataSource: DataSource;
   userRepo: Repository<User>;
   credentialRepo: Repository<Credential>;
@@ -125,6 +129,8 @@ export async function createAuthTestContext(
     authService: moduleRef.get(AuthService),
     mfaService: moduleRef.get(MfaService),
     sessionService: moduleRef.get(SessionService),
+    deviceBindingService: moduleRef.get(DeviceBindingService),
+    deviceChallengeRepo: dataSource.getRepository(DeviceChallenge),
     dataSource,
     userRepo: dataSource.getRepository(User),
     credentialRepo: dataSource.getRepository(Credential),

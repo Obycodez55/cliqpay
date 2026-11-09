@@ -19,3 +19,10 @@ export function extractDeviceMetadata(req: Request): DeviceMetadata {
     userAgent: req.headers['user-agent'] ?? null,
   };
 }
+
+export const TRUSTED_DEVICE_TOKEN_HEADER = 'x-trusted-device-token';
+
+export function readTrustedDeviceToken(req: Request): string | null {
+  const value = req.headers[TRUSTED_DEVICE_TOKEN_HEADER];
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}

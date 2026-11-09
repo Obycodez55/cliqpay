@@ -96,3 +96,13 @@ once.
   `risk` (ADR-0032).
 - The attestation verifiers carry untested-against-reality risk until the
   mobile pass checks them with real tokens.
+
+## Wire format
+
+- **Device id:** `X-Device-Id`, 8–128 characters of `A–Z a–z 0–9 . _ -`. Access tokens carry it as the `did` claim and every authenticated request must send the same value.
+- **Trusted-device token:** `X-Trusted-Device-Token` request header on login; returned in the `X-Trusted-Device-Token` response header of `POST /mfa/verify`.
+- **Challenge:** `POST /auth/device-challenge` `{ purpose: "login" | "refresh" | "register" }` returns a 43-character base64url `nonce` and `expiresAt` (2 minutes). Single use, bound to `X-Device-Id` and purpose.
+- **Signing string:** the parts joined by LF (0x0A), UTF-8. The nonce is signed as the received string, not decoded. Login: `login\n<nonce>\n<deviceId>`; refresh: `refresh\n<nonce>\n<deviceId>`. Signature: ECDSA P-256 over SHA-256, ASN.1 DER, standard base64, sent as `signature` beside `nonce`. The shared helpers are `buildSigningString` and `verifyDeviceSignature` in `src/shared/crypto/device-signature.util.ts`; money actions reuse them.
+- **Key registration:** `devicePublicKey` on `POST /mfa/verify`, base64 of the raw 65-byte uncompressed point or of X.509 SPKI.
+- **Attestation:** `attestation: { platform: "ios" | "android", nonce (a `register` nonce), keyId (iOS), token }`. The attested client data is `attest\n<nonce>\n<deviceId>\n<base64 of the 65-byte uncompressed point>`. iOS: App Attest `clientDataHash` is its SHA-256, `token` is the base64 attestation object. Android: the Play Integrity nonce is `base64url(SHA-256(client data))`, `token` is the integrity token, verified locally with the Play Console response-encryption keys.
+- **Unproven:** the Apple and Google verifiers are covered by synthetic tests only (Google round trip with locally generated keys; Apple's CBOR decoder), not against real tokens.

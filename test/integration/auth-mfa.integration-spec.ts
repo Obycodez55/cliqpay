@@ -18,6 +18,8 @@ import {
   SIGN_IN_CODE_SUBJECT,
   stepUpCodeSubject,
   TEST_DEVICE,
+  TEST_DEVICE_ID,
+  TEST_DEVICE_KEY,
   wrongCodeFor,
 } from './support/auth-test-helpers';
 import { dataOf } from './support/api-response';
@@ -93,6 +95,7 @@ describe('MFA enrollment, challenges, and trusted devices', () => {
         password: 'a-strong-unique-passphrase',
       },
       null,
+      TEST_DEVICE_ID,
       TEST_DEVICE,
     );
     expect(result.mfaRequired).toBe(true);
@@ -107,21 +110,31 @@ describe('MFA enrollment, challenges, and trusted devices', () => {
 
     await expect(
       ctx.sessionService.verifyMfaChallenge(
-        { challengeId: result.challengeId, code: wrongCodeFor(correctCode) },
+        {
+          challengeId: result.challengeId,
+          code: wrongCodeFor(correctCode),
+          devicePublicKey: TEST_DEVICE_KEY.publicKeyRawBase64,
+        },
+        TEST_DEVICE_ID,
         TEST_DEVICE,
       ),
     ).rejects.toBeInstanceOf(InvalidMfaCodeException);
 
     const { tokens, trustedDeviceToken } =
       await ctx.sessionService.verifyMfaChallenge(
-        { challengeId: result.challengeId, code: correctCode },
+        {
+          challengeId: result.challengeId,
+          code: correctCode,
+          devicePublicKey: TEST_DEVICE_KEY.publicKeyRawBase64,
+        },
+        TEST_DEVICE_ID,
         TEST_DEVICE,
       );
     expect(tokens.tokenType).toBe('Bearer');
     expect(typeof trustedDeviceToken).toBe('string');
   });
 
-  it('login from a device with a valid trusted-device cookie skips the MFA challenge', async () => {
+  it('login from a device with a valid trusted-device token and signed challenge skips the MFA challenge', async () => {
     const { user } = await helpers.registerUser({
       email: 'trusted@example.com',
       username: 'trusted_user',
@@ -133,13 +146,10 @@ describe('MFA enrollment, challenges, and trusted devices', () => {
     );
 
     const emailsBefore = ctx.emailAdapter.sent.length;
-    const result = await ctx.sessionService.login(
-      {
-        email: 'trusted@example.com',
-        password: 'a-strong-unique-passphrase',
-      },
+    const result = await helpers.loginTrusted(
+      'trusted@example.com',
+      'a-strong-unique-passphrase',
       trustedDeviceToken,
-      TEST_DEVICE,
     );
 
     expect(result.mfaRequired).toBe(false);
@@ -168,6 +178,7 @@ describe('MFA enrollment, challenges, and trusted devices', () => {
         password: 'a-strong-unique-passphrase',
       },
       null,
+      TEST_DEVICE_ID,
       TEST_DEVICE,
     );
     if (!result.mfaRequired) {
@@ -181,7 +192,12 @@ describe('MFA enrollment, challenges, and trusted devices', () => {
     for (let i = 0; i < 5; i++) {
       await expect(
         ctx.sessionService.verifyMfaChallenge(
-          { challengeId: result.challengeId, code: wrong },
+          {
+            challengeId: result.challengeId,
+            code: wrong,
+            devicePublicKey: TEST_DEVICE_KEY.publicKeyRawBase64,
+          },
+          TEST_DEVICE_ID,
           TEST_DEVICE,
         ),
       ).rejects.toBeInstanceOf(InvalidMfaCodeException);
@@ -196,7 +212,12 @@ describe('MFA enrollment, challenges, and trusted devices', () => {
     // Even the correct code no longer works — a new challenge is required.
     await expect(
       ctx.sessionService.verifyMfaChallenge(
-        { challengeId: result.challengeId, code: correctCode },
+        {
+          challengeId: result.challengeId,
+          code: correctCode,
+          devicePublicKey: TEST_DEVICE_KEY.publicKeyRawBase64,
+        },
+        TEST_DEVICE_ID,
         TEST_DEVICE,
       ),
     ).rejects.toBeInstanceOf(MfaChallengeInvalidException);
@@ -208,14 +229,16 @@ describe('MFA enrollment, challenges, and trusted devices', () => {
         {
           challengeId: '00000000-0000-0000-0000-000000000000',
           code: '123456',
+          devicePublicKey: TEST_DEVICE_KEY.publicKeyRawBase64,
         },
+        TEST_DEVICE_ID,
         TEST_DEVICE,
       ),
     ).rejects.toBeInstanceOf(MfaChallengeNotFoundException);
   });
 });
 
-describe('MFA over HTTP — trusted-device cookie and the JWT guard', () => {
+describe('MFA over HTTP — trusted-device header and the JWT guard', () => {
   let ctx: AuthTestContext;
   let helpers: ReturnType<typeof createAuthTestHelpers>;
 
@@ -228,15 +251,15 @@ describe('MFA over HTTP — trusted-device cookie and the JWT guard', () => {
     await destroyAuthTestContext(ctx);
   });
 
-  it('sets an httpOnly trusted-device cookie on verify, and presenting it skips the next challenge', async () => {
+  it('returns the trusted-device token in a header on verify, and presenting it with a signed challenge skips the next MFA', async () => {
     await request(ctx.app.getHttpServer())
       .post('/auth/register')
       .send({
-        email: 'http-cookie@example.com',
+        email: 'http-header@example.com',
         password: 'a-strong-unique-passphrase',
-        firstName: 'Cookie',
+        firstName: 'Header',
         lastName: 'Monster',
-        username: 'http_cookie_user',
+        username: 'http_header_user',
         phone: '+2348055555599',
       })
       .expect(201);
@@ -245,7 +268,7 @@ describe('MFA over HTTP — trusted-device cookie and the JWT guard', () => {
       .post('/auth/login')
       .set('User-Agent', 'Cliqpay-Test-Client/1.0')
       .send({
-        email: 'http-cookie@example.com',
+        email: 'http-header@example.com',
         password: 'a-strong-unique-passphrase',
       })
       .expect(200);
@@ -263,41 +286,46 @@ describe('MFA over HTTP — trusted-device cookie and the JWT guard', () => {
     const verifyRes = await request(ctx.app.getHttpServer())
       .post('/mfa/verify')
       .set('User-Agent', 'Cliqpay-Test-Client/1.0')
-      .send({ challengeId, code })
+      .send({
+        challengeId,
+        code,
+        devicePublicKey: TEST_DEVICE_KEY.publicKeyRawBase64,
+      })
       .expect(200);
 
-    const setCookieHeader = verifyRes.headers['set-cookie'] as unknown as
-      | string[]
-      | string;
-    const cookies = ([] as string[]).concat(setCookieHeader);
-    const trustedDeviceCookie = cookies.find((c) =>
-      c.startsWith('cliqpay_trusted_device='),
-    );
-    expect(trustedDeviceCookie).toBeDefined();
-    expect(trustedDeviceCookie).toContain('HttpOnly');
-    expect(trustedDeviceCookie).toMatch(/SameSite=Lax/i);
+    expect(verifyRes.headers['set-cookie']).toBeUndefined();
+    const trustedDeviceToken = verifyRes.headers['x-trusted-device-token'];
+    expect(typeof trustedDeviceToken).toBe('string');
 
     // Real request metadata, not the test-only TEST_DEVICE constant —
     // proves the controller actually reads req.ip/User-Agent rather than
     // relying on a fixed value.
-    const httpCookieUser = await ctx.userRepo.findOneByOrFail({
-      email: 'http-cookie@example.com',
+    const httpUser = await ctx.userRepo.findOneByOrFail({
+      email: 'http-header@example.com',
     });
-    const httpCookieDevice = await ctx.trustedDeviceRepo.findOneByOrFail({
-      userId: httpCookieUser.id,
+    const httpDevice = await ctx.trustedDeviceRepo.findOneByOrFail({
+      userId: httpUser.id,
     });
-    expect(httpCookieDevice.device.userAgent).toBe('Cliqpay-Test-Client/1.0');
-    expect(httpCookieDevice.device.ipAddress).toEqual(expect.any(String));
-    expect(httpCookieDevice.device.ipAddress.length).toBeGreaterThan(0);
+    expect(httpDevice.device.userAgent).toBe('Cliqpay-Test-Client/1.0');
+    expect(httpDevice.device.ipAddress).toEqual(expect.any(String));
+    expect(httpDevice.device.ipAddress.length).toBeGreaterThan(0);
+    expect(httpDevice.deviceId).toBe(TEST_DEVICE_ID);
+    expect(httpDevice.publicKey).toBe(TEST_DEVICE_KEY.publicKeySpkiBase64);
 
-    const cookieValue = trustedDeviceCookie!.split(';')[0];
+    const challengeRes = await request(ctx.app.getHttpServer())
+      .post('/auth/device-challenge')
+      .send({ purpose: 'login' })
+      .expect(200);
+    const { nonce } = dataOf<{ nonce: string }>(challengeRes);
 
     const secondLoginRes = await request(ctx.app.getHttpServer())
       .post('/auth/login')
-      .set('Cookie', cookieValue)
+      .set('X-Trusted-Device-Token', trustedDeviceToken)
       .send({
-        email: 'http-cookie@example.com',
+        email: 'http-header@example.com',
         password: 'a-strong-unique-passphrase',
+        nonce,
+        signature: TEST_DEVICE_KEY.signChallenge('login', nonce),
       })
       .expect(200);
     const secondLoginBody = dataOf<LoginResponseDto>(secondLoginRes);

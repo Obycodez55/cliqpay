@@ -29,6 +29,8 @@ import {
 import { AuthModule } from '../../../src/modules/auth/auth.module';
 import { AuthService } from '../../../src/modules/auth/auth.service';
 import { MfaService } from '../../../src/modules/auth/mfa.service';
+import { DeviceBindingService } from '../../../src/modules/auth/device-binding.service';
+import { DeviceChallenge } from '../../../src/modules/auth/entities/device-challenge.entity';
 import { SessionService } from '../../../src/modules/auth/session.service';
 import { Credential } from '../../../src/modules/auth/entities/credential.entity';
 import { Session } from '../../../src/modules/auth/entities/session.entity';
@@ -77,6 +79,8 @@ export interface WithdrawalsTestContext {
   authService: AuthService;
   mfaService: MfaService;
   sessionService: SessionService;
+  deviceBindingService: DeviceBindingService;
+  deviceChallengeRepo: Repository<DeviceChallenge>;
   usersService: UsersService;
   ledgerService: LedgerService;
   paymentsService: PaymentsService;
@@ -188,6 +192,8 @@ export async function createWithdrawalsTestContext(
     authService: moduleRef.get(AuthService),
     mfaService: moduleRef.get(MfaService),
     sessionService: moduleRef.get(SessionService),
+    deviceBindingService: moduleRef.get(DeviceBindingService),
+    deviceChallengeRepo: dataSource.getRepository(DeviceChallenge),
     usersService: moduleRef.get(UsersService),
     ledgerService: moduleRef.get(LedgerService),
     paymentsService: moduleRef.get(PaymentsService),

@@ -10,6 +10,7 @@ import {
 import {
   ApiBearerAuth,
   ApiExtraModels,
+  ApiHeader,
   ApiOperation,
   ApiResponse,
   ApiTags,
@@ -42,13 +43,28 @@ import { ConfirmChangeEmailDto } from './dto/confirm-change-email.dto';
 import { ChangePhoneDto } from './dto/change-phone.dto';
 import { ConfirmChangePhoneDto } from './dto/confirm-change-phone.dto';
 import { StepUpChallengeResponseDto } from './dto/step-up-challenge-response.dto';
-import { readTrustedDeviceCookie } from './internal/cookie.util';
-import { extractDeviceMetadata } from './internal/device-metadata.util';
+import { readDeviceId } from '../../common/device/device-id.util';
+import {
+  extractDeviceMetadata,
+  readTrustedDeviceToken,
+} from './internal/device-metadata.util';
+import {
+  DeviceChallengeDto,
+  DeviceChallengeResponseDto,
+} from './dto/device-challenge.dto';
+import { DeviceBindingService } from './device-binding.service';
 import {
   AuthenticatedRequest,
   JwtAuthGuard,
 } from '../../common/guards/jwt-auth.guard';
 import { SessionService } from './session.service';
+
+const DEVICE_ID_API_HEADER = {
+  name: 'X-Device-Id',
+  required: true,
+  description:
+    'Stable app-install id (8-128 characters: letters, digits, dot, underscore, hyphen). Bound to the session; required on every authenticated request.',
+};
 import { TransactionPinService } from './transaction-pin.service';
 
 @ApiTags('Authentication')
@@ -58,6 +74,7 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly sessionService: SessionService,
     private readonly transactionPinService: TransactionPinService,
+    private readonly deviceBinding: DeviceBindingService,
   ) {}
 
   @Post('register')
@@ -68,10 +85,28 @@ export class AuthController {
     return this.authService.register(dto);
   }
 
-  // No cookie is set here even on the mfaRequired:false (trusted-device
-  // skip) path — the client already holds a valid one, nothing to reissue.
-  // A fresh cookie is only ever minted on a successful MFA verify (see
+  // No trusted-device token is issued here even on the mfaRequired:false
+  // (trusted-device skip) path — the client already holds a valid one. A
+  // fresh one is only ever minted on a successful MFA verify (see
   // MfaController) — see docs/architecture.md §3.8.
+  @Post('device-challenge')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @ApiHeader(DEVICE_ID_API_HEADER)
+  @ApiOperation({
+    summary: 'Issue a single-use nonce for a signed login or refresh',
+    description:
+      'The nonce lives 2 minutes and is bound to the X-Device-Id header and the purpose. ' +
+      'Sign `<purpose>\\n<nonce>\\n<deviceId>` (UTF-8, LF-separated, the nonce as the 43-character string received) ' +
+      'with the device key: ECDSA P-256 over SHA-256, ASN.1 DER signature, base64.',
+  })
+  deviceChallenge(
+    @Body() dto: DeviceChallengeDto,
+    @Req() req: Request,
+  ): Promise<DeviceChallengeResponseDto> {
+    return this.deviceBinding.issueChallenge(readDeviceId(req), dto.purpose);
+  }
+
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
@@ -88,19 +123,31 @@ export class AuthController {
       ],
     },
   })
+  @ApiHeader(DEVICE_ID_API_HEADER)
+  @ApiHeader({
+    name: 'X-Trusted-Device-Token',
+    required: false,
+    description:
+      'The token returned in the X-Trusted-Device-Token response header of `POST /mfa/verify`; skips MFA when valid for this device.',
+  })
   login(@Body() dto: LoginDto, @Req() req: Request): Promise<LoginResponseDto> {
     return this.sessionService.login(
       dto,
-      readTrustedDeviceCookie(req),
+      readTrustedDeviceToken(req),
+      readDeviceId(req),
       extractDeviceMetadata(req),
     );
   }
 
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
+  @ApiHeader(DEVICE_ID_API_HEADER)
   @ApiOperation({ summary: 'Exchange a refresh token for a new token pair' })
-  refresh(@Body() dto: RefreshDto): Promise<TokenPairResponseDto> {
-    return this.sessionService.refresh(dto);
+  refresh(
+    @Body() dto: RefreshDto,
+    @Req() req: Request,
+  ): Promise<TokenPairResponseDto> {
+    return this.sessionService.refresh(dto, readDeviceId(req));
   }
 
   @Post('logout')

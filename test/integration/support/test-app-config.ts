@@ -71,6 +71,20 @@ function defaultTestAppConfig(): AppConfig {
       retentionDays: 30,
       prembly: { secretKey: undefined },
     },
+    device: {
+      keyRequired: true,
+      attestation: {
+        mode: 'shadow',
+        provider: 'fake',
+        allowDevelopmentApple: true,
+        apple: { teamId: undefined, bundleId: undefined, rootCaPem: undefined },
+        google: {
+          packageName: undefined,
+          decryptionKey: undefined,
+          verificationKey: undefined,
+        },
+      },
+    },
   };
 }
 
