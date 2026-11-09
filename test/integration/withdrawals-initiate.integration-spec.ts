@@ -9,6 +9,8 @@ import {
   seedWithdrawalUser,
 } from './support/withdrawals-test-context';
 import { dataOf } from './support/api-response';
+import { addTestRestriction } from './support/restrictions';
+import { trackSettled, waitBriefly } from './support/user-lock';
 
 jest.setTimeout(180_000);
 
@@ -247,7 +249,7 @@ describe('POST /withdrawals', () => {
   describe('freeze enforcement', () => {
     it('rejects a frozen initiator with a distinct error code, without moving anything', async () => {
       const sender = await seedFundedSenderWithBankAccount();
-      await ctx.userRepo.update({ id: sender.userId }, { isFrozen: true });
+      await addTestRestriction(ctx.dataSource, sender.userId);
 
       await initiate(tokenFor(sender.userId), {
         bankAccountId: sender.bankAccount.id,
@@ -256,6 +258,42 @@ describe('POST /withdrawals', () => {
         pin: '1234',
       }).expect(403);
 
+      const walletAccount = await ctx.accountRepo.findOneByOrFail({
+        id: sender.walletId,
+      });
+      expect(walletAccount.balance).toBe(5_000_000n);
+    });
+  });
+
+  describe('restriction committed while a withdrawal waits on the user lock', () => {
+    it('refuses the withdrawal and moves nothing', async () => {
+      const sender = await seedFundedSenderWithBankAccount();
+      const queryRunner = ctx.dataSource.createQueryRunner();
+      await queryRunner.connect();
+      await queryRunner.startTransaction();
+      await queryRunner.query('SELECT pg_advisory_xact_lock(hashtext($1))', [
+        sender.userId,
+      ]);
+      await addTestRestriction(queryRunner.manager, sender.userId, {
+        reason: 'self_lock',
+      });
+
+      const pending = trackSettled(
+        initiate(tokenFor(sender.userId), {
+          bankAccountId: sender.bankAccount.id,
+          amount: 500_000,
+          reference: `cliqpay-wd-lock-race-${sender.userId}`,
+          pin: '1234',
+        }),
+      );
+      await waitBriefly();
+      expect(pending.isSettled()).toBe(false);
+
+      await queryRunner.commitTransaction();
+      await queryRunner.release();
+
+      const res = await pending.promise;
+      expect(res.status).toBe(403);
       const walletAccount = await ctx.accountRepo.findOneByOrFail({
         id: sender.walletId,
       });

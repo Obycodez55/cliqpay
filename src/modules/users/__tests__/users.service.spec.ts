@@ -62,7 +62,9 @@ describe('UsersService', () => {
     };
     manager = { getRepository: jest.fn(() => userRepo) };
     dataSource = { getRepository: jest.fn(() => userRepo) };
-    service = new UsersService(dataSource as unknown as DataSource);
+    service = new UsersService(dataSource as unknown as DataSource, {
+      record: jest.fn(),
+    });
   });
 
   describe('createUser', () => {

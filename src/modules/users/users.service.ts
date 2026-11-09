@@ -1,7 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull } from 'typeorm';
 import { KycTier, User } from './entities/user.entity';
+import {
+  AccountRestriction,
+  RestrictionReason,
+  RestrictionScope,
+} from './entities/account-restriction.entity';
+import { AuditActor, AuditService } from '../../shared/audit/audit.service';
 import {
   NoPendingEmailChangeException,
   NoPendingPhoneChangeException,
@@ -20,6 +26,12 @@ import {
 
 export type { KycTier };
 export { KYC_TIERS } from './entities/user.entity';
+export type { RestrictionReason, RestrictionScope };
+
+export interface RestrictionState {
+  blocksOutbound: boolean;
+  blocksInbound: boolean;
+}
 
 const USERNAME_CHANGE_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
@@ -39,7 +51,10 @@ export interface CreateUserData {
  */
 @Injectable()
 export class UsersService {
-  constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
+  constructor(
+    @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly auditService: AuditService,
+  ) {}
 
   /**
    * Takes the caller's own EntityManager — auth.register() creates the
@@ -179,31 +194,110 @@ export class UsersService {
     return user;
   }
 
-  // Called by `disputes` when a chargeback leaves a wallet strictly
-  // negative (ADR-0016) — freezing is a dispute-lifecycle event, never
-  // triggered automatically from a balance crossing zero. Takes the
-  // caller's own EntityManager, not an injected repository — the freeze
-  // must commit atomically with the chargeback posting and the `disputes`
-  // row it accompanies (DisputesService.recordChargeback), so there's no
-  // standalone-transaction variant to fall back to, same as
-  // LedgerService.createUserWallet.
-  async freeze(manager: EntityManager, userId: string): Promise<void> {
-    await manager
-      .getRepository(User)
-      .update({ id: userId }, { isFrozen: true });
+  // Takes the same per-user advisory lock the KYC limit checks take, so a
+  // restriction and a money movement for one user are serialised.
+  async addRestriction(
+    manager: EntityManager,
+    params: {
+      userId: string;
+      reason: RestrictionReason;
+      scope: RestrictionScope;
+      sourceId: string;
+      note?: string;
+      actor: AuditActor;
+    },
+  ): Promise<boolean> {
+    await this.lockUser(manager, params.userId);
+    const repo = manager.getRepository(AccountRestriction);
+    const open = await repo.existsBy({
+      userId: params.userId,
+      reason: params.reason,
+      sourceId: params.sourceId,
+      liftedAt: IsNull(),
+    });
+    if (open) {
+      return false;
+    }
+    await repo.insert({
+      userId: params.userId,
+      reason: params.reason,
+      scope: params.scope,
+      sourceId: params.sourceId,
+      note: params.note ?? null,
+    });
+    await this.auditService.record(manager, {
+      actor: params.actor,
+      action: 'restriction_added',
+      subject: { type: 'user', id: params.userId },
+      metadata: {
+        reason: params.reason,
+        scope: params.scope,
+        sourceId: params.sourceId,
+      },
+    });
+    return true;
   }
 
-  // The other half of freeze() — called only by
-  // `disputes.resolveDispute`'s `resolved` branch, once the resulting
-  // balance is non-negative (issue #36, ADR-0016). Never called from a
-  // balance-restoring top-up elsewhere: the freeze represents an unresolved
-  // dispute, not an arithmetic state, so it lifts only through the
-  // dispute-resolution path. Same EntityManager-only shape as freeze() for
-  // the same atomicity reason.
-  async unfreeze(manager: EntityManager, userId: string): Promise<void> {
-    await manager
-      .getRepository(User)
-      .update({ id: userId }, { isFrozen: false });
+  async liftRestriction(
+    manager: EntityManager,
+    params: {
+      userId: string;
+      reason: RestrictionReason;
+      sourceId: string;
+      actor: AuditActor;
+    },
+  ): Promise<boolean> {
+    await this.lockUser(manager, params.userId);
+    const result = await manager.getRepository(AccountRestriction).update(
+      {
+        userId: params.userId,
+        reason: params.reason,
+        sourceId: params.sourceId,
+        liftedAt: IsNull(),
+      },
+      { liftedAt: new Date(), liftedBy: params.actor.id ?? params.actor.type },
+    );
+    if (!result.affected) {
+      return false;
+    }
+    await this.auditService.record(manager, {
+      actor: params.actor,
+      action: 'restriction_lifted',
+      subject: { type: 'user', id: params.userId },
+      metadata: { reason: params.reason, sourceId: params.sourceId },
+    });
+    return true;
+  }
+
+  // Callers must already hold the user's advisory lock for the answer to be
+  // stable for the rest of their transaction.
+  async getRestrictionState(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<RestrictionState> {
+    const open = await manager
+      .getRepository(AccountRestriction)
+      .find({ where: { userId, liftedAt: IsNull() }, select: { scope: true } });
+    return {
+      blocksOutbound: open.length > 0,
+      blocksInbound: open.some((row) => row.scope === 'all'),
+    };
+  }
+
+  async getOpenRestrictionUserIds(userIds: string[]): Promise<Set<string>> {
+    if (userIds.length === 0) {
+      return new Set();
+    }
+    const rows = await this.dataSource.getRepository(AccountRestriction).find({
+      where: { userId: In(userIds), liftedAt: IsNull() },
+      select: { userId: true },
+    });
+    return new Set(rows.map((row) => row.userId));
+  }
+
+  // Money paths take this before any wallet-row lock.
+  async lockUser(manager: EntityManager, userId: string): Promise<void> {
+    await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [userId]);
   }
 
   async getKycTier(manager: EntityManager, userId: string): Promise<KycTier> {

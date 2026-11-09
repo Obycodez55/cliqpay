@@ -17,6 +17,7 @@ import {
   computeDueAt,
   lagosToday,
 } from '../../src/modules/scheduling/internal/run-time';
+import { addTestRestriction } from './support/restrictions';
 
 jest.setTimeout(180_000);
 
@@ -206,7 +207,7 @@ describe('POST /scheduled-payments', () => {
     it('rejects a frozen sender with 403', async () => {
       const sender = await h.seedUser('sender');
       const recipient = await h.seedUser('recipient');
-      await ctx.userRepo.update({ id: sender.userId }, { isFrozen: true });
+      await addTestRestriction(ctx.dataSource, sender.userId);
 
       const res = await h
         .createSchedule(sender.userId, recipient.userId)

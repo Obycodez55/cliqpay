@@ -53,6 +53,7 @@ describe('GET /disputes/collections', () => {
     return request(ctx.app.getHttpServer())
       .post('/disputes/chargebacks')
       .set('X-Internal-Secret', TEST_INTERNAL_API_SECRET)
+      .set('X-Reviewer-Id', 'reviewer-1')
       .send(body);
   }
 
@@ -60,6 +61,7 @@ describe('GET /disputes/collections', () => {
     const req = request(ctx.app.getHttpServer()).get('/disputes/collections');
     if (secret !== undefined) {
       req.set('X-Internal-Secret', secret);
+      req.set('X-Reviewer-Id', 'reviewer-1');
     }
     return req;
   }

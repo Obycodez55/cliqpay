@@ -13,7 +13,7 @@ export const TEST_INTERNAL_API_SECRET =
 
 function defaultTestAppConfig(): AppConfig {
   return {
-    app: { env: 'test', port: 0, corsAllowedOrigins: [] },
+    app: { env: 'test', port: 0, corsAllowedOrigins: [], trustProxy: false },
     database: { url: '' },
     redis: { url: 'redis://localhost:6379' },
     sentry: { dsn: undefined },

@@ -423,9 +423,6 @@ export class WithdrawalsService {
     // above — a retried, already-initiated withdrawal shouldn't demand the
     // PIN again, mirroring TransfersService.executeTransfer.
     const user = await this.usersService.findById(userId);
-    if (user.isFrozen) {
-      throw new InitiatorAccountFrozenException();
-    }
     if (pin !== null) {
       await this.authService.verifyTransactionPin(userId, pin);
     }
@@ -441,6 +438,12 @@ export class WithdrawalsService {
           amount,
           (m, since) => this.ledgerService.getDebitedSince(m, userId, since),
         );
+        if (
+          (await this.usersService.getRestrictionState(manager, userId))
+            .blocksOutbound
+        ) {
+          throw new InitiatorAccountFrozenException();
+        }
         return this.ledgerService.postWithdrawalWithinTransaction(manager, {
           reference: dto.reference,
           walletId: wallet.id,

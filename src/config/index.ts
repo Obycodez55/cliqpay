@@ -12,6 +12,9 @@ const envSchema = z
       .default('development'),
     PORT: z.coerce.number().int().positive().default(3000),
     CORS_ALLOWED_ORIGINS: z.string().default(''),
+    // Hop count ("1") or comma-separated proxy IPs/CIDRs. Unset trusts no
+    // proxy, so req.ip is the socket address.
+    TRUST_PROXY: z.string().optional(),
 
     DATABASE_URL: z.string().url(),
 
@@ -229,6 +232,20 @@ const envSchema = z
 
 type Env = z.infer<typeof envSchema>;
 
+function parseTrustProxy(raw: string | undefined): number | string[] | false {
+  const value = raw?.trim();
+  if (!value) {
+    return false;
+  }
+  if (/^\d+$/.test(value)) {
+    return Number(value);
+  }
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
 function buildConfig(env: Env) {
   return {
     app: {
@@ -237,6 +254,7 @@ function buildConfig(env: Env) {
       corsAllowedOrigins: env.CORS_ALLOWED_ORIGINS.split(',')
         .map((origin) => origin.trim())
         .filter(Boolean),
+      trustProxy: parseTrustProxy(env.TRUST_PROXY),
     },
     database: {
       url: env.DATABASE_URL,

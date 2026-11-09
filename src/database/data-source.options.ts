@@ -22,7 +22,10 @@ export function buildDataSourceOptions(
   return {
     type: 'postgres',
     url: config.database.url,
-    entities: [__dirname + '/../modules/**/entities/*.entity{.ts,.js}'],
+    entities: [
+      __dirname + '/../modules/**/entities/*.entity{.ts,.js}',
+      __dirname + '/../shared/**/entities/*.entity{.ts,.js}',
+    ],
     migrations: [__dirname + '/migrations/*{.ts,.js}'],
     namingStrategy: new CliqpayNamingStrategy(),
     // Migrations only, always — see docs/architecture.md §7 Data Integrity.

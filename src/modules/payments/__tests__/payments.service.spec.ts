@@ -116,7 +116,9 @@ function webhookBody(overrides: Partial<Record<string, unknown>> = {}) {
 describe('PaymentsService.handleKoraWebhook (charge events)', () => {
   let ledgerService: CompletionLedger;
   let kycService: ReturnType<typeof completionKyc>;
-  let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
+  let usersService: jest.Mocked<
+    Pick<UsersService, 'findById' | 'getRestrictionState'>
+  >;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let adapter: jest.Mocked<PaymentProviderAdapter>;
   let service: PaymentsService;
@@ -130,7 +132,12 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
   beforeEach(() => {
     ledgerService = completionLedger();
     kycService = completionKyc();
-    usersService = { findById: jest.fn() };
+    usersService = {
+      findById: jest.fn(),
+      getRestrictionState: jest
+        .fn()
+        .mockResolvedValue({ blocksOutbound: false, blocksInbound: false }),
+    };
     eventBus = { publish: jest.fn() };
     adapter = mockAdapter();
     service = new PaymentsService(
@@ -485,7 +492,9 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
 
 describe('PaymentsService.handleKoraWebhook (refund events)', () => {
   let ledgerService: CompletionLedger;
-  let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
+  let usersService: jest.Mocked<
+    Pick<UsersService, 'findById' | 'getRestrictionState'>
+  >;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let service: PaymentsService;
 
@@ -511,7 +520,12 @@ describe('PaymentsService.handleKoraWebhook (refund events)', () => {
 
   beforeEach(() => {
     ledgerService = completionLedger();
-    usersService = { findById: jest.fn() };
+    usersService = {
+      findById: jest.fn(),
+      getRestrictionState: jest
+        .fn()
+        .mockResolvedValue({ blocksOutbound: false, blocksInbound: false }),
+    };
     eventBus = { publish: jest.fn() };
     service = new PaymentsService(
       inlineTransaction,
@@ -637,7 +651,9 @@ describe('PaymentsService.pollStaleFundingTransactions', () => {
   let ledgerService: CompletionLedger &
     jest.Mocked<Pick<LedgerService, 'findStaleFundingTransactions'>>;
   let kycService: ReturnType<typeof completionKyc>;
-  let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
+  let usersService: jest.Mocked<
+    Pick<UsersService, 'findById' | 'getRestrictionState'>
+  >;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let adapter: jest.Mocked<PaymentProviderAdapter>;
   let service: PaymentsService;
@@ -655,7 +671,12 @@ describe('PaymentsService.pollStaleFundingTransactions', () => {
       findStaleFundingTransactions: jest.fn().mockResolvedValue([]),
     };
     kycService = completionKyc();
-    usersService = { findById: jest.fn() };
+    usersService = {
+      findById: jest.fn(),
+      getRestrictionState: jest
+        .fn()
+        .mockResolvedValue({ blocksOutbound: false, blocksInbound: false }),
+    };
     eventBus = { publish: jest.fn() };
     adapter = mockAdapter();
     service = new PaymentsService(
@@ -780,7 +801,9 @@ describe('PaymentsService.reconcileFloatBalances', () => {
   let ledgerService: jest.Mocked<
     Pick<LedgerService, 'getReconciliationFigures'>
   >;
-  let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
+  let usersService: jest.Mocked<
+    Pick<UsersService, 'findById' | 'getRestrictionState'>
+  >;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let adapter: FakeAdapter;
   let service: PaymentsService;
@@ -793,7 +816,12 @@ describe('PaymentsService.reconcileFloatBalances', () => {
 
   beforeEach(() => {
     ledgerService = { getReconciliationFigures: jest.fn() };
-    usersService = { findById: jest.fn() };
+    usersService = {
+      findById: jest.fn(),
+      getRestrictionState: jest
+        .fn()
+        .mockResolvedValue({ blocksOutbound: false, blocksInbound: false }),
+    };
     eventBus = { publish: jest.fn() };
     adapter = new FakeAdapter();
     service = new PaymentsService(

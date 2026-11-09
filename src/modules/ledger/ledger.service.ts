@@ -68,6 +68,8 @@ export interface HoldFundingResult {
   refundReference: string;
 }
 
+export type HeldFundingForReview = Omit<HoldFundingResult, 'refundReference'>;
+
 export interface SettleRefundParams {
   refundReference: string;
   providerReportedAmount: Money;
@@ -1017,6 +1019,35 @@ export class LedgerService {
     manager: EntityManager,
     facts: PostFundingFacts,
   ): Promise<HoldFundingResult | null> {
+    const held = await this.holdFunding(manager, facts, true);
+    return held ? { ...held, refundReference: held.refundReference! } : null;
+  }
+
+  // Same suspense posting, but no refund attempt: the money stays held until
+  // someone decides what happens to it.
+  async holdFundingForReviewWithinTransaction(
+    manager: EntityManager,
+    facts: PostFundingFacts,
+  ): Promise<HeldFundingForReview | null> {
+    const held = await this.holdFunding(manager, facts, false);
+    if (!held) {
+      return null;
+    }
+    return {
+      userId: held.userId,
+      netAmount: held.netAmount,
+      fundingTransactionId: held.fundingTransactionId,
+      fundingReference: held.fundingReference,
+    };
+  }
+
+  private async holdFunding(
+    manager: EntityManager,
+    facts: PostFundingFacts,
+    startRefund: boolean,
+  ): Promise<
+    (HeldFundingForReview & { refundReference: string | null }) | null
+  > {
     const transaction = await this.claimPendingFunding(manager, facts, 'held');
     if (!transaction) {
       return null;
@@ -1101,7 +1132,9 @@ export class LedgerService {
       },
       manager,
     );
-    const attempt = await this.insertRefundAttempt(manager, transaction, 1);
+    const attempt = startRefund
+      ? await this.insertRefundAttempt(manager, transaction, 1)
+      : null;
     const wallet = await accountRepo.findOneByOrFail({
       id: transaction.recipientWalletId!,
     });
@@ -1111,7 +1144,7 @@ export class LedgerService {
       netAmount: facts.netAmount,
       fundingTransactionId: transaction.id,
       fundingReference: transaction.reference,
-      refundReference: attempt.reference,
+      refundReference: attempt?.reference ?? null,
     };
   }
 
@@ -2400,6 +2433,26 @@ export class LedgerService {
       .andWhere('transaction.status = :status', { status: 'completed' })
       .getRawOne<{ total: string }>();
     return Money.of(BigInt(result?.total ?? '0'), currency);
+  }
+
+  async findWalletOwnerId(
+    manager: EntityManager,
+    walletId: string,
+  ): Promise<string> {
+    const wallet = await manager
+      .getRepository(Account)
+      .findOneByOrFail({ id: walletId });
+    return wallet.userId!;
+  }
+
+  async findChargebackOwnerId(
+    manager: EntityManager,
+    chargebackTransactionId: string,
+  ): Promise<string> {
+    const chargeback = await manager
+      .getRepository(Transaction)
+      .findOneByOrFail({ id: chargebackTransactionId });
+    return this.findWalletOwnerId(manager, chargeback.senderWalletId!);
   }
 
   // Feeds disputes.getCollections (issue #37) — every wallet currently

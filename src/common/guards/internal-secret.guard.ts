@@ -14,7 +14,9 @@ import { APP_CONFIG, AppConfig } from '../../config';
 // endpoint reuses this rather than each module inventing its own shared-
 // secret check. No AdminUser model exists yet (docs/architecture.md §9), so
 // this is the interim trust boundary for admin-triggered actions — see
-// docs/adr/0016-disputes-module-boundary.md.
+// docs/adr/0016-disputes-module-boundary.md. The reviewer id is self-declared
+// by whoever holds the secret, so it attributes actions but doesn't prove who
+// took them.
 @Injectable()
 export class InternalSecretGuard implements CanActivate {
   constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {}
@@ -39,6 +41,12 @@ export class InternalSecretGuard implements CanActivate {
     if (!matches) {
       throw new UnauthorizedException();
     }
+
+    const reviewerId = request.headers['x-reviewer-id'];
+    if (typeof reviewerId !== 'string' || reviewerId.trim() === '') {
+      throw new UnauthorizedException();
+    }
+    request.reviewerId = reviewerId.trim();
 
     return true;
   }

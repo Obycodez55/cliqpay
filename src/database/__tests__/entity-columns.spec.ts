@@ -18,6 +18,9 @@ const SUBJECT_KEYED_TABLES = new Set(['posts']);
 // index; it has no timestamps of its own.
 const SNAPSHOT_TIMESTAMP_TABLES = new Set(['post_participants']);
 
+// Events are never updated, so the only timestamp is when they occurred.
+const OCCURRED_AT_TABLES = new Set(['audit_events']);
+
 describe('entity base columns', () => {
   let metadatas: EntityMetadata[];
 
@@ -67,6 +70,15 @@ describe('entity base columns', () => {
         violations.push(`${table}.id is not a generated uuid primary key`);
       }
       if (SNAPSHOT_TIMESTAMP_TABLES.has(table)) {
+        continue;
+      }
+      if (OCCURRED_AT_TABLES.has(table)) {
+        const occurredAt = metadata.findColumnWithPropertyName('occurredAt');
+        if (occurredAt?.type !== 'timestamptz' || !occurredAt.isCreateDate) {
+          violations.push(
+            `${table}.occurredAt is not a timestamptz create-date`,
+          );
+        }
         continue;
       }
       if (createdAt?.type !== 'timestamptz' || !createdAt.isCreateDate) {

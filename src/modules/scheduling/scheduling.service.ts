@@ -141,9 +141,7 @@ export class SchedulingService {
         dto.target.userId!,
         dto.amount,
       );
-      if (prepared.sender.isFrozen) {
-        throw new ScheduleSenderFrozenException();
-      }
+      await this.assertSenderNotRestricted(userId);
       await this.assertWithinDailyLimit(userId, prepared.amount);
       await this.assertRecipientCanReceive(userId, prepared);
       senderEmail = prepared.sender.email;
@@ -629,11 +627,19 @@ export class SchedulingService {
       schedule.recipientUserId!,
       amount,
     );
-    if (prepared.sender.isFrozen) {
-      throw new ScheduleSenderFrozenException();
-    }
+    await this.assertSenderNotRestricted(userId);
     await this.assertWithinDailyLimit(userId, prepared.amount);
     await this.assertRecipientCanReceive(userId, prepared);
+  }
+
+  private async assertSenderNotRestricted(userId: string): Promise<void> {
+    const state = await this.usersService.getRestrictionState(
+      this.dataSource.manager,
+      userId,
+    );
+    if (state.blocksOutbound) {
+      throw new ScheduleSenderFrozenException();
+    }
   }
 
   // The run checks all of this again.
@@ -667,9 +673,7 @@ export class SchedulingService {
     if (!sender.emailVerifiedAt) {
       throw new ScheduleSenderEmailNotVerifiedException();
     }
-    if (sender.isFrozen) {
-      throw new ScheduleSenderFrozenException();
-    }
+    await this.assertSenderNotRestricted(userId);
     await this.assertWithinDailyLimit(userId, Money.of(amount, NGN));
     return sender;
   }
@@ -702,6 +706,13 @@ export class SchedulingService {
         prepared.recipientUserId,
       )
     ) {
+      throw new ScheduleRecipientUnableToReceiveException();
+    }
+    const recipientState = await this.usersService.getRestrictionState(
+      this.dataSource.manager,
+      prepared.recipientUserId,
+    );
+    if (recipientState.blocksInbound) {
       throw new ScheduleRecipientUnableToReceiveException();
     }
     try {

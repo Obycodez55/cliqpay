@@ -506,6 +506,17 @@ export class PaymentsService {
         facts.netAmount,
         (m) => this.ledgerService.getWalletBalance(m, pending.userId),
       );
+      const restricted = (
+        await this.usersService.getRestrictionState(manager, pending.userId)
+      ).blocksInbound;
+      if (restricted) {
+        const held =
+          await this.ledgerService.holdFundingForReviewWithinTransaction(
+            manager,
+            facts,
+          );
+        return held ? { kind: 'restricted' as const, held } : null;
+      }
       if (verdict.allowed) {
         const credited = await this.ledgerService.postFundingWithinTransaction(
           manager,
@@ -526,6 +537,12 @@ export class PaymentsService {
     }
     if (outcome.kind === 'credited') {
       await this.publishFundingCompletedEvent(outcome.credited);
+      return;
+    }
+    if (outcome.kind === 'restricted') {
+      this.logger.warn(
+        `completeFunding: funding "${outcome.held.fundingReference}" is for a user whose account restriction blocks incoming money — held in suspense, no refund started`,
+      );
       return;
     }
     this.logger.warn(

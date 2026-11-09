@@ -9,6 +9,7 @@ import {
 } from './support/transfers-test-context';
 import { dataOf, errorOf } from './support/api-response';
 import { KycTier } from '../../src/modules/users/users.service';
+import { addTestRestriction } from './support/restrictions';
 
 jest.setTimeout(180_000);
 
@@ -339,7 +340,7 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
     it('rejects a frozen sender with a distinct error code, without moving anything', async () => {
       const sender = await seedFundedSender();
       const recipient = await seedRecipient();
-      await ctx.userRepo.update({ id: sender.userId }, { isFrozen: true });
+      await addTestRestriction(ctx.dataSource, sender.userId);
 
       await send(tokenFor(sender.userId), {
         recipientUserId: recipient.userId,
@@ -357,7 +358,7 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
     it('still lets a frozen user receive a P2P transfer', async () => {
       const sender = await seedFundedSender();
       const recipient = await seedRecipient();
-      await ctx.userRepo.update({ id: recipient.userId }, { isFrozen: true });
+      await addTestRestriction(ctx.dataSource, recipient.userId);
 
       await send(tokenFor(sender.userId), {
         recipientUserId: recipient.userId,
@@ -370,6 +371,33 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
         id: recipient.walletId,
       });
       expect(recipientAccount.balance).toBe(500_000n);
+    });
+  });
+
+  describe('restriction scope all', () => {
+    it('refuses a transfer to a recipient under an all-scope restriction with the generic recipient error, moving nothing', async () => {
+      const sender = await seedFundedSender();
+      const recipient = await seedRecipient();
+      await addTestRestriction(ctx.dataSource, recipient.userId, {
+        reason: 'sanctions',
+        scope: 'all',
+      });
+
+      const res = await send(tokenFor(sender.userId), {
+        recipientUserId: recipient.userId,
+        amount: 500_000,
+        reference: `cliqpay-xfer-all-recipient-${sender.userId}`,
+        pin: '1234',
+      });
+
+      expect(res.status).toBe(422);
+      expect(errorOf(res)).toMatchObject({
+        code: 'RECIPIENT_UNABLE_TO_RECEIVE',
+      });
+      const senderAccount = await ctx.accountRepo.findOneByOrFail({
+        id: sender.walletId,
+      });
+      expect(senderAccount.balance).toBe(5_000_000n);
     });
   });
 

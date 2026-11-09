@@ -7,6 +7,7 @@ import {
   seedDisputesUser,
 } from './support/disputes-test-context';
 import { TEST_INTERNAL_API_SECRET } from './support/test-app-config';
+import { hasOpenRestriction } from './support/restrictions';
 import { dataOf } from './support/api-response';
 
 jest.setTimeout(180_000);
@@ -61,6 +62,7 @@ describe('POST /disputes/resolve', () => {
     return request(ctx.app.getHttpServer())
       .post('/disputes/chargebacks')
       .set('X-Internal-Secret', TEST_INTERNAL_API_SECRET)
+      .set('X-Reviewer-Id', 'reviewer-1')
       .send(body);
   }
 
@@ -68,6 +70,7 @@ describe('POST /disputes/resolve', () => {
     const req = request(ctx.app.getHttpServer()).post('/disputes/resolve');
     if (secret !== undefined) {
       req.set('X-Internal-Secret', secret);
+      req.set('X-Reviewer-Id', 'reviewer-1');
     }
     return req.send(body);
   }
@@ -121,7 +124,7 @@ describe('POST /disputes/resolve', () => {
       const walletBefore = await ctx.accountRepo.findOneByOrFail({
         id: walletId,
       });
-      const userBefore = await ctx.userRepo.findOneByOrFail({ id: userId });
+      const restrictedBefore = await hasOpenRestriction(ctx.dataSource, userId);
 
       const res = await postResolve(
         { disputeReference, outcome: 'upheld' },
@@ -151,8 +154,9 @@ describe('POST /disputes/resolve', () => {
       });
       expect(walletAfter.balance).toBe(walletBefore.balance);
 
-      const userAfter = await ctx.userRepo.findOneByOrFail({ id: userId });
-      expect(userAfter.isFrozen).toBe(userBefore.isFrozen);
+      expect(await hasOpenRestriction(ctx.dataSource, userId)).toBe(
+        restrictedBefore,
+      );
     });
 
     it('leaves an existing freeze standing', async () => {
@@ -180,8 +184,7 @@ describe('POST /disputes/resolve', () => {
       );
 
       expect(res.status).toBe(201);
-      const user = await ctx.userRepo.findOneByOrFail({ id: userId });
-      expect(user.isFrozen).toBe(true);
+      expect(await hasOpenRestriction(ctx.dataSource, userId)).toBe(true);
     });
   });
 
@@ -231,8 +234,7 @@ describe('POST /disputes/resolve', () => {
       expect(dispute.status).toBe('resolved');
       expect(dispute.resolvedAt).toBeTruthy();
 
-      const user = await ctx.userRepo.findOneByOrFail({ id: userId });
-      expect(user.isFrozen).toBe(false);
+      expect(await hasOpenRestriction(ctx.dataSource, userId)).toBe(false);
 
       const resolutionTxn = await ctx.transactionRepo.findOneByOrFail({
         reference: `${disputeReference}-resolved`,
@@ -274,8 +276,7 @@ describe('POST /disputes/resolve', () => {
       const wallet = await ctx.accountRepo.findOneByOrFail({ id: walletId });
       expect(wallet.balance).toBe(-120_000n);
 
-      const user = await ctx.userRepo.findOneByOrFail({ id: userId });
-      expect(user.isFrozen).toBe(true);
+      expect(await hasOpenRestriction(ctx.dataSource, userId)).toBe(true);
     });
 
     it("rejects an amount that doesn't match the dispute's recorded amount", async () => {
@@ -350,16 +351,22 @@ describe('POST /disputes/resolve', () => {
       });
       expect(walletAfterBothChargebacks.balance).toBe(0n);
 
-      const userAfterChargebacks = await ctx.userRepo.findOneByOrFail({
-        id: userId,
-      });
       // A chargeback landing exactly at zero doesn't freeze on its own
       // (§4.2, strictly negative only) — force a frozen starting state the
       // same way other tests in this file do, so this test exercises the
       // unfreeze decision itself rather than depending on exact arithmetic
       // lining up to a negative balance from two independent chargebacks.
-      expect(userAfterChargebacks.isFrozen).toBe(false);
-      await ctx.userRepo.update({ id: userId }, { isFrozen: true });
+      expect(await hasOpenRestriction(ctx.dataSource, userId)).toBe(false);
+      const disputeARow = await ctx.disputeRepo.findOneByOrFail({
+        disputeReference: disputeA,
+      });
+      await ctx.usersService.addRestriction(ctx.dataSource.manager, {
+        userId,
+        reason: 'dispute',
+        scope: 'outbound',
+        sourceId: disputeARow.id,
+        actor: { type: 'system', id: null },
+      });
 
       // Resolve dispute A in Cliqpay's favor. Dispute B is still open.
       const resolveA = await postResolve(
@@ -372,10 +379,7 @@ describe('POST /disputes/resolve', () => {
         dataOf<{ accountUnfrozen: boolean }>(resolveA).accountUnfrozen,
       ).toBe(false);
 
-      const userAfterResolveA = await ctx.userRepo.findOneByOrFail({
-        id: userId,
-      });
-      expect(userAfterResolveA.isFrozen).toBe(true);
+      expect(await hasOpenRestriction(ctx.dataSource, userId)).toBe(true);
 
       const disputeBRow = await ctx.disputeRepo.findOneByOrFail({
         disputeReference: disputeB,
@@ -393,10 +397,7 @@ describe('POST /disputes/resolve', () => {
       );
       expect(resolveB.status).toBe(201);
 
-      const userAfterResolveB = await ctx.userRepo.findOneByOrFail({
-        id: userId,
-      });
-      expect(userAfterResolveB.isFrozen).toBe(false);
+      expect(await hasOpenRestriction(ctx.dataSource, userId)).toBe(false);
     });
 
     it('leaves the original funding transaction disputed, not reversed or completed, while a sibling partial chargeback is still open', async () => {

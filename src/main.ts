@@ -4,6 +4,7 @@ import {
   VersioningType,
 } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { Logger, LoggerErrorInterceptor } from 'nestjs-pino';
 import helmet from 'helmet';
 import { urlencoded } from 'express';
@@ -58,7 +59,7 @@ function setupGracefulShutdown(app: INestApplication, logger: Logger) {
 }
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true,
   });
   const logger = app.get(Logger);
@@ -81,6 +82,7 @@ async function bootstrap() {
   });
 
   const config = app.get<AppConfig>(APP_CONFIG);
+  app.set('trust proxy', config.app.trustProxy);
   app.enableCors({
     // Empty allowlist (default in dev) reflects no origin restriction is
     // configured yet — set CORS_ALLOWED_ORIGINS before any browser client

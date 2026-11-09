@@ -355,7 +355,6 @@ export class TransfersService {
     details: TransferPostDetails,
     manager?: EntityManager,
   ): Promise<FinalizeTransferOutcome> {
-    this.assertSenderNotFrozen(prepared);
     await this.authService.verifyTransactionPin(senderId, pin);
     return this.postPreparedTransfer(
       senderId,
@@ -365,12 +364,6 @@ export class TransfersService {
       undefined,
       manager,
     );
-  }
-
-  private assertSenderNotFrozen(prepared: PreparedTransfer): void {
-    if (prepared.sender.isFrozen) {
-      throw new SenderAccountFrozenException();
-    }
   }
 
   private async postPreparedTransfer(
@@ -417,6 +410,16 @@ export class TransfersService {
             ),
         },
       );
+      const [senderState, recipientState] = await Promise.all([
+        this.usersService.getRestrictionState(tx, senderId),
+        this.usersService.getRestrictionState(tx, prepared.recipientUserId),
+      ]);
+      if (senderState.blocksOutbound) {
+        throw new SenderAccountFrozenException();
+      }
+      if (recipientState.blocksInbound) {
+        throw new RecipientUnableToReceiveException();
+      }
       const result = await this.ledgerService.postTransferWithinTransaction(
         tx,
         postParams,
@@ -557,7 +560,6 @@ export class TransfersService {
         };
       }
 
-      this.assertSenderNotFrozen(prepared);
       const { result, replayed } = await this.postPreparedTransfer(
         senderId,
         prepared,
