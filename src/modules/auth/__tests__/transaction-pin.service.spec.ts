@@ -59,6 +59,7 @@ function buildCredential(overrides: Partial<Credential> = {}): Credential {
 
 describe('TransactionPinService', () => {
   let usersService: {
+    startSecurityCooldown: jest.Mock;
     findById: jest.Mock<Promise<UserFixture>, [string]>;
   };
   let mfaService: {
@@ -79,11 +80,15 @@ describe('TransactionPinService', () => {
     findOneByOrFail: jest.Mock<Promise<Credential>, [Partial<Credential>]>;
     save: jest.Mock<Promise<Credential>, [Credential]>;
   };
-  let dataSource: { getRepository: jest.Mock<unknown, [unknown]> };
+  let dataSource: {
+    getRepository: jest.Mock<unknown, [unknown]>;
+    transaction: jest.Mock;
+  };
   let service: TransactionPinService;
 
   beforeEach(() => {
     usersService = {
+      startSecurityCooldown: jest.fn(() => Promise.resolve()),
       findById: jest.fn((_userId: string) => Promise.resolve(buildUser())),
     };
     mfaService = {
@@ -111,6 +116,9 @@ describe('TransactionPinService', () => {
     };
     dataSource = {
       getRepository: jest.fn((_entity: unknown) => credentialRepo),
+      transaction: jest.fn((work: (m: unknown) => Promise<unknown>) =>
+        work({ getRepository: dataSource.getRepository }),
+      ),
     };
 
     hashTransactionPinMock.mockReset();
@@ -272,6 +280,12 @@ describe('TransactionPinService', () => {
           failedPinAttempts: 0,
           pinLockedUntil: null,
         }),
+      );
+      expect(usersService.startSecurityCooldown).toHaveBeenCalledWith(
+        expect.anything(),
+        'user-1',
+        'pin_reset',
+        { type: 'user', id: 'user-1' },
       );
     });
 

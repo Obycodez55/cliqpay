@@ -38,6 +38,7 @@ import { NotificationsModule } from '../../../src/modules/notifications/notifica
 import { EMAIL_SENDER } from '../../../src/modules/notifications/channels/email/email-sender.interface';
 import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/email/fake-email.adapter';
 
+import { establishAccount } from './established-account';
 import { closeBullmqWorkers } from './bullmq-teardown';
 export interface PaymentsTestContext {
   database: TestDatabase;
@@ -176,6 +177,7 @@ export async function seedUserWithWallet(
       user.id,
       overrides.kycTier ?? 'tier3',
     );
+    await establishAccount(manager, user.id);
     const wallet = await ctx.ledgerService.createUserWallet(
       manager,
       user.id,

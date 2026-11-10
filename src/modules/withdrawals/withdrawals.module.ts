@@ -5,6 +5,7 @@ import { PaymentsModule } from '../payments/payments.module';
 import { KycModule } from '../kyc/kyc.module';
 import { LedgerModule } from '../ledger/ledger.module';
 import { UsersModule } from '../users/users.module';
+import { AuditModule } from '../../shared/audit/audit.module';
 import { EventBusModule } from '../../shared/events/event-bus.module';
 import { BankAccount } from './entities/bank-account.entity';
 import { WithdrawalsController } from './withdrawals.controller';
@@ -26,6 +27,7 @@ import { WithdrawalsService } from './withdrawals.service';
     KycModule,
     UsersModule,
     EventBusModule,
+    AuditModule,
   ],
   controllers: [WithdrawalsController],
   providers: [WithdrawalsService],

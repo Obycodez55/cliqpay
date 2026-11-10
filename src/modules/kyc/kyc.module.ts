@@ -2,7 +2,9 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { EventBusModule } from '../../shared/events/event-bus.module';
+import { AuditModule } from '../../shared/audit/audit.module';
 import { UsersModule } from '../users/users.module';
+import { UserLimitsService } from './internal/user-limits.service';
 import { KycController } from './kyc.controller';
 import {
   LIVENESS_POLL_QUEUE,
@@ -28,6 +30,7 @@ const KYC_PROVIDERS = {
 @Module({
   imports: [
     UsersModule,
+    AuditModule,
     EventBusModule,
     BullModule.registerQueue({
       name: KYC_RETENTION_QUEUE,
@@ -47,6 +50,7 @@ const KYC_PROVIDERS = {
   controllers: [KycController],
   providers: [
     KycService,
+    UserLimitsService,
     LivenessPollProcessor,
     KycRetentionProcessor,
     {

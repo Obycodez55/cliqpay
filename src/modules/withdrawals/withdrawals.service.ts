@@ -18,7 +18,12 @@ import {
   WithdrawalTransactionMetadata,
 } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
-import { KycService } from '../kyc/kyc.service';
+import { KycService, LimitCheckOptions } from '../kyc/kyc.service';
+import { AuditService } from '../../shared/audit/audit.service';
+import {
+  SECURITY_ALERT_EVENT,
+  SecurityAlertEventPayload,
+} from '../../shared/events/domain-events';
 import { Money } from '../../shared/primitives/money';
 import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
 import {
@@ -41,8 +46,10 @@ import {
   WithdrawalHistoryItemDto,
   toWithdrawalHistoryItem,
 } from './dto/withdrawal-history-item.dto';
+import { holderNameMatchesLegalName } from './internal/name-match';
 import {
   BankAccountAlreadySavedException,
+  BankAccountCoolingException,
   BankAccountNotFoundException,
   BankAccountNotResolvableException,
   InitiatorAccountFrozenException,
@@ -65,6 +72,7 @@ type ResolveBankAccountResult = Awaited<
 >;
 
 const NGN = 'NGN'; // Withdrawals are NGN-only for now — same as transfers (issue #28).
+const BANK_ACCOUNT_COOLING_MS = 24 * 60 * 60 * 1000;
 const PROVIDER = 'kora'; // Same single-active-provider assumption payments.service.ts's fundWallet makes.
 
 // `ledger`'s transactions.metadata is at-rest storage too, and has no
@@ -84,6 +92,7 @@ export interface ExecuteScheduledWithdrawalParams {
   reference: string;
   scheduleId: string;
   runNumber: number;
+  scheduleCreatedAt: Date;
 }
 
 export interface ExecuteScheduledWithdrawalOutcome {
@@ -101,7 +110,9 @@ export type ScheduledWithdrawalRejectionCode =
   | 'bank_account_removed'
   | 'payout_rejected'
   | 'sender_unverified'
-  | 'amount_below_minimum';
+  | 'amount_below_minimum'
+  | 'security_cooldown_limit'
+  | 'bank_account_cooling';
 
 // A business refusal of a scheduled run, as opposed to an infrastructure
 // fault: every other error escapes executeScheduledWithdrawal untouched.
@@ -122,6 +133,8 @@ const SCHEDULED_REJECTION_BY_ERROR_CODE: Record<
   DAILY_LIMIT_EXCEEDED: 'daily_limit_exceeded',
   KYC_VERIFICATION_REQUIRED: 'sender_unverified',
   WITHDRAWAL_AMOUNT_TOO_SMALL: 'amount_below_minimum',
+  SECURITY_COOLDOWN_LIMIT: 'security_cooldown_limit',
+  BANK_ACCOUNT_COOLING: 'bank_account_cooling',
   INITIATOR_ACCOUNT_FROZEN: 'sender_frozen',
   BANK_ACCOUNT_NOT_FOUND: 'bank_account_removed',
   WITHDRAWAL_PAYOUT_FAILED: 'payout_rejected',
@@ -170,6 +183,7 @@ export class WithdrawalsService {
     private readonly usersService: UsersService,
     private readonly kycService: KycService,
     private readonly eventBus: EventBusService,
+    private readonly auditService: AuditService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {
     this.encryptionKey = encryptionKeyFromHex(config.encryption.key);
@@ -222,6 +236,12 @@ export class WithdrawalsService {
       throw new BankAccountNotResolvableException();
     }
 
+    const legalName = await this.kycService.getVerifiedLegalName(userId);
+    const now = new Date();
+    const nameMatches = holderNameMatchesLegalName(
+      resolved.accountName,
+      legalName,
+    );
     const bankAccount = this.bankAccountRepo.create({
       userId,
       provider: PROVIDER,
@@ -233,10 +253,26 @@ export class WithdrawalsService {
       ),
       accountNumberHash: hmacHex(dto.accountNumber, this.identifierHashKey),
       accountName: resolved.accountName,
+      fullyEligibleAt: nameMatches
+        ? now
+        : new Date(now.getTime() + BANK_ACCOUNT_COOLING_MS),
     });
 
     try {
-      await this.bankAccountRepo.save(bankAccount);
+      await runInTransaction(this.dataSource, async (manager) => {
+        await manager.getRepository(BankAccount).save(bankAccount);
+        await this.auditService.record(manager, {
+          actor: { type: 'user', id: userId },
+          action: 'bank_account_saved',
+          subject: { type: 'bank_account', id: bankAccount.id },
+          metadata: {
+            bankCode: bankAccount.bankCode,
+            accountNumberLast4: dto.accountNumber.slice(-4),
+            holderNameMatched: nameMatches,
+            fullyEligibleAt: bankAccount.fullyEligibleAt.toISOString(),
+          },
+        });
+      });
     } catch (error) {
       if (
         isUniqueViolation(
@@ -249,7 +285,32 @@ export class WithdrawalsService {
       throw error;
     }
 
+    await this.publishBankAccountSavedAlert(bankAccount, dto.accountNumber);
     return toBankAccountResponse(bankAccount, dto.accountNumber);
+  }
+
+  private async publishBankAccountSavedAlert(
+    bankAccount: BankAccount,
+    accountNumber: string,
+  ): Promise<void> {
+    try {
+      const user = await this.usersService.findById(bankAccount.userId);
+      const occurredAt = new Date();
+      await this.eventBus.publish<string, SecurityAlertEventPayload>({
+        name: SECURITY_ALERT_EVENT,
+        payload: {
+          userId: bankAccount.userId,
+          email: user.email,
+          message: `A bank account was added to your Cliqpay account: ${bankAccount.bankName} ${maskAccountNumber(accountNumber)}, held by ${bankAccount.accountName}. If this wasn’t you, secure your account now.`,
+          occurredAt: occurredAt.toISOString(),
+        },
+        occurredAt,
+      });
+    } catch (error) {
+      this.logger.error(
+        `saveBankAccount: bank account ${bankAccount.id} saved, but publishing the security alert failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
   }
 
   // No "default" flag (issue #27) — every saved account is returned,
@@ -313,10 +374,13 @@ export class WithdrawalsService {
     params: ExecuteScheduledWithdrawalParams,
   ): Promise<ExecuteScheduledWithdrawalOutcome> {
     try {
-      const run = await this.processWithdrawal(userId, params, null, {
-        scheduleId: params.scheduleId,
-        runNumber: params.runNumber,
-      });
+      const run = await this.processWithdrawal(
+        userId,
+        params,
+        null,
+        { scheduleId: params.scheduleId, runNumber: params.runNumber },
+        { scheduleCreatedAt: params.scheduleCreatedAt },
+      );
       return {
         transactionId: run.transactionId,
         outcome: run.outcome,
@@ -371,6 +435,7 @@ export class WithdrawalsService {
     dto: { bankAccountId: string; amount: number; reference: string },
     pin: string | null,
     extraMetadata?: Record<string, unknown>,
+    limitOptions?: LimitCheckOptions,
   ): Promise<WithdrawalRun> {
     const { minAmount, platformFee, providerFee } = this.config.withdrawals;
     if (dto.amount < minAmount) {
@@ -437,6 +502,13 @@ export class WithdrawalsService {
           userId,
           amount,
           (m, since) => this.ledgerService.getDebitedSince(m, userId, since),
+          limitOptions,
+        );
+        await this.checkBankAccountCooling(
+          manager,
+          userId,
+          bankAccount,
+          amount,
         );
         if (
           (await this.usersService.getRestrictionState(manager, userId))
@@ -527,6 +599,34 @@ export class WithdrawalsService {
       outcome: payoutResult.status === 'unknown' ? 'unknown' : 'accepted',
       replayed: false,
     };
+  }
+
+  // Runs under the user's lock, taken by the limit check just before it.
+  private async checkBankAccountCooling(
+    manager: EntityManager,
+    userId: string,
+    bankAccount: BankAccount,
+    amount: Money,
+  ): Promise<void> {
+    if (bankAccount.fullyEligibleAt.getTime() <= Date.now()) {
+      return;
+    }
+    const cap = Money.of(
+      this.config.securityControls.bankAccountCoolingLimit,
+      NGN,
+    );
+    const withdrawn = await this.ledgerService.getWithdrawnToBankAccount(
+      manager,
+      userId,
+      bankAccount.id,
+    );
+    if (withdrawn.add(amount).greaterThan(cap)) {
+      throw new BankAccountCoolingException(
+        bankAccount.fullyEligibleAt,
+        cap,
+        cap.greaterThan(withdrawn) ? cap.subtract(withdrawn) : Money.zero(NGN),
+      );
+    }
   }
 
   // A reference belonging to another user must 409 with nothing about the

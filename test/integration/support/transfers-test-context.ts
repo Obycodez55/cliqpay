@@ -53,6 +53,7 @@ import { FakePushAdapter } from '../../../src/modules/notifications/channels/pus
 import { hashTransactionPin } from '../../../src/modules/auth/internal/pin.util';
 import { Money } from '../../../src/shared/primitives/money';
 
+import { establishAccount } from './established-account';
 import { closeBullmqWorkers } from './bullmq-teardown';
 export interface TransfersTestContext {
   database: TestDatabase;
@@ -203,6 +204,7 @@ export async function seedTransferUser(
       user.id,
       overrides.kycTier ?? 'tier3',
     );
+    await establishAccount(manager, user.id);
     const wallet = await ctx.ledgerService.createUserWallet(
       manager,
       user.id,

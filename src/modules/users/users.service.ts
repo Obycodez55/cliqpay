@@ -34,6 +34,22 @@ export interface RestrictionState {
 }
 
 const USERNAME_CHANGE_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+export const SECURITY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+export type SecurityCooldownTrigger =
+  | 'device_trusted'
+  | 'password_reset'
+  | 'password_changed'
+  | 'email_changed'
+  | 'phone_changed'
+  | 'mfa_method_added'
+  | 'pin_reset';
+
+export interface SecurityControls {
+  securityCooldownUntil: Date | null;
+  securityCooldownStartedAt: Date | null;
+  tier1ReachedAt: Date | null;
+}
 
 export interface CreateUserData {
   email: string;
@@ -147,8 +163,11 @@ export class UsersService {
   // verification code has been consumed. Insert-and-catch on the unique
   // violation, same race-free pattern as changeUsername — no pre-check
   // findByEmail.
-  async confirmPendingEmail(userId: string): Promise<User> {
-    const repo = this.dataSource.getRepository(User);
+  async confirmPendingEmail(
+    userId: string,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<User> {
+    const repo = manager.getRepository(User);
     const user = await repo.findOneByOrFail({ id: userId });
     if (!user.pendingEmail) {
       throw new NoPendingEmailChangeException();
@@ -176,8 +195,11 @@ export class UsersService {
   // Called by AuthService.confirmPhoneChange once the new number's
   // verification code has been consumed. Insert-and-catch on the unique
   // violation, same race-free pattern as confirmPendingEmail.
-  async confirmPendingPhone(userId: string): Promise<User> {
-    const repo = this.dataSource.getRepository(User);
+  async confirmPendingPhone(
+    userId: string,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<User> {
+    const repo = manager.getRepository(User);
     const user = await repo.findOneByOrFail({ id: userId });
     if (!user.pendingPhone) {
       throw new NoPendingPhoneChangeException();
@@ -312,7 +334,64 @@ export class UsersService {
     userId: string,
     tier: KycTier,
   ): Promise<void> {
-    await manager.getRepository(User).update({ id: userId }, { kycTier: tier });
+    const repo = manager.getRepository(User);
+    await repo.update({ id: userId }, { kycTier: tier });
+    if (tier !== 'tier0') {
+      await repo.update(
+        { id: userId, tier1ReachedAt: IsNull() },
+        { tier1ReachedAt: new Date() },
+      );
+    }
+  }
+
+  async getSecurityControls(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<SecurityControls> {
+    const user = await manager
+      .getRepository(User)
+      .findOneByOrFail({ id: userId });
+    return {
+      securityCooldownUntil: user.securityCooldownUntil,
+      securityCooldownStartedAt: user.securityCooldownStartedAt,
+      tier1ReachedAt: user.tier1ReachedAt,
+    };
+  }
+
+  // Re-triggering extends the end and keeps the start, so a rolling-window
+  // check can never be reset by repeating a security change.
+  async startSecurityCooldown(
+    manager: EntityManager,
+    userId: string,
+    trigger: SecurityCooldownTrigger,
+    actor: AuditActor,
+  ): Promise<void> {
+    await this.lockUser(manager, userId);
+    const repo = manager.getRepository(User);
+    const user = await repo.findOneByOrFail({ id: userId });
+    const now = new Date();
+    const proposed = new Date(now.getTime() + SECURITY_COOLDOWN_MS);
+    const active =
+      user.securityCooldownUntil !== null && user.securityCooldownUntil > now;
+    const until =
+      active && user.securityCooldownUntil! > proposed
+        ? user.securityCooldownUntil!
+        : proposed;
+    await repo.update(
+      { id: userId },
+      {
+        securityCooldownUntil: until,
+        securityCooldownStartedAt: active
+          ? user.securityCooldownStartedAt
+          : now,
+      },
+    );
+    await this.auditService.record(manager, {
+      actor,
+      action: 'security_cooldown_started',
+      subject: { type: 'user', id: userId },
+      metadata: { trigger, until: until.toISOString() },
+    });
   }
 
   async getProfile(userId: string): Promise<ProfileResponseDto> {

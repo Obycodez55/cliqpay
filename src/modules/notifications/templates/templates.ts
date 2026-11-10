@@ -43,6 +43,10 @@ const RECIPIENT_UNABLE_TO_RECEIVE =
 const SCHEDULE_FAILURE_REASONS: Record<string, string> = {
   insufficient_balance: 'your wallet balance was too low',
   daily_limit_exceeded: 'it would have gone over your daily limit',
+  security_cooldown_limit:
+    'a recent security change limits what you can send for 24 hours',
+  bank_account_cooling:
+    'this bank account is new and limited to a small total for its first 24 hours',
   recipient_unable_to_receive: RECIPIENT_UNABLE_TO_RECEIVE,
   recipient_cap: RECIPIENT_UNABLE_TO_RECEIVE,
   blocked: RECIPIENT_UNABLE_TO_RECEIVE,
@@ -122,6 +126,7 @@ const STEP_UP_PURPOSES: Record<StepUpAction, string> = {
   change_phone: 'change your phone number',
   enroll_totp: 'set up an authenticator app',
   save_bank_account: 'save a bank account',
+  raise_daily_limit: 'raise your daily limit',
 };
 
 function mfaCodeName(action: MfaChallengeOtpPayload['action']): string {

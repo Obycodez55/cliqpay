@@ -299,17 +299,25 @@ export class AuthService {
     );
 
     const passwordHash = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
-    await this.dataSource
-      .getRepository(Credential)
-      .update({ userId }, { passwordHash });
+    await runInTransaction(this.dataSource, async (manager) => {
+      await manager
+        .getRepository(Credential)
+        .update({ userId }, { passwordHash });
+      await this.usersService.startSecurityCooldown(
+        manager,
+        userId,
+        'password_reset',
+        { type: 'user', id: userId },
+      );
 
-    if (revokeOtherSessions) {
-      // Unauthenticated flow — no session is "completing the request" to
-      // exclude, so every session for the user is revoked.
-      await this.dataSource
-        .getRepository(Session)
-        .update({ userId }, { status: 'revoked' });
-    }
+      if (revokeOtherSessions) {
+        // Unauthenticated flow — no session is "completing the request" to
+        // exclude, so every session for the user is revoked.
+        await manager
+          .getRepository(Session)
+          .update({ userId }, { status: 'revoked' });
+      }
+    });
   }
 
   // Step 1 of 2 for change-password (see docs/adr/0006 — 2 calls, not 3, per
@@ -338,8 +346,9 @@ export class AuthService {
       throw new MfaChallengeInvalidException();
     }
 
-    const credentialRepo = this.dataSource.getRepository(Credential);
-    const credential = await credentialRepo.findOneByOrFail({ userId });
+    const credential = await this.dataSource
+      .getRepository(Credential)
+      .findOneByOrFail({ userId });
 
     const passwordMatches = await bcrypt.compare(
       dto.currentPassword,
@@ -353,16 +362,24 @@ export class AuthService {
       dto.newPassword,
       BCRYPT_SALT_ROUNDS,
     );
-    await credentialRepo.save(credential);
+    await runInTransaction(this.dataSource, async (manager) => {
+      await manager.getRepository(Credential).save(credential);
+      await this.usersService.startSecurityCooldown(
+        manager,
+        userId,
+        'password_changed',
+        { type: 'user', id: userId },
+      );
 
-    if (dto.revokeOtherSessions) {
-      await this.dataSource
-        .getRepository(Session)
-        .update(
-          { userId, status: 'active', id: Not(sessionId) },
-          { status: 'revoked' },
-        );
-    }
+      if (dto.revokeOtherSessions) {
+        await manager
+          .getRepository(Session)
+          .update(
+            { userId, status: 'active', id: Not(sessionId) },
+            { status: 'revoked' },
+          );
+      }
+    });
   }
 
   // Step-up for TOTP enrollment (docs/architecture.md §3.8 lists "MFA
@@ -475,16 +492,24 @@ export class AuthService {
       throw new VerificationCodeInvalidException();
     }
 
-    await this.usersService.confirmPendingEmail(userId);
+    await runInTransaction(this.dataSource, async (manager) => {
+      await this.usersService.confirmPendingEmail(userId, manager);
+      await this.usersService.startSecurityCooldown(
+        manager,
+        userId,
+        'email_changed',
+        { type: 'user', id: userId },
+      );
 
-    if (dto.revokeOtherSessions) {
-      await this.dataSource
-        .getRepository(Session)
-        .update(
-          { userId, status: 'active', id: Not(sessionId) },
-          { status: 'revoked' },
-        );
-    }
+      if (dto.revokeOtherSessions) {
+        await manager
+          .getRepository(Session)
+          .update(
+            { userId, status: 'active', id: Not(sessionId) },
+            { status: 'revoked' },
+          );
+      }
+    });
   }
 
   // Step 1 of 3 for change-phone (see docs/adr/0006, issue #10) — same
@@ -558,16 +583,24 @@ export class AuthService {
       throw new VerificationCodeInvalidException();
     }
 
-    await this.usersService.confirmPendingPhone(userId);
+    await runInTransaction(this.dataSource, async (manager) => {
+      await this.usersService.confirmPendingPhone(userId, manager);
+      await this.usersService.startSecurityCooldown(
+        manager,
+        userId,
+        'phone_changed',
+        { type: 'user', id: userId },
+      );
 
-    if (dto.revokeOtherSessions) {
-      await this.dataSource
-        .getRepository(Session)
-        .update(
-          { userId, status: 'active', id: Not(sessionId) },
-          { status: 'revoked' },
-        );
-    }
+      if (dto.revokeOtherSessions) {
+        await manager
+          .getRepository(Session)
+          .update(
+            { userId, status: 'active', id: Not(sessionId) },
+            { status: 'revoked' },
+          );
+      }
+    });
   }
 
   // The only surface #22 (send-money) needs — delegates to

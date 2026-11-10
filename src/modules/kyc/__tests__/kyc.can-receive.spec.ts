@@ -2,6 +2,7 @@ import { DataSource, EntityManager } from 'typeorm';
 import { AppConfig } from '../../../config';
 import { Money } from '../../../shared/primitives/money';
 import { KycTier, UsersService } from '../../users/users.service';
+import { UserLimitsService } from '../internal/user-limits.service';
 import { KycService } from '../kyc.service';
 import { TierLimit } from '../entities/tier-limit.entity';
 import {
@@ -20,7 +21,10 @@ describe('KycService.checkCanReceive', () => {
   let tier: KycTier;
   let balance: Money;
   let pending: Money;
-  let reader: jest.Mock<Promise<{ balance: Money; pending: Money }>, []>;
+  let reader: jest.Mock<
+    Promise<{ balance: Money; pending: Money; received: Money }>,
+    []
+  >;
   let manager: EntityManager;
 
   beforeEach(() => {
@@ -31,7 +35,7 @@ describe('KycService.checkCanReceive', () => {
     pending = NGN(0);
     reader = jest.fn(() => {
       calls.push('read');
-      return Promise.resolve({ balance, pending });
+      return Promise.resolve({ balance, pending, received: NGN(0) });
     });
     manager = {
       query: jest.fn((sql: string) => {
@@ -43,6 +47,13 @@ describe('KycService.checkCanReceive', () => {
       })),
     } as unknown as EntityManager;
     const usersService = {
+      getSecurityControls: jest.fn(() =>
+        Promise.resolve({
+          securityCooldownUntil: null,
+          securityCooldownStartedAt: null,
+          tier1ReachedAt: null,
+        }),
+      ),
       getKycTier: jest.fn(() => Promise.resolve(tier)),
     } as unknown as UsersService;
     service = new KycService(
@@ -52,7 +63,12 @@ describe('KycService.checkCanReceive', () => {
       {
         encryption: { key: 'a'.repeat(64) },
         identifierHash: { key: 'c'.repeat(64) },
+        securityControls: {
+          cooldownLimit: 2_000_000,
+          bankAccountCoolingLimit: 2_000_000,
+        },
       } as AppConfig,
+      {} as UserLimitsService,
     );
   });
 

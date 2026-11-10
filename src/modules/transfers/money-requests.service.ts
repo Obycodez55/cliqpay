@@ -121,7 +121,8 @@ export class MoneyRequestsService {
       this.dataSource.manager,
       requesterId,
       Money.of(dto.amount, NGN),
-      (m) => this.ledgerService.getBalanceAndPendingFunding(m, requesterId),
+      (m, since) =>
+        this.ledgerService.getBalanceAndPendingFunding(m, requesterId, since),
     );
 
     const requester = await this.usersService.findById(requesterId);

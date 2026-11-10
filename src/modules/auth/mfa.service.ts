@@ -10,6 +10,7 @@ import {
   MfaChallengeOtpEventPayload,
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
+import { runInTransaction } from '../../database/transaction.util';
 import { UsersService } from '../users/users.service';
 import { AuditService } from '../../shared/audit/audit.service';
 import { MfaChallenge } from './entities/mfa-challenge.entity';
@@ -336,6 +337,13 @@ export class MfaService {
       }),
     );
 
+    await this.usersService.startSecurityCooldown(
+      manager,
+      userId,
+      'device_trusted',
+      { type: 'user', id: userId },
+    );
+
     for (const old of replaced) {
       await this.auditService.record(manager, {
         actor: { type: 'user', id: userId },
@@ -440,7 +448,15 @@ export class MfaService {
       throw new InvalidMfaCodeException();
     }
 
-    method.status = 'active';
-    await methodRepo.save(method);
+    await runInTransaction(this.dataSource, async (manager) => {
+      method.status = 'active';
+      await manager.getRepository(MfaMethod).save(method);
+      await this.usersService.startSecurityCooldown(
+        manager,
+        userId,
+        'mfa_method_added',
+        { type: 'user', id: userId },
+      );
+    });
   }
 }

@@ -44,6 +44,7 @@ function buildUser(overrides: Partial<UserFixture> = {}): UserFixture {
 
 describe('AuthService — password reset', () => {
   let usersService: {
+    startSecurityCooldown: jest.Mock;
     findByEmail: jest.Mock<Promise<UserFixture | null>, [string]>;
   };
   let credentialRepo: {
@@ -55,7 +56,10 @@ describe('AuthService — password reset', () => {
   let sessionRepo: {
     update: jest.Mock<Promise<unknown>, [Partial<Session>, Partial<Session>]>;
   };
-  let dataSource: { getRepository: jest.Mock<unknown, [unknown]> };
+  let dataSource: {
+    getRepository: jest.Mock<unknown, [unknown]>;
+    transaction: jest.Mock;
+  };
   let eventBus: {
     dispatchAndAwait: jest.Mock<
       Promise<void>,
@@ -80,6 +84,7 @@ describe('AuthService — password reset', () => {
 
   beforeEach(() => {
     usersService = {
+      startSecurityCooldown: jest.fn(() => Promise.resolve()),
       findByEmail: jest.fn((_email: string) => Promise.resolve(buildUser())),
     };
     credentialRepo = {
@@ -97,6 +102,9 @@ describe('AuthService — password reset', () => {
     dataSource = {
       getRepository: jest.fn((entity: unknown) =>
         entity === Session ? sessionRepo : credentialRepo,
+      ),
+      transaction: jest.fn((work: (m: unknown) => Promise<unknown>) =>
+        work({ getRepository: dataSource.getRepository }),
       ),
     };
     eventBus = {
@@ -211,6 +219,12 @@ describe('AuthService — password reset', () => {
       expect(updatedFields.passwordHash).toEqual(expect.any(String));
       expect(updatedFields.passwordHash).not.toBe('a-brand-new-passphrase');
       expect(sessionRepo.update).not.toHaveBeenCalled();
+      expect(usersService.startSecurityCooldown).toHaveBeenCalledWith(
+        expect.anything(),
+        'user-1',
+        'password_reset',
+        { type: 'user', id: 'user-1' },
+      );
     });
 
     it('revokes every session for the user when revokeOtherSessions is true', async () => {

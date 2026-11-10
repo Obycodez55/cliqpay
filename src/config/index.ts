@@ -145,6 +145,22 @@ const envSchema = z
       .nonnegative()
       .default(3_000),
 
+    // Minor units. Caps outflows for 24h after a security change, and the
+    // total an account may receive in the 24h after it first reaches Tier 1.
+    SECURITY_COOLDOWN_LIMIT: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(2_000_000),
+    // Minor units. Total that may be withdrawn to a bank account whose
+    // holder name does not match the user's verified name, until it is
+    // 24h old.
+    BANK_ACCOUNT_COOLING_LIMIT: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(2_000_000),
+
     // Shared secret for the `X-Internal-Secret` header on internal/ops
     // endpoints (disputes' chargeback-recording endpoint is the first
     // caller — see docs/adr/0016-disputes-module-boundary.md). Required
@@ -400,6 +416,10 @@ function buildConfig(env: Env) {
       minAmount: env.WITHDRAWAL_MIN_AMOUNT,
       platformFee: env.WITHDRAWAL_PLATFORM_FEE,
       providerFee: env.WITHDRAWAL_PROVIDER_FEE,
+    },
+    securityControls: {
+      cooldownLimit: env.SECURITY_COOLDOWN_LIMIT,
+      bankAccountCoolingLimit: env.BANK_ACCOUNT_COOLING_LIMIT,
     },
     internal: {
       apiSecret: env.INTERNAL_API_SECRET,

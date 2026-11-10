@@ -166,6 +166,10 @@ export type TransactionMetadata =
   'senderWalletId',
   'createdAt',
 ])
+@Index('IDX_transactions_recipient_wallet_created_at', [
+  'recipientWalletId',
+  'createdAt',
+])
 @Index('IDX_transactions_held_funding', ['createdAt'], {
   where: `"type" = 'funding' AND "status" = 'held'`,
 })

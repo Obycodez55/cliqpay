@@ -14,7 +14,7 @@ import {
   PostTransferResult,
 } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
-import { KycService } from '../kyc/kyc.service';
+import { KycService, LimitCheckOptions } from '../kyc/kyc.service';
 import {
   PostOrigin,
   PostVisibility,
@@ -137,6 +137,7 @@ export interface ExecuteScheduledTransferParams {
   details: TransferPostDetails;
   scheduleId: string;
   runNumber: number;
+  scheduleCreatedAt: Date;
 }
 
 export interface ExecuteScheduledTransferOutcome {
@@ -153,7 +154,8 @@ export type ScheduledRejectionCode =
   | 'recipient_unavailable'
   | 'sender_frozen'
   | 'sender_unverified'
-  | 'amount_below_minimum';
+  | 'amount_below_minimum'
+  | 'security_cooldown_limit';
 
 // A business refusal of a scheduled run, as opposed to an infrastructure
 // fault: every other error escapes executeScheduledTransfer untouched.
@@ -373,6 +375,7 @@ export class TransfersService {
     details: TransferPostDetails,
     extraMetadata?: Record<string, unknown>,
     manager?: EntityManager,
+    limitOptions?: LimitCheckOptions,
   ): Promise<FinalizeTransferOutcome> {
     const fee = Money.of(this.config.transfers.platformFee, NGN);
     const postParams = {
@@ -403,12 +406,14 @@ export class TransfersService {
         {
           readDebitedSince: (m, since) =>
             this.ledgerService.getDebitedSince(m, senderId, since),
-          readRecipientBalanceAndPending: (m) =>
+          readRecipientBalanceAndPending: (m, since) =>
             this.ledgerService.getBalanceAndPendingFunding(
               m,
               prepared.recipientUserId,
+              since,
             ),
         },
+        limitOptions,
       );
       const [senderState, recipientState] = await Promise.all([
         this.usersService.getRestrictionState(tx, senderId),
@@ -539,7 +544,7 @@ export class TransfersService {
     senderId: string,
     params: ExecuteScheduledTransferParams,
   ): Promise<ExecuteScheduledTransferOutcome> {
-    const { scheduleId, runNumber } = params;
+    const { scheduleId, runNumber, scheduleCreatedAt } = params;
     try {
       const prepared = await this.prepareTransfer(
         senderId,
@@ -566,6 +571,8 @@ export class TransfersService {
         params.reference,
         params.details,
         { scheduleId, runNumber },
+        undefined,
+        { scheduleCreatedAt },
       );
       if (!replayed) {
         await this.publishTransferEvents(
@@ -623,8 +630,12 @@ export class TransfersService {
       (sum, share) => sum.add(share.amount),
       Money.zero(NGN),
     );
-    await this.kycService.checkCanReceive(manager, requesterId, total, (m) =>
-      this.ledgerService.getBalanceAndPendingFunding(m, requesterId),
+    await this.kycService.checkCanReceive(
+      manager,
+      requesterId,
+      total,
+      (m, since) =>
+        this.ledgerService.getBalanceAndPendingFunding(m, requesterId, since),
     );
 
     const payers = await this.usersService.findByIds(
@@ -932,6 +943,7 @@ const REJECTION_BY_ERROR_CODE: Record<string, ScheduledRejectionCode> = {
   DAILY_LIMIT_EXCEEDED: 'daily_limit_exceeded',
   KYC_VERIFICATION_REQUIRED: 'sender_unverified',
   TRANSFER_AMOUNT_TOO_SMALL: 'amount_below_minimum',
+  SECURITY_COOLDOWN_LIMIT: 'security_cooldown_limit',
   SENDER_ACCOUNT_FROZEN: 'sender_frozen',
   RECIPIENT_WALLET_NOT_FOUND: 'recipient_unavailable',
 };

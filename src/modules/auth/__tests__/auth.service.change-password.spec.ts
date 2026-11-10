@@ -43,6 +43,7 @@ function buildUser(overrides: Partial<UserFixture> = {}): UserFixture {
 
 describe('AuthService — change password', () => {
   let usersService: {
+    startSecurityCooldown: jest.Mock;
     findById: jest.Mock<Promise<UserFixture>, [string]>;
   };
   let mfaService: {
@@ -63,13 +64,17 @@ describe('AuthService — change password', () => {
   let sessionRepo: {
     update: jest.Mock<Promise<unknown>, [Partial<Session>, Partial<Session>]>;
   };
-  let dataSource: { getRepository: jest.Mock<unknown, [unknown]> };
+  let dataSource: {
+    getRepository: jest.Mock<unknown, [unknown]>;
+    transaction: jest.Mock;
+  };
   let service: AuthService;
 
   const existingHash = 'existing-hash';
 
   beforeEach(() => {
     usersService = {
+      startSecurityCooldown: jest.fn(() => Promise.resolve()),
       findById: jest.fn((_userId: string) => Promise.resolve(buildUser())),
     };
     mfaService = {
@@ -102,6 +107,9 @@ describe('AuthService — change password', () => {
     dataSource = {
       getRepository: jest.fn((entity: unknown) =>
         entity === Credential ? credentialRepo : sessionRepo,
+      ),
+      transaction: jest.fn((work: (m: unknown) => Promise<unknown>) =>
+        work({ getRepository: dataSource.getRepository }),
       ),
     };
     bcryptCompare.mockReset();
@@ -168,6 +176,12 @@ describe('AuthService — change password', () => {
         expect.objectContaining({ passwordHash: 'new-hash' }),
       );
       expect(sessionRepo.update).not.toHaveBeenCalled();
+      expect(usersService.startSecurityCooldown).toHaveBeenCalledWith(
+        expect.anything(),
+        'user-1',
+        'password_changed',
+        { type: 'user', id: 'user-1' },
+      );
     });
 
     it('rejects a challenge that belongs to a different user, without touching the credential', async () => {

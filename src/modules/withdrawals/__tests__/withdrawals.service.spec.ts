@@ -6,6 +6,7 @@ import { KycService } from '../../kyc/kyc.service';
 import { UsersService } from '../../users/users.service';
 import { AuthService } from '../../auth/auth.service';
 import { PaymentsService } from '../../payments/payments.service';
+import { AuditService } from '../../../shared/audit/audit.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { BankAccount } from '../entities/bank-account.entity';
 
@@ -101,6 +102,7 @@ describe('WithdrawalsService.initiateWithdrawal', () => {
       usersService as unknown as UsersService,
       {} as KycService,
       eventBus as unknown as EventBusService,
+      {} as AuditService,
       testConfig,
     );
   });

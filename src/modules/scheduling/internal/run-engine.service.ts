@@ -368,6 +368,7 @@ export class RunEngine {
           reference,
           scheduleId: schedule.id,
           runNumber: run.runNumber,
+          scheduleCreatedAt: schedule.createdAt,
         },
       );
       return {
@@ -385,6 +386,7 @@ export class RunEngine {
         details: { note: run.note, visibility: run.visibility! },
         scheduleId: schedule.id,
         runNumber: run.runNumber,
+        scheduleCreatedAt: schedule.createdAt,
       },
     );
     return {

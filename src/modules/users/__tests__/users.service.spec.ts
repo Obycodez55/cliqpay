@@ -35,7 +35,7 @@ interface FakeUserRepo {
   save: jest.Mock<Promise<User>, [User]>;
   findOneByOrFail: jest.Mock<Promise<User>, [Partial<User>]>;
   findOneBy: jest.Mock<Promise<User | null>, [Partial<User>]>;
-  update: jest.Mock<Promise<unknown>, [string, Partial<User>]>;
+  update: jest.Mock<Promise<unknown>, [unknown, Partial<User>]>;
 }
 
 describe('UsersService', () => {
@@ -43,6 +43,7 @@ describe('UsersService', () => {
   let manager: { getRepository: jest.Mock<FakeUserRepo, unknown[]> };
   let dataSource: { getRepository: jest.Mock<FakeUserRepo, unknown[]> };
   let service: UsersService;
+  let audit: { record: jest.Mock };
 
   beforeEach(() => {
     userRepo = {
@@ -62,8 +63,93 @@ describe('UsersService', () => {
     };
     manager = { getRepository: jest.fn(() => userRepo) };
     dataSource = { getRepository: jest.fn(() => userRepo) };
-    service = new UsersService(dataSource as unknown as DataSource, {
-      record: jest.fn(),
+    audit = { record: jest.fn() };
+    service = new UsersService(dataSource as unknown as DataSource, audit);
+  });
+
+  describe('startSecurityCooldown', () => {
+    const NOW = new Date('2026-11-10T12:00:00.000Z');
+    const HOUR = 60 * 60 * 1000;
+    const actor = { type: 'user' as const, id: 'user-1' };
+    const start = () =>
+      service.startSecurityCooldown(
+        manager as unknown as EntityManager,
+        'user-1',
+        'password_reset',
+        actor,
+      );
+    const lastUpdate = () =>
+      userRepo.update.mock.calls[userRepo.update.mock.calls.length - 1][1];
+
+    beforeEach(() => {
+      jest.useFakeTimers().setSystemTime(NOW);
+      (manager as { query?: jest.Mock }).query = jest.fn();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('starts a 24 hour cooldown and audits it', async () => {
+      await start();
+
+      expect(lastUpdate()).toEqual({
+        securityCooldownUntil: new Date(NOW.getTime() + 24 * HOUR),
+        securityCooldownStartedAt: NOW,
+      });
+      expect(audit.record).toHaveBeenCalledWith(
+        manager,
+        expect.objectContaining({
+          action: 'security_cooldown_started',
+          metadata: expect.objectContaining({
+            trigger: 'password_reset',
+          }) as unknown,
+        }),
+      );
+    });
+
+    it('extends an active cooldown and keeps its start', async () => {
+      const startedAt = new Date(NOW.getTime() - 10 * HOUR);
+      userRepo.findOneByOrFail.mockResolvedValue(
+        buildUser({
+          securityCooldownUntil: new Date(NOW.getTime() + 14 * HOUR),
+          securityCooldownStartedAt: startedAt,
+        }),
+      );
+
+      await start();
+
+      expect(lastUpdate()).toEqual({
+        securityCooldownUntil: new Date(NOW.getTime() + 24 * HOUR),
+        securityCooldownStartedAt: startedAt,
+      });
+    });
+
+    it('never shortens a cooldown that already ends later', async () => {
+      const until = new Date(NOW.getTime() + 30 * HOUR);
+      userRepo.findOneByOrFail.mockResolvedValue(
+        buildUser({
+          securityCooldownUntil: until,
+          securityCooldownStartedAt: NOW,
+        }),
+      );
+
+      await start();
+
+      expect(lastUpdate().securityCooldownUntil).toEqual(until);
+    });
+
+    it('begins a new window once the previous cooldown has ended', async () => {
+      userRepo.findOneByOrFail.mockResolvedValue(
+        buildUser({
+          securityCooldownUntil: new Date(NOW.getTime() - HOUR),
+          securityCooldownStartedAt: new Date(NOW.getTime() - 25 * HOUR),
+        }),
+      );
+
+      await start();
+
+      expect(lastUpdate().securityCooldownStartedAt).toEqual(NOW);
     });
   });
 

@@ -23,6 +23,7 @@ import {
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
 import { AuthService } from '../auth/auth.service';
+import { LedgerService } from '../ledger/ledger.service';
 import { KycService } from '../kyc/kyc.service';
 import { SocialService } from '../social/social.service';
 import { TransfersService } from '../transfers/transfers.service';
@@ -97,6 +98,7 @@ export class SchedulingService {
     private readonly withdrawalsService: WithdrawalsService,
     private readonly usersService: UsersService,
     private readonly kycService: KycService,
+    private readonly ledgerService: LedgerService,
     private readonly socialService: SocialService,
     private readonly authService: AuthService,
     private readonly eventBus: EventBusService,
@@ -720,14 +722,12 @@ export class SchedulingService {
         this.dataSource.manager,
         prepared.recipientUserId,
         prepared.amount,
-        () =>
-          Promise.resolve({
-            balance: Money.of(
-              prepared.recipientWallet.balance,
-              prepared.recipientWallet.currency,
-            ),
-            pending: Money.zero(NGN),
-          }),
+        (m, since) =>
+          this.ledgerService.getBalanceAndPendingFunding(
+            m,
+            prepared.recipientUserId,
+            since,
+          ),
       );
     } catch (error) {
       const code = (error as { code?: string } | null)?.code;

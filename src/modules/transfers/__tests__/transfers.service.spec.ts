@@ -371,6 +371,7 @@ describe('TransfersService.sendMoney', () => {
         readDebitedSince: expect.any(Function) as unknown,
         readRecipientBalanceAndPending: expect.any(Function) as unknown,
       }),
+      undefined,
     );
     expect(ledgerService.postTransferWithinTransaction).toHaveBeenCalledWith(
       fakeManager,
@@ -398,11 +399,12 @@ describe('TransfersService.sendMoney', () => {
 
     const { readRecipientBalanceAndPending } =
       kycService.checkTransferLimits.mock.calls[0][4];
-    await readRecipientBalanceAndPending(fakeManager);
+    await readRecipientBalanceAndPending(fakeManager, null);
 
     expect(ledgerService.getBalanceAndPendingFunding).toHaveBeenCalledWith(
       fakeManager,
       'recipient-1',
+      null,
     );
   });
 

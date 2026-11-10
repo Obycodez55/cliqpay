@@ -65,6 +65,10 @@ function defaultTestAppConfig(): AppConfig {
       platformFee: 0,
       providerFee: 3_000,
     },
+    securityControls: {
+      cooldownLimit: 2_000_000,
+      bankAccountCoolingLimit: 2_000_000,
+    },
     internal: { apiSecret: TEST_INTERNAL_API_SECRET },
     kyc: {
       provider: 'fake',

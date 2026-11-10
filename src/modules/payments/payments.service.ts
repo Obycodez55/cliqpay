@@ -12,11 +12,14 @@ import { DataSource } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { LedgerService } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
-import { KycService } from '../kyc/kyc.service';
+import { KycService, UserLimitView } from '../kyc/kyc.service';
+import { AuthService } from '../auth/auth.service';
 import { runInTransaction } from '../../database/transaction.util';
 import { Money } from '../../shared/primitives/money';
 import {
   FUNDING_COMPLETED_EVENT,
+  SECURITY_ALERT_EVENT,
+  SecurityAlertEventPayload,
   FUNDING_HELD_EVENT,
   FUNDING_REFUNDED_EVENT,
   FundingCompletedEventPayload,
@@ -36,6 +39,7 @@ import { EventBusService } from '../../shared/events/event-bus.service';
 import { FundWalletDto } from './dto/fund-wallet.dto';
 import { FundWalletResponseDto } from './dto/fund-wallet-response.dto';
 import { WalletLimitsResponseDto } from './dto/wallet-limits-response.dto';
+import { UserLimitResponseDto } from './dto/user-limit.dto';
 import {
   InitiatePaymentResult,
   InitiatePayoutParams,
@@ -96,6 +100,16 @@ function validateWebhookReference(parsed: unknown): string {
   return reference;
 }
 
+function toUserLimitResponse(view: UserLimitView): UserLimitResponseDto {
+  return {
+    dailyOutflowLimit: view.dailyOutflowLimit?.toJSON() ?? null,
+    pendingIncrease: view.pendingIncrease && {
+      amount: view.pendingIncrease.amount.toJSON(),
+      effectiveAt: view.pendingIncrease.effectiveAt.toISOString(),
+    },
+  };
+}
+
 const REFUND_REASON = 'Wallet balance limit exceeded';
 
 type RefundRequest = Pick<
@@ -119,6 +133,7 @@ export class PaymentsService {
     private readonly ledgerService: LedgerService,
     private readonly usersService: UsersService,
     private readonly kycService: KycService,
+    private readonly authService: AuthService,
     private readonly eventBus: EventBusService,
     @Inject(PAYMENT_PROVIDER_ADAPTER)
     private readonly adapter: PaymentProviderAdapter,
@@ -169,8 +184,12 @@ export class PaymentsService {
 
     try {
       await runInTransaction(this.dataSource, async (manager) => {
-        await this.kycService.checkBalanceCap(manager, userId, amount, (m) =>
-          this.ledgerService.getBalanceAndPendingFunding(m, userId),
+        await this.kycService.checkBalanceCap(
+          manager,
+          userId,
+          amount,
+          (m, since) =>
+            this.ledgerService.getBalanceAndPendingFunding(m, userId, since),
         );
         await this.ledgerService.createPendingFundingTransactionWithinTransaction(
           manager,
@@ -222,8 +241,8 @@ export class PaymentsService {
       this.kycService.getWalletCapacity(manager, userId, NGN, {
         readDebitedSince: (m, since) =>
           this.ledgerService.getDebitedSince(m, userId, since),
-        readBalanceAndPending: (m) =>
-          this.ledgerService.getBalanceAndPendingFunding(m, userId),
+        readBalanceAndPending: (m, since) =>
+          this.ledgerService.getBalanceAndPendingFunding(m, userId, since),
       }),
     );
     return {
@@ -231,12 +250,97 @@ export class PaymentsService {
       dailyLimit: capacity.dailyLimit.toJSON(),
       debitedToday: capacity.debitedToday.toJSON(),
       remainingToday: capacity.remainingToday.toJSON(),
+      userLimit: capacity.userLimit?.toJSON() ?? null,
+      pendingIncrease: capacity.pendingIncrease && {
+        amount: capacity.pendingIncrease.amount.toJSON(),
+        effectiveAt: capacity.pendingIncrease.effectiveAt.toISOString(),
+      },
+      cooldown: capacity.cooldown && {
+        endsAt: capacity.cooldown.endsAt.toISOString(),
+        limit: capacity.cooldown.cap.toJSON(),
+        remaining: capacity.cooldown.remaining.toJSON(),
+      },
+      effectiveRemaining: capacity.effectiveRemaining.toJSON(),
+      limitedBy: capacity.binding,
+      newAccountInflow: capacity.newAccountInflow && {
+        endsAt: capacity.newAccountInflow.endsAt.toISOString(),
+        limit: capacity.newAccountInflow.limit.toJSON(),
+        received: capacity.newAccountInflow.received.toJSON(),
+        remaining: capacity.newAccountInflow.remaining.toJSON(),
+      },
       resetsAt: capacity.resetsAt.toISOString(),
       balanceCap: capacity.balanceCap?.toJSON() ?? null,
       balance: capacity.balance.toJSON(),
       pendingFunding: capacity.pendingFunding.toJSON(),
       headroom: capacity.headroom?.toJSON() ?? null,
     };
+  }
+
+  initiateRaiseDailyLimitStepUp(userId: string) {
+    return this.authService.initiateStepUp(userId, 'raise_daily_limit');
+  }
+
+  async lowerDailyLimit(
+    userId: string,
+    amount: number,
+    pin: string,
+  ): Promise<UserLimitResponseDto> {
+    await this.authService.verifyTransactionPin(userId, pin);
+    return toUserLimitResponse(
+      await this.kycService.lowerDailyOutflowLimit(userId, amount),
+    );
+  }
+
+  async raiseDailyLimit(
+    userId: string,
+    dto: { amount: number; pin: string; challengeId: string; code: string },
+  ): Promise<UserLimitResponseDto> {
+    await this.authService.verifyStepUp(userId, dto.challengeId, dto.code);
+    await this.authService.verifyTransactionPin(userId, dto.pin);
+    const view = await this.kycService.requestDailyOutflowLimitRaise(
+      userId,
+      dto.amount,
+    );
+    await this.publishLimitRaiseAlert(userId, view);
+    return toUserLimitResponse(view);
+  }
+
+  async cancelDailyLimitRaise(
+    userId: string,
+    pin: string,
+  ): Promise<UserLimitResponseDto> {
+    await this.authService.verifyTransactionPin(userId, pin);
+    return toUserLimitResponse(
+      await this.kycService.cancelDailyOutflowLimitRaise(userId),
+    );
+  }
+
+  private async publishLimitRaiseAlert(
+    userId: string,
+    view: UserLimitView,
+  ): Promise<void> {
+    const pending = view.pendingIncrease;
+    if (!pending) {
+      return;
+    }
+    try {
+      const user = await this.usersService.findById(userId);
+      const occurredAt = new Date();
+      await this.eventBus.publish<string, SecurityAlertEventPayload>({
+        name: SECURITY_ALERT_EVENT,
+        payload: {
+          userId,
+          email: user.email,
+          message: `A request to raise your daily sending limit to ${pending.amount.toDecimalString()} was made. It takes effect at ${pending.effectiveAt.toISOString()}, and you can cancel it before then in the app. If this wasn’t you, cancel it and secure your account.`,
+          occurredAt: occurredAt.toISOString(),
+        },
+        occurredAt,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Limit raise recorded for user ${userId}, but publishing the security alert failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
   }
 
   // Signature verified against the raw bytes Kora actually signed (see
@@ -345,7 +449,16 @@ export class PaymentsService {
         manager,
         pending.userId,
         facts.netAmount,
-        (m) => this.ledgerService.getWalletBalance(m, pending.userId),
+        async (m, since) => ({
+          balance: await this.ledgerService.getWalletBalance(m, pending.userId),
+          received: since
+            ? await this.ledgerService.getReceivedSince(
+                m,
+                pending.userId,
+                since,
+              )
+            : Money.zero(facts.netAmount.currency),
+        }),
       );
       const restricted = (
         await this.usersService.getRestrictionState(manager, pending.userId)

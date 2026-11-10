@@ -107,6 +107,52 @@ The client shows the warning and resends with `riskAcknowledged: true`; the
 acknowledgement is stored on the transaction. Creating a schedule goes through
 the same check; its runs do not.
 
+### Decisions made building the cooldown, user limits and bank cooling
+
+- **The cooldown start is stored.** `User.securityCooldownStartedAt` is set
+  when a trigger finds no active cooldown and left alone when one extends an
+  active cooldown. A schedule is exempt only if it was created before that
+  start; deriving the start from `securityCooldownUntil - 24h` would let a
+  later trigger move it past a schedule made during the cooldown.
+- **The new-account cap is a cumulative inflow cap.** For 24 hours from
+  `User.tier1ReachedAt`, the total received by the wallet may not exceed the
+  cooldown amount, whatever the balance is. Received means credited fundings
+  (net amount) and P2P transfers received, money-request payments included;
+  reversals, refunds, chargebacks and releases of held fundings are the
+  user's own money returning and do not count. It is checked under the user's
+  lock wherever the balance cap is: funding initiation (fundings in flight
+  count as projected inflow), funding completion (over the cap the funding is
+  held in suspense and refunded, as for a balance-cap breach), an incoming
+  transfer (the sender gets the generic recipient-can't-receive answer), and
+  money-request and schedule creation. The user's own errors carry
+  `NEW_ACCOUNT_INFLOW_LIMIT` with `remaining` and `windowEndsAt`, and
+  `GET /wallet/limits` shows the allowance while the window is open.
+- **The cooldown amount is one setting** (`SECURITY_COOLDOWN_LIMIT`), used for
+  the outflow cap and the new-account inflow cap; the bank-account cooling total is
+  `BANK_ACCOUNT_COOLING_LIMIT`. Durations stay 24 hours in code.
+- **User limits.** `kyc` owns `user_limits`; a raise is stored as pending and
+  read as effective once `pending_effective_at` has passed, so nothing needs a
+  job to apply it. A user limit breach reports `DAILY_LIMIT_EXCEEDED` with the
+  user's own limit, which scheduling already treats as transient. Lowering
+  also clears a pending raise.
+- **The limit endpoints live in `payments`** (`/wallet/limits/daily/...`):
+  `kyc` may import only `users`, and the flows need the PIN and step-up from
+  `auth`. `kyc` exposes lower, request-raise and cancel on `KycService`;
+  `payments` verifies, calls it and sends the alert. Only raising needs a
+  device signature (`limit.raise`); lowering and cancelling can only make the
+  account safer.
+- **Surname.** The legal name is stored first, middle, last, so the matcher
+  takes its last word as the surname. A holder name matches when it has that
+  surname and at least one other word of the legal name; initials do not
+  count, and the last word of the holder name may be a truncated prefix of at
+  least three letters.
+- **Bank cooling cap** is the total of pending and completed withdrawals to
+  that saved account, read under the user's lock from the withdrawal's stored
+  bank account snapshot.
+- **Scheduling.** `security_cooldown_limit` and `bank_account_cooling` are new
+  failure codes. Neither is permanent, so a run is retried within the Lagos
+  day like `daily_limit_exceeded`; clients see them as they are.
+
 ## Alternatives considered
 
 - **A counter reset by each security event.** An attacker resets it by

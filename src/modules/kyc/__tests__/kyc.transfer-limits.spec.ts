@@ -2,6 +2,8 @@ import { DataSource, EntityManager } from 'typeorm';
 import { AppConfig } from '../../../config';
 import { Money } from '../../../shared/primitives/money';
 import { KycTier, UsersService } from '../../users/users.service';
+import { UserLimit } from '../entities/user-limit.entity';
+import { UserLimitsService } from '../internal/user-limits.service';
 import { KycService } from '../kyc.service';
 import { TierLimit } from '../entities/tier-limit.entity';
 import {
@@ -22,7 +24,7 @@ describe('KycService.checkTransferLimits', () => {
     Pick<TierLimit, 'dailyDebitLimitMinor' | 'balanceCapMinor'>
   >;
   let debited: Money;
-  let recipientBalance: { balance: Money; pending: Money };
+  let recipientBalance: { balance: Money; pending: Money; received: Money };
   let manager: EntityManager;
   let readers: Parameters<KycService['checkTransferLimits']>[4];
 
@@ -40,7 +42,7 @@ describe('KycService.checkTransferLimits', () => {
       tier3: { dailyDebitLimitMinor: 500_000_000n, balanceCapMinor: null },
     };
     debited = NGN(0);
-    recipientBalance = { balance: NGN(0), pending: NGN(0) };
+    recipientBalance = { balance: NGN(0), pending: NGN(0), received: NGN(0) };
     let currentUser = '';
     manager = {
       query: jest.fn((sql: string, params: unknown[]) => {
@@ -55,13 +57,24 @@ describe('KycService.checkTransferLimits', () => {
         events.push(`lock:${String(params[0])}`);
         return Promise.resolve();
       }),
-      getRepository: jest.fn(() => ({
-        findOneBy: jest.fn(({ tier }: { tier: KycTier }) =>
-          Promise.resolve(limits[tier]),
-        ),
-      })),
+      getRepository: jest.fn((entity: unknown) =>
+        entity === UserLimit
+          ? { findOneBy: jest.fn(() => Promise.resolve(null)) }
+          : {
+              findOneBy: jest.fn(({ tier }: { tier: KycTier }) =>
+                Promise.resolve(limits[tier]),
+              ),
+            },
+      ),
     } as unknown as EntityManager;
     const usersService = {
+      getSecurityControls: jest.fn(() =>
+        Promise.resolve({
+          securityCooldownUntil: null,
+          securityCooldownStartedAt: null,
+          tier1ReachedAt: null,
+        }),
+      ),
       getKycTier: jest.fn((_m: EntityManager, userId: string) => {
         currentUser = userId;
         events.push(`tier:${currentUser}`);
@@ -85,7 +98,12 @@ describe('KycService.checkTransferLimits', () => {
       {
         encryption: { key: 'a'.repeat(64) },
         identifierHash: { key: 'c'.repeat(64) },
+        securityControls: {
+          cooldownLimit: 2_000_000,
+          bankAccountCoolingLimit: 2_000_000,
+        },
       } as AppConfig,
+      {} as UserLimitsService,
     );
   });
 
@@ -139,7 +157,11 @@ describe('KycService.checkTransferLimits', () => {
 
     it('checks the sender limit first, with the existing error', async () => {
       debited = NGN(5_000_000);
-      recipientBalance = { balance: NGN(30_000_000), pending: NGN(0) };
+      recipientBalance = {
+        balance: NGN(30_000_000),
+        pending: NGN(0),
+        received: NGN(0),
+      };
 
       await expect(check('alice', 'bob')).rejects.toThrow(
         DailyLimitExceededException,
@@ -148,13 +170,21 @@ describe('KycService.checkTransferLimits', () => {
     });
 
     it('allows a recipient landing exactly on the cap', async () => {
-      recipientBalance = { balance: NGN(29_999_900), pending: NGN(0) };
+      recipientBalance = {
+        balance: NGN(29_999_900),
+        pending: NGN(0),
+        received: NGN(0),
+      };
 
       await expect(check('alice', 'bob', NGN(100))).resolves.toBeUndefined();
     });
 
     it('rejects one kobo over the recipient cap with the generic error', async () => {
-      recipientBalance = { balance: NGN(29_999_900), pending: NGN(0) };
+      recipientBalance = {
+        balance: NGN(29_999_900),
+        pending: NGN(0),
+        received: NGN(0),
+      };
 
       const error = await check('alice', 'bob', NGN(101)).catch(
         (e: unknown) => e,
@@ -168,7 +198,11 @@ describe('KycService.checkTransferLimits', () => {
     });
 
     it("counts the recipient's pending funding toward their cap", async () => {
-      recipientBalance = { balance: NGN(10_000_000), pending: NGN(19_999_950) };
+      recipientBalance = {
+        balance: NGN(10_000_000),
+        pending: NGN(19_999_950),
+        received: NGN(0),
+      };
 
       await expect(check('alice', 'bob', NGN(100))).rejects.toThrow(
         RecipientCannotReceiveException,
@@ -186,7 +220,11 @@ describe('KycService.checkTransferLimits', () => {
 
     it('never caps a tier-3 recipient', async () => {
       tiers.bob = 'tier3';
-      recipientBalance = { balance: NGN(900_000_000_000), pending: NGN(0) };
+      recipientBalance = {
+        balance: NGN(900_000_000_000),
+        pending: NGN(0),
+        received: NGN(0),
+      };
 
       await expect(check('alice', 'bob')).resolves.toBeUndefined();
       expect(readers.readRecipientBalanceAndPending).not.toHaveBeenCalled();

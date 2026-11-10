@@ -33,6 +33,8 @@ export const FAILURE_CODES = [
   'payout_rejected',
   'amount_below_minimum',
   'sender_unverified',
+  'security_cooldown_limit',
+  'bank_account_cooling',
   'infrastructure',
 ] as const;
 export type FailureCode = (typeof FAILURE_CODES)[number];

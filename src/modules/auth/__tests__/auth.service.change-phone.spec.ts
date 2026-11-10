@@ -32,9 +32,10 @@ function buildUser(overrides: Partial<UserFixture> = {}): UserFixture {
 
 describe('AuthService — change phone', () => {
   let usersService: {
+    startSecurityCooldown: jest.Mock;
     findById: jest.Mock<Promise<UserFixture>, [string]>;
     setPendingPhone: jest.Mock<Promise<void>, [string, string]>;
-    confirmPendingPhone: jest.Mock<Promise<UserFixture>, [string]>;
+    confirmPendingPhone: jest.Mock<Promise<UserFixture>, [string, unknown?]>;
   };
   let mfaService: {
     createStepUpChallenge: jest.Mock<
@@ -64,7 +65,10 @@ describe('AuthService — change phone', () => {
   let sessionRepo: {
     update: jest.Mock<Promise<unknown>, [Partial<Session>, Partial<Session>]>;
   };
-  let dataSource: { getRepository: jest.Mock<unknown, [unknown]> };
+  let dataSource: {
+    getRepository: jest.Mock<unknown, [unknown]>;
+    transaction: jest.Mock;
+  };
   let eventBus: {
     dispatchAndAwait: jest.Mock<
       Promise<void>,
@@ -76,6 +80,7 @@ describe('AuthService — change phone', () => {
 
   beforeEach(() => {
     usersService = {
+      startSecurityCooldown: jest.fn(() => Promise.resolve()),
       findById: jest.fn((_userId: string) => Promise.resolve(buildUser())),
       setPendingPhone: jest.fn((_userId: string, _newPhone: string) =>
         Promise.resolve(),
@@ -124,6 +129,9 @@ describe('AuthService — change phone', () => {
     };
     dataSource = {
       getRepository: jest.fn((_entity: unknown) => sessionRepo),
+      transaction: jest.fn((work: (m: unknown) => Promise<unknown>) =>
+        work({ getRepository: dataSource.getRepository }),
+      ),
     };
     eventBus = {
       dispatchAndAwait: jest.fn(
@@ -229,7 +237,16 @@ describe('AuthService — change phone', () => {
         'phone_verification',
         'some-code',
       );
-      expect(usersService.confirmPendingPhone).toHaveBeenCalledWith('user-1');
+      expect(usersService.confirmPendingPhone).toHaveBeenCalledWith(
+        'user-1',
+        expect.anything(),
+      );
+      expect(usersService.startSecurityCooldown).toHaveBeenCalledWith(
+        expect.anything(),
+        'user-1',
+        'phone_changed',
+        { type: 'user', id: 'user-1' },
+      );
       expect(sessionRepo.update).not.toHaveBeenCalled();
     });
 

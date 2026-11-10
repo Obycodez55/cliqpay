@@ -66,6 +66,7 @@ import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/em
 import { SMS_SENDER } from '../../../src/modules/notifications/channels/sms/sms-sender.interface';
 import { FakeSmsAdapter } from '../../../src/modules/notifications/channels/sms/fake-sms.adapter';
 import { Money } from '../../../src/shared/primitives/money';
+import { establishAccount } from './established-account';
 import { closeBullmqWorkers } from './bullmq-teardown';
 
 // A superset of AuthTestContext's own fields (plus payments/withdrawals'
@@ -261,6 +262,7 @@ export async function seedWithdrawalUser(
       user.id,
       overrides.kycTier ?? 'tier3',
     );
+    await establishAccount(manager, user.id);
     const wallet = await ctx.ledgerService.createUserWallet(
       manager,
       user.id,
@@ -320,6 +322,7 @@ export async function seedBankAccount(
     accountNumber?: string;
     bankName?: string;
     accountName?: string;
+    fullyEligibleAt?: Date;
   },
 ): Promise<BankAccount & { accountNumber: string }> {
   const accountNumber = args.accountNumber ?? '0000000000';
@@ -335,6 +338,7 @@ export async function seedBankAccount(
       encryptionKeyFromHex(TEST_IDENTIFIER_HASH_KEY),
     ),
     accountName: args.accountName ?? 'Ada Lovelace',
+    fullyEligibleAt: args.fullyEligibleAt ?? new Date(),
   });
   const saved = await ctx.bankAccountRepo.save(bankAccount);
   return Object.assign(saved, { accountNumber });

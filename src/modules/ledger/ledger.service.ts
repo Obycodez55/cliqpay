@@ -626,6 +626,35 @@ export class LedgerService {
     return Money.of(BigInt(row?.total ?? 0), wallet.currency);
   }
 
+  // Withdrawals still in flight or completed to one saved bank account,
+  // principal only.
+  async getWithdrawnToBankAccount(
+    manager: EntityManager,
+    userId: string,
+    bankAccountId: string,
+  ): Promise<Money> {
+    const wallet = await manager
+      .getRepository(Account)
+      .findOneByOrFail({ userId, role: 'user_wallet' });
+    const row = await manager
+      .getRepository(Transaction)
+      .createQueryBuilder('transaction')
+      .select('COALESCE(SUM(transaction.amount), 0)', 'total')
+      .where('transaction.senderWalletId = :walletId', { walletId: wallet.id })
+      .andWhere('transaction.type = :type', { type: 'withdrawal' })
+      .andWhere('transaction.status IN (:...statuses)', {
+        statuses: ['pending', 'completed'],
+      })
+      .andWhere(
+        `transaction.metadata -> 'bankAccount' ->> 'id' = :bankAccountId`,
+        {
+          bankAccountId,
+        },
+      )
+      .getRawOne<{ total: string }>();
+    return Money.of(BigInt(row?.total ?? 0), wallet.currency);
+  }
+
   // The stored balance only, for a check that must not count pending
   // fundings (a funding completing is itself still pending until it posts).
   async getWalletBalance(
@@ -691,7 +720,8 @@ export class LedgerService {
   async getBalanceAndPendingFunding(
     manager: EntityManager,
     userId: string,
-  ): Promise<{ balance: Money; pending: Money }> {
+    receivedSince: Date | null = null,
+  ): Promise<{ balance: Money; pending: Money; received: Money }> {
     const rows = await manager.query<
       { balance: string; currency: string; pending: string }[]
     >(BALANCE_AND_PENDING_FUNDING_SQL, [userId, PENDING_FUNDING_WINDOW_HOURS]);
@@ -702,7 +732,38 @@ export class LedgerService {
     return {
       balance: Money.of(BigInt(balance), currency),
       pending: Money.of(BigInt(pending), currency),
+      received:
+        receivedSince === null
+          ? Money.zero(currency)
+          : await this.getReceivedSince(manager, userId, receivedSince),
     };
+  }
+
+  // What others paid in: credited fundings and P2P transfers received
+  // (money-request payments included). Reversals, refunds and chargebacks are
+  // the user's own money coming back, so they are not inflow.
+  async getReceivedSince(
+    manager: EntityManager,
+    userId: string,
+    since: Date,
+  ): Promise<Money> {
+    const wallet = await manager
+      .getRepository(Account)
+      .findOneByOrFail({ userId, role: 'user_wallet' });
+    const row = await manager
+      .getRepository(Transaction)
+      .createQueryBuilder('transaction')
+      .select('COALESCE(SUM(transaction.amount), 0)', 'total')
+      .where('transaction.recipientWalletId = :walletId', {
+        walletId: wallet.id,
+      })
+      .andWhere('transaction.createdAt >= :since', { since })
+      .andWhere(
+        `((transaction.type = 'funding' AND transaction.status = 'completed')
+          OR (transaction.type = 'p2p_transfer' AND transaction.status IN ('pending', 'completed')))`,
+      )
+      .getRawOne<{ total: string }>();
+    return Money.of(BigInt(row?.total ?? 0), wallet.currency);
   }
 
   // Feeds the withdrawal self-verify poll job (issue #31) — same shape as

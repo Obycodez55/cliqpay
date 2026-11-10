@@ -26,6 +26,14 @@ import { PaymentsService } from './payments.service';
 import { FundWalletDto } from './dto/fund-wallet.dto';
 import { FundWalletResponseDto } from './dto/fund-wallet-response.dto';
 import { WalletLimitsResponseDto } from './dto/wallet-limits-response.dto';
+import {
+  CancelLimitIncreaseDto,
+  LowerDailyLimitDto,
+  RaiseDailyLimitDto,
+  UserLimitResponseDto,
+} from './dto/user-limit.dto';
+import { RequireDeviceSignature } from '../../common/guards/device-signature.guard';
+import { signingPart } from '../../common/device/signed-action';
 
 // Shares the `/wallet` namespace with the wallet module's WalletController by design
 @ApiTags('Wallet')
@@ -70,6 +78,89 @@ export class PaymentsController {
     @Req() req: AuthenticatedRequest,
   ): Promise<WalletLimitsResponseDto> {
     return this.paymentsService.getWalletLimits(req.user.userId);
+  }
+
+  @Post('limits/daily/lower')
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Lower your own daily outflow limit, effective at once',
+    description:
+      'Needs the transaction PIN only and no device signature: a lower limit cannot hurt the owner. Lowering also cancels a pending raise.',
+  })
+  @ApiResponse({ status: 200, type: UserLimitResponseDto })
+  lowerDailyLimit(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: LowerDailyLimitDto,
+  ): Promise<UserLimitResponseDto> {
+    return this.paymentsService.lowerDailyLimit(
+      req.user.userId,
+      dto.amount,
+      dto.pin,
+    );
+  }
+
+  @Post('limits/daily/raise/step-up')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({ summary: 'Start a step-up challenge for raising your limit' })
+  initiateRaiseDailyLimitStepUp(@Req() req: AuthenticatedRequest) {
+    return this.paymentsService.initiateRaiseDailyLimitStepUp(req.user.userId);
+  }
+
+  @Post('limits/daily/raise')
+  @HttpCode(200)
+  @ApiBearerAuth()
+  @RequireDeviceSignature({
+    action: 'limit.raise',
+    signs:
+      'reference = body.challengeId, amount = body.amount in kobo, target = ""',
+    resolve: (req) => {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      return {
+        action: 'limit.raise',
+        reference: signingPart(body.challengeId),
+        amount: signingPart(body.amount),
+        target: '',
+      };
+    },
+  })
+  // Below the signature decorator on purpose: guards run bottom-up, and the
+  // signature guard needs the user the JWT guard sets.
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Request a higher daily outflow limit, effective 24 hours later',
+    description:
+      'Needs a step-up challenge and the transaction PIN, and sends a security alert at once. The raise can be cancelled until it takes effect.',
+  })
+  @ApiResponse({ status: 200, type: UserLimitResponseDto })
+  raiseDailyLimit(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: RaiseDailyLimitDto,
+  ): Promise<UserLimitResponseDto> {
+    return this.paymentsService.raiseDailyLimit(req.user.userId, dto);
+  }
+
+  @Post('limits/daily/raise/cancel')
+  @HttpCode(200)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  @ApiOperation({
+    summary: 'Cancel a pending limit raise',
+    description:
+      'Needs the transaction PIN only and no device signature: cancelling can only keep the limit where it is.',
+  })
+  @ApiResponse({ status: 200, type: UserLimitResponseDto })
+  cancelDailyLimitRaise(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: CancelLimitIncreaseDto,
+  ): Promise<UserLimitResponseDto> {
+    return this.paymentsService.cancelDailyLimitRaise(req.user.userId, dto.pin);
   }
 
   @Post('webhook/kora')

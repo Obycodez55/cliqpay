@@ -5,6 +5,7 @@ import { EventBusModule } from '../../shared/events/event-bus.module';
 import { LedgerModule } from '../ledger/ledger.module';
 import { UsersModule } from '../users/users.module';
 import { KycModule } from '../kyc/kyc.module';
+import { AuthModule } from '../auth/auth.module';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
 import {
@@ -46,6 +47,7 @@ const PAYMENT_ADAPTERS = {
     LedgerModule,
     UsersModule,
     KycModule,
+    AuthModule,
     EventBusModule,
     BullModule.registerQueue({
       name: FUNDING_POLL_QUEUE,

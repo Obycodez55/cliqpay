@@ -59,9 +59,11 @@ describe('Balance cap at funding initiation', () => {
   }
 
   function exposure(userId: string) {
-    return ctx.dataSource.transaction((manager) =>
-      ctx.ledgerService.getBalanceAndPendingFunding(manager, userId),
-    );
+    return ctx.dataSource.transaction(async (manager) => {
+      const { balance, pending } =
+        await ctx.ledgerService.getBalanceAndPendingFunding(manager, userId);
+      return { balance, pending };
+    });
   }
 
   async function completeViaWebhook(reference: string, netKobo: number) {

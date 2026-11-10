@@ -31,7 +31,8 @@ export type StepUpAction =
   | 'change_email'
   | 'change_phone'
   | 'enroll_totp'
-  | 'save_bank_account';
+  | 'save_bank_account'
+  | 'raise_daily_limit';
 
 export type MfaChallengeAction = 'sign_in' | StepUpAction;
 

@@ -6,7 +6,12 @@ export type AuditAction =
   | 'restriction_added'
   | 'restriction_lifted'
   | 'device_trusted'
-  | 'device_revoked';
+  | 'device_revoked'
+  | 'security_cooldown_started'
+  | 'bank_account_saved'
+  | 'daily_limit_lowered'
+  | 'daily_limit_raise_requested'
+  | 'daily_limit_raise_cancelled';
 
 export interface AuditActor {
   type: AuditActorType;

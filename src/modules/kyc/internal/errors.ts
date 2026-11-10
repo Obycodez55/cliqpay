@@ -163,3 +163,76 @@ export class TierLimitNotConfiguredException extends DomainException {
     );
   }
 }
+
+export class SecurityCooldownLimitException extends DomainException {
+  readonly code = 'SECURITY_COOLDOWN_LIMIT';
+  readonly details: {
+    cooldownEndsAt: string;
+    limit: object;
+    remaining: object;
+  };
+  constructor(cooldownEndsAt: Date, limit: Money, remaining: Money) {
+    super(
+      `After a recent security change you can send up to ${limit.toDecimalString()} in 24 hours until ${cooldownEndsAt.toISOString()}. You have ${remaining.toDecimalString()} left.`,
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+    this.details = {
+      cooldownEndsAt: cooldownEndsAt.toISOString(),
+      limit: limit.toJSON(),
+      remaining: remaining.toJSON(),
+    };
+  }
+}
+
+export class LimitNotLowerException extends DomainException {
+  readonly code = 'LIMIT_NOT_LOWER';
+  constructor() {
+    super(
+      'The new limit must be lower than your current daily limit. To raise it, use the raise flow.',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
+export class LimitNotHigherException extends DomainException {
+  readonly code = 'LIMIT_NOT_HIGHER';
+  constructor() {
+    super(
+      'The new limit must be higher than your current daily limit.',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
+export class LimitAboveTierException extends DomainException {
+  readonly code = 'LIMIT_ABOVE_TIER';
+  constructor(tierLimit: Money) {
+    super(
+      `Your limit can't be higher than your tier's daily limit of ${tierLimit.toDecimalString()}.`,
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
+export class NoPendingLimitIncreaseException extends DomainException {
+  readonly code = 'NO_PENDING_LIMIT_INCREASE';
+  constructor() {
+    super('There is no pending limit increase.', HttpStatus.NOT_FOUND);
+  }
+}
+
+export class NewAccountInflowLimitException extends DomainException {
+  readonly code = 'NEW_ACCOUNT_INFLOW_LIMIT';
+  readonly details: { limit: object; remaining: object; windowEndsAt: string };
+  constructor(limit: Money, remaining: Money, windowEndsAt: Date) {
+    super(
+      `A new account can receive up to ${limit.toDecimalString()} in its first 24 hours, until ${windowEndsAt.toISOString()}. You can receive ${remaining.toDecimalString()} more, counting any top-ups still in progress.`,
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+    this.details = {
+      limit: limit.toJSON(),
+      remaining: remaining.toJSON(),
+      windowEndsAt: windowEndsAt.toISOString(),
+    };
+  }
+}

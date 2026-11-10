@@ -1,5 +1,6 @@
 import { HttpStatus } from '@nestjs/common';
 import { DomainException } from '../../../common/exceptions/domain.exception';
+import { Money } from '../../../shared/primitives/money';
 
 export class BankAccountNotResolvableException extends DomainException {
   readonly code = 'BANK_ACCOUNT_NOT_RESOLVABLE';
@@ -69,5 +70,21 @@ export class WithdrawalPayoutFailedException extends DomainException {
       `Withdrawal could not be processed (${reason}) — the amount has been returned to your wallet.`,
       HttpStatus.UNPROCESSABLE_ENTITY,
     );
+  }
+}
+
+export class BankAccountCoolingException extends DomainException {
+  readonly code = 'BANK_ACCOUNT_COOLING';
+  readonly details: { eligibleAt: string; limit: object; remaining: object };
+  constructor(eligibleAt: Date, limit: Money, remaining: Money) {
+    super(
+      `This bank account is new, and its name doesn't match your verified name. Until ${eligibleAt.toISOString()} you can withdraw up to ${limit.toDecimalString()} in total to it. You have ${remaining.toDecimalString()} left.`,
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+    this.details = {
+      eligibleAt: eligibleAt.toISOString(),
+      limit: limit.toJSON(),
+      remaining: remaining.toJSON(),
+    };
   }
 }

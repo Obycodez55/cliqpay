@@ -8,6 +8,7 @@ import {
   PostFundingResult,
 } from '../../ledger/ledger.service';
 import { UsersService } from '../../users/users.service';
+import { AuthService } from '../../auth/auth.service';
 import { KycService } from '../../kyc/kyc.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { Money } from '../../../shared/primitives/money';
@@ -150,6 +151,7 @@ describe('PaymentsService.handleKoraWebhook (charge events)', () => {
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
       kycService as unknown as KycService,
+      {} as AuthService,
       eventBus as unknown as EventBusService,
       adapter,
       testConfig,
@@ -536,6 +538,7 @@ describe('PaymentsService.handleKoraWebhook (refund events)', () => {
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
       completionKyc() as unknown as KycService,
+      {} as AuthService,
       eventBus as unknown as EventBusService,
       adapter,
       testConfig,
@@ -732,6 +735,7 @@ describe('PaymentsService.pollStaleFundingTransactions', () => {
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
       kycService as unknown as KycService,
+      {} as AuthService,
       eventBus as unknown as EventBusService,
       adapter,
       testConfig,
@@ -877,6 +881,7 @@ describe('PaymentsService.reconcileFloatBalances', () => {
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
       {} as KycService,
+      {} as AuthService,
       eventBus as unknown as EventBusService,
       adapter,
       testConfig,
@@ -951,6 +956,7 @@ describe('PaymentsService.pollStaleRefundTransactions', () => {
       ledgerService as unknown as LedgerService,
       { findById: jest.fn() } as unknown as UsersService,
       completionKyc() as unknown as KycService,
+      {} as AuthService,
       { publish: jest.fn() } as unknown as EventBusService,
       mockAdapter(),
       testConfig,
