@@ -279,10 +279,6 @@ describe('POST /kyc/verify-bvn, GET /kyc/status', () => {
   });
 
   describe('concurrency', () => {
-    beforeAll(async () => {
-      await ctx.app.listen(0);
-    });
-
     it('serializes concurrent first-time verifications for one user: the first wins, the rest are rejected, with no 500', async () => {
       const userId = await seedUser();
       const token = tokenFor(userId);

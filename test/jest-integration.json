@@ -11,7 +11,10 @@
   ],
   "testTimeout": 60000,
   "maxWorkers": 2,
+  "setupFiles": [
+    "<rootDir>/integration/support/loopback-listen.ts",
+    "<rootDir>/integration/support/device-defaults.ts"
+  ],
   "globalSetup": "<rootDir>/integration/support/global-setup.ts",
-  "globalTeardown": "<rootDir>/integration/support/global-teardown.ts",
-  "setupFiles": ["<rootDir>/integration/support/device-defaults.ts"]
+  "globalTeardown": "<rootDir>/integration/support/global-teardown.ts"
 }

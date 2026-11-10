@@ -27,7 +27,6 @@ describe('POST /kyc/verify-nin, Tier 2 derivation', () => {
   beforeAll(async () => {
     ctx = await createKycTestContext();
     jwtService = new JwtService({ secret: TEST_JWT_SECRET });
-    await ctx.app.listen(0);
   });
 
   afterAll(async () => {
