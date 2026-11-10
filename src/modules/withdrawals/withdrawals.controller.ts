@@ -24,6 +24,8 @@ import {
 } from '../../common/guards/jwt-auth.guard';
 import { CursorPaginationQueryDto } from '../../common/dto/cursor-pagination-query.dto';
 import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
+import { RequireDeviceSignature } from '../../common/guards/device-signature.guard';
+import { signingPart } from '../../common/device/signed-action';
 import { WithdrawalsService } from './withdrawals.service';
 import { SaveBankAccountDto } from './dto/save-bank-account.dto';
 import { BankAccountResponseDto } from './dto/bank-account-response.dto';
@@ -40,6 +42,20 @@ export class WithdrawalsController {
   constructor(private readonly withdrawalsService: WithdrawalsService) {}
 
   @Post()
+  @RequireDeviceSignature({
+    action: 'withdrawal.initiate',
+    signs:
+      'reference = body.reference, amount = body.amount in kobo, target = body.bankAccountId',
+    resolve: (req) => {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      return {
+        action: 'withdrawal.initiate',
+        reference: signingPart(body.reference),
+        amount: signingPart(body.amount),
+        target: signingPart(body.bankAccountId),
+      };
+    },
+  })
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({ summary: 'Initiate a withdrawal to a saved bank account' })
   initiateWithdrawal(
@@ -92,6 +108,20 @@ export class WithdrawalsController {
   }
 
   @Post('bank-accounts')
+  @RequireDeviceSignature({
+    action: 'bank_account.save',
+    signs:
+      'reference = body.challengeId, amount = "", target = "<bankCode>:<accountNumber>" from the body',
+    resolve: (req) => {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      return {
+        action: 'bank_account.save',
+        reference: signingPart(body.challengeId),
+        amount: '',
+        target: `${signingPart(body.bankCode)}:${signingPart(body.accountNumber)}`,
+      };
+    },
+  })
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @ApiOperation({
     summary: 'Save a bank account, using a step-up challenge',

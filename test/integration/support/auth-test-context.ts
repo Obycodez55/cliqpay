@@ -16,6 +16,7 @@ import {
   buildTestConfigModule,
   buildTestJwtModule,
   buildTestPipelineModules,
+  testDeviceConfig,
 } from './test-app-config';
 import {
   TestDatabase,
@@ -66,6 +67,7 @@ export interface AuthTestContext {
   verificationCodeRepo: Repository<VerificationCode>;
   emailAdapter: FakeEmailAdapter;
   smsAdapter: FakeSmsAdapter;
+  config: AppConfig;
 }
 
 // Real Postgres and a real Redis via Testcontainers — proves
@@ -84,6 +86,7 @@ export async function createAuthTestContext(
     .start();
 
   const config: AppConfig = buildTestAppConfig({
+    device: testDeviceConfig(true),
     database: { url: database.url },
     redis: {
       url: `redis://${redis.getHost()}:${redis.getMappedPort(6379)}`,
@@ -142,6 +145,7 @@ export async function createAuthTestContext(
     verificationCodeRepo: dataSource.getRepository(VerificationCode),
     emailAdapter: moduleRef.get(EMAIL_SENDER),
     smsAdapter: moduleRef.get(SMS_SENDER),
+    config,
   };
 }
 

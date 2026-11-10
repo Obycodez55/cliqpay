@@ -22,6 +22,7 @@ describe('transaction PIN — set, change, reset, lockout', () => {
 
   beforeAll(async () => {
     ctx = await createAuthTestContext();
+    ctx.config.device.keyRequired = false;
     helpers = createAuthTestHelpers(ctx);
   });
 

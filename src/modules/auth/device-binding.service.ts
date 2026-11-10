@@ -1,6 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { IsNull, MoreThan, Repository } from 'typeorm';
+import {
+  SignedActionVerification,
+  SignedActionVerifier,
+} from '../../common/device/signed-action';
 import { APP_CONFIG, AppConfig } from '../../config';
 import {
   buildSigningString,
@@ -17,10 +21,17 @@ import {
   DeviceChallenge,
   DeviceChallengePurpose,
 } from './entities/device-challenge.entity';
-import { AttestationResult } from './entities/trusted-device.entity';
 import {
+  AttestationResult,
+  TrustedDevice,
+} from './entities/trusted-device.entity';
+import {
+  ActionSignatureInvalidException,
+  ActionSignatureRequiredException,
+  ActionSignatureStaleException,
   DeviceAttestationFailedException,
   DeviceChallengeInvalidException,
+  DeviceKeyNotRegisteredException,
   DevicePublicKeyInvalidException,
   DevicePublicKeyRequiredException,
   DeviceSignatureRequiredException,
@@ -29,6 +40,8 @@ import { generateOpaqueToken, hashOpaqueToken } from './internal/secrets.util';
 
 const CHALLENGE_TTL_MS = 2 * 60 * 1000;
 const P256_RAW_LENGTH = 65;
+const ACTION_SIGNATURE_WINDOW_SECONDS = 2 * 60;
+const UNIX_SECONDS_PATTERN = /^\d{1,12}$/;
 
 export interface RegisteredDevice {
   publicKey: string | null;
@@ -39,8 +52,10 @@ export interface RegisteredDevice {
 // checks signed challenges, and registers the device key with its
 // attestation result.
 @Injectable()
-export class DeviceBindingService {
+export class DeviceBindingService implements SignedActionVerifier {
   constructor(
+    @InjectRepository(TrustedDevice)
+    private readonly trustedDeviceRepo: Repository<TrustedDevice>,
     @InjectRepository(DeviceChallenge)
     private readonly challengeRepo: Repository<DeviceChallenge>,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
@@ -112,6 +127,57 @@ export class DeviceBindingService {
       buildSigningString([input.purpose, input.nonce, input.deviceId]),
       input.signature,
     );
+  }
+
+  /**
+   * Checks the signature a money-moving or money-routing action carries over
+   * `action ‖ reference ‖ amount ‖ target ‖ timestamp`, with the key of the
+   * caller's trusted device for the request's X-Device-Id. Throws before the
+   * caller changes anything. A no-op while DEVICE_KEY_REQUIRED is off.
+   */
+  async verifySignedAction(input: SignedActionVerification): Promise<void> {
+    if (!this.keyRequired) {
+      return;
+    }
+    if (!input.signature || !input.timestamp) {
+      throw new ActionSignatureRequiredException();
+    }
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (
+      !UNIX_SECONDS_PATTERN.test(input.timestamp) ||
+      Math.abs(nowSeconds - Number(input.timestamp)) >
+        ACTION_SIGNATURE_WINDOW_SECONDS
+    ) {
+      throw new ActionSignatureStaleException();
+    }
+    const device = await this.trustedDeviceRepo.findOne({
+      where: {
+        userId: input.userId,
+        deviceId: input.deviceId,
+        revokedAt: IsNull(),
+      },
+      order: { createdAt: 'DESC' },
+    });
+    if (!device?.publicKey) {
+      throw new DeviceKeyNotRegisteredException();
+    }
+    let signingString: Buffer;
+    try {
+      signingString = buildSigningString([
+        input.action,
+        input.reference,
+        input.amount,
+        input.target,
+        input.timestamp,
+      ]);
+    } catch {
+      throw new ActionSignatureInvalidException();
+    }
+    if (
+      !verifyDeviceSignature(device.publicKey, signingString, input.signature)
+    ) {
+      throw new ActionSignatureInvalidException();
+    }
   }
 
   // Validates the submitted key before the MFA code is spent.

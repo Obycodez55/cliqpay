@@ -23,6 +23,12 @@ import {
   AuthenticatedRequest,
   JwtAuthGuard,
 } from '../../common/guards/jwt-auth.guard';
+import { RequireDeviceSignature } from '../../common/guards/device-signature.guard';
+import { signingPart } from '../../common/device/signed-action';
+import {
+  touchesMoney,
+  updateReference,
+} from './internal/update-signature.util';
 import { SchedulingService } from './scheduling.service';
 import { CreateScheduledPaymentDto } from './dto/create-scheduled-payment.dto';
 import { ListScheduledPaymentRunsQueryDto } from './dto/list-scheduled-payment-runs-query.dto';
@@ -40,6 +46,21 @@ export class SchedulingController {
   constructor(private readonly schedulingService: SchedulingService) {}
 
   @Post()
+  @RequireDeviceSignature({
+    action: 'schedule.create',
+    signs:
+      'reference = body.reference, amount = body.amount in kobo, target = body.target.userId or body.target.bankAccountId',
+    resolve: (req) => {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const target = (body.target ?? {}) as Record<string, unknown>;
+      return {
+        action: 'schedule.create',
+        reference: signingPart(body.reference),
+        amount: signingPart(body.amount),
+        target: signingPart(target.userId) || signingPart(target.bankAccountId),
+      };
+    },
+  })
   @ApiOperation({
     summary: 'Schedule a one-time or recurring payment to another Cliqpay user',
     description:
@@ -83,6 +104,23 @@ export class SchedulingController {
   }
 
   @Patch(':id')
+  @RequireDeviceSignature({
+    action: 'schedule.update',
+    signs:
+      'only when the body has amount, interval, nextRunDate, endDate or maxRuns; reference = lowercase hex SHA-256 of "<interval>|<nextRunDate>|<endDate>|<maxRuns>" (absent field "", null "null", interval "<unit>:<count>"), amount = body.amount or "", target = the schedule id in the path',
+    resolve: (req) => {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      if (!touchesMoney(body)) {
+        return null;
+      }
+      return {
+        action: 'schedule.update',
+        reference: updateReference(body),
+        amount: signingPart(body.amount),
+        target: signingPart(req.params.id),
+      };
+    },
+  })
   @ApiOperation({
     summary: 'Modify a scheduled payment',
     description:
@@ -123,6 +161,17 @@ export class SchedulingController {
   }
 
   @Post(':id/resume')
+  @RequireDeviceSignature({
+    action: 'schedule.resume',
+    signs:
+      'reference = the schedule id in the path, amount = "", target = the schedule id in the path',
+    resolve: (req) => ({
+      action: 'schedule.resume',
+      reference: signingPart(req.params.id),
+      amount: '',
+      target: signingPart(req.params.id),
+    }),
+  })
   @ApiOperation({
     summary: 'Resume a paused scheduled payment',
     description:

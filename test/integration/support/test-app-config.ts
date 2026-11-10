@@ -71,18 +71,24 @@ function defaultTestAppConfig(): AppConfig {
       retentionDays: 30,
       prembly: { secretKey: undefined },
     },
-    device: {
-      keyRequired: true,
-      attestation: {
-        mode: 'shadow',
-        provider: 'fake',
-        allowDevelopmentApple: true,
-        apple: { teamId: undefined, bundleId: undefined, rootCaPem: undefined },
-        google: {
-          packageName: undefined,
-          decryptionKey: undefined,
-          verificationKey: undefined,
-        },
+    device: testDeviceConfig(false),
+  };
+}
+
+// Off by default so the many specs that forge tokens and call money routes
+// need no signing; specs that exercise device keys opt in.
+export function testDeviceConfig(keyRequired: boolean): AppConfig['device'] {
+  return {
+    keyRequired,
+    attestation: {
+      mode: 'shadow',
+      provider: 'fake',
+      allowDevelopmentApple: true,
+      apple: { teamId: undefined, bundleId: undefined, rootCaPem: undefined },
+      google: {
+        packageName: undefined,
+        decryptionKey: undefined,
+        verificationKey: undefined,
       },
     },
   };

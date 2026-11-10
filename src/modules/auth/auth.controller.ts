@@ -44,6 +44,8 @@ import { ChangePhoneDto } from './dto/change-phone.dto';
 import { ConfirmChangePhoneDto } from './dto/confirm-change-phone.dto';
 import { StepUpChallengeResponseDto } from './dto/step-up-challenge-response.dto';
 import { readDeviceId } from '../../common/device/device-id.util';
+import { signingPart } from '../../common/device/signed-action';
+import { RequireDeviceSignature } from '../../common/guards/device-signature.guard';
 import {
   extractDeviceMetadata,
   readTrustedDeviceToken,
@@ -418,6 +420,19 @@ export class AuthController {
   // Step 2 of 2 — requires the current PIN; a wrong current PIN here counts
   // toward the PIN lockout (see docs/adr/0009-transaction-pin.md).
   @Post('transaction-pin/change')
+  @RequireDeviceSignature({
+    action: 'pin.change',
+    signs:
+      'reference = body.challengeId, amount = "", target = the caller\'s user id',
+    resolve: (req) => ({
+      action: 'pin.change',
+      reference: signingPart(
+        (req.body as Record<string, unknown>)?.challengeId,
+      ),
+      amount: '',
+      target: signingPart((req as AuthenticatedRequest).user?.userId),
+    }),
+  })
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
@@ -456,6 +471,19 @@ export class AuthController {
   // Step 2 of 2 — no current PIN required, since this is the recovery path;
   // clears the PIN lockout state as part of setting the new PIN.
   @Post('transaction-pin/reset')
+  @RequireDeviceSignature({
+    action: 'pin.reset',
+    signs:
+      'reference = body.challengeId, amount = "", target = the caller\'s user id',
+    resolve: (req) => ({
+      action: 'pin.reset',
+      reference: signingPart(
+        (req.body as Record<string, unknown>)?.challengeId,
+      ),
+      amount: '',
+      target: signingPart((req as AuthenticatedRequest).user?.userId),
+    }),
+  })
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })

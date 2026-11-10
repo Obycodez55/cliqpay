@@ -188,3 +188,43 @@ export class DeviceAttestationFailedException extends DomainException {
     super('This device could not be attested', HttpStatus.FORBIDDEN);
   }
 }
+
+export class ActionSignatureRequiredException extends DomainException {
+  readonly code = 'ACTION_SIGNATURE_REQUIRED';
+  constructor() {
+    super(
+      'X-Device-Signature and X-Signature-Timestamp headers are required for this action',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+export class ActionSignatureStaleException extends DomainException {
+  readonly code = 'ACTION_SIGNATURE_STALE';
+  constructor() {
+    super(
+      'X-Signature-Timestamp must be Unix seconds within 2 minutes of server time',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+export class ActionSignatureInvalidException extends DomainException {
+  readonly code = 'ACTION_SIGNATURE_INVALID';
+  constructor() {
+    super(
+      'The device signature does not match this request',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+export class DeviceKeyNotRegisteredException extends DomainException {
+  readonly code = 'DEVICE_KEY_NOT_REGISTERED';
+  constructor() {
+    super(
+      'No trusted device with a registered key exists for this device',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}

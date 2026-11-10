@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { SIGNED_ACTION_VERIFIER } from '../../common/device/signed-action';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { AuditModule } from '../../shared/audit/audit.module';
 import { EventBusModule } from '../../shared/events/event-bus.module';
@@ -14,6 +15,7 @@ import { TransactionPinService } from './transaction-pin.service';
 import { SessionService } from './session.service';
 import { DeviceBindingService } from './device-binding.service';
 import { DeviceChallenge } from './entities/device-challenge.entity';
+import { TrustedDevice } from './entities/trusted-device.entity';
 import { AppleAppAttestVerifier } from './attestation/apple-app-attest.verifier';
 import { DEVICE_ATTESTATION_VERIFIER } from './attestation/device-attestation-verifier';
 import { FakeDeviceAttestationVerifier } from './attestation/fake-device-attestation.verifier';
@@ -26,7 +28,7 @@ import { PlatformDeviceAttestationVerifier } from './attestation/platform-device
     LedgerModule,
     EventBusModule,
     AuditModule,
-    TypeOrmModule.forFeature([DeviceChallenge]),
+    TypeOrmModule.forFeature([DeviceChallenge, TrustedDevice]),
   ],
   controllers: [AuthController, MfaController],
   providers: [
@@ -36,6 +38,7 @@ import { PlatformDeviceAttestationVerifier } from './attestation/platform-device
     TransactionPinService,
     SessionService,
     DeviceBindingService,
+    { provide: SIGNED_ACTION_VERIFIER, useExisting: DeviceBindingService },
     AppleAppAttestVerifier,
     GooglePlayIntegrityVerifier,
     PlatformDeviceAttestationVerifier,
@@ -54,6 +57,6 @@ import { PlatformDeviceAttestationVerifier } from './attestation/platform-device
       ) => (config.device.attestation.provider === 'fake' ? fake : platform),
     },
   ],
-  exports: [AuthService],
+  exports: [AuthService, SIGNED_ACTION_VERIFIER],
 })
 export class AuthModule {}
