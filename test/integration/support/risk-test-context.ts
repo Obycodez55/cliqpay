@@ -24,8 +24,13 @@ export interface RiskTestContext extends WithdrawalsTestContext {
   auditRepo: Repository<AuditEvent>;
 }
 
-export async function createRiskTestContext(): Promise<RiskTestContext> {
-  const base = await createWithdrawalsTestContext({ providerFee: 3_000 });
+export async function createRiskTestContext(
+  extraImports: Parameters<typeof createWithdrawalsTestContext>[1] = [],
+): Promise<RiskTestContext> {
+  const base = await createWithdrawalsTestContext(
+    { providerFee: 3_000 },
+    extraImports,
+  );
   return {
     ...base,
     riskService: base.app.get(RiskService),

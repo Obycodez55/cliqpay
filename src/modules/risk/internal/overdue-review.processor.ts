@@ -2,6 +2,7 @@ import { OnModuleInit } from '@nestjs/common';
 import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job, Queue } from 'bullmq';
 import { RiskService } from '../risk.service';
+import { ScamCasesService } from './scam-cases.service';
 import { RISK_REVIEW_OVERDUE_QUEUE } from './queues';
 
 const JOB_NAME = 'alert-overdue-reviews';
@@ -12,6 +13,7 @@ export class OverdueReviewProcessor extends WorkerHost implements OnModuleInit {
   constructor(
     @InjectQueue(RISK_REVIEW_OVERDUE_QUEUE) private readonly queue: Queue,
     private readonly riskService: RiskService,
+    private readonly scamCases: ScamCasesService,
   ) {
     super();
   }
@@ -26,5 +28,6 @@ export class OverdueReviewProcessor extends WorkerHost implements OnModuleInit {
 
   async process(_job: Job): Promise<void> {
     await this.riskService.alertOverdueReviews();
+    await this.scamCases.alertCasesDue();
   }
 }

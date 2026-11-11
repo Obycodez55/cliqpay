@@ -7,6 +7,9 @@ import { EventBusService } from '../../shared/events/event-bus.service';
 import { AuthModule } from '../auth/auth.module';
 import { LedgerModule } from '../ledger/ledger.module';
 import { UsersModule } from '../users/users.module';
+import { ScamCasesService } from './internal/scam-cases.service';
+import { ScamCaseReviewController } from './scam-case-review.controller';
+import { ScamReportsController } from './scam-reports.controller';
 import { OverdueReviewProcessor } from './internal/overdue-review.processor';
 import {
   RISK_EVENTS_QUEUE,
@@ -43,8 +46,17 @@ import { RiskService } from './risk.service';
       },
     ),
   ],
-  controllers: [RiskController],
-  providers: [RiskService, RiskEventsProcessor, OverdueReviewProcessor],
+  controllers: [
+    RiskController,
+    ScamCaseReviewController,
+    ScamReportsController,
+  ],
+  providers: [
+    RiskService,
+    ScamCasesService,
+    RiskEventsProcessor,
+    OverdueReviewProcessor,
+  ],
   exports: [RiskService],
 })
 export class RiskModule implements OnModuleInit {

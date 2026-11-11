@@ -16,6 +16,7 @@ export const FRAUD_RULE_CODES = [
   'send_burst',
   'shared_device',
   'device_integrity',
+  'scam_report',
 ] as const;
 export type FraudRuleCode = (typeof FRAUD_RULE_CODES)[number];
 

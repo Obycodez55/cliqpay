@@ -21,6 +21,7 @@ export const ACCOUNT_ROLES = [
   'fee_expense',
   'fee_recovery',
   'suspense',
+  'fraud_hold',
   'user_wallet',
 ] as const;
 export type AccountRole = (typeof ACCOUNT_ROLES)[number];

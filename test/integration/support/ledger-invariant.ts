@@ -2,7 +2,7 @@ import { IsNull, Repository } from 'typeorm';
 import { Account } from '../../../src/modules/ledger/entities/account.entity';
 
 // docs/architecture.md §4.3: float_ngn[kora] = Σ(user wallets) + fee_income
-// + suspense. One shared definition so no spec can drift from it.
+// + suspense + fraud_hold. One shared definition so no spec can drift from it.
 export async function assertInvariantHolds(
   accountRepo: Repository<Account>,
 ): Promise<void> {
@@ -21,11 +21,18 @@ export async function assertInvariantHolds(
     provider: 'kora',
     currency: 'NGN',
   });
+  const fraudHold = await accountRepo.findOneByOrFail({
+    role: 'fraud_hold',
+    provider: IsNull(),
+    currency: 'NGN',
+  });
   const wallets = await accountRepo.findBy({
     role: 'user_wallet',
     currency: 'NGN',
   });
   const walletSum = wallets.reduce((sum, w) => sum + w.balance, 0n);
 
-  expect(float.balance).toBe(walletSum + feeIncome.balance + suspense.balance);
+  expect(float.balance).toBe(
+    walletSum + feeIncome.balance + suspense.balance + fraudHold.balance,
+  );
 }

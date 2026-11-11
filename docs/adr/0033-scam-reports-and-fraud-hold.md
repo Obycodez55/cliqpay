@@ -98,3 +98,55 @@ Whether to do so is a pre-launch decision tied to the final CBN guideline.
 - Recipients can see held amounts in their history.
 - Returns to the CBN (quarterly APP figures) can be produced from the case
   table when needed.
+
+## Decisions made building scam reports
+
+- **The hold is one posting per case, named after it.** The three transactions
+  have references `SCM-000123-hold`, `-release` and `-recovery`, so a repeated
+  call collides on the unique reference rather than moving money twice. Release
+  and recovery point `reversesTransactionId` at the hold. `ledger` skips a
+  posting of zero (a recipient with nothing left), so there is no empty entry.
+- **`fraud_hold` is a single row per currency.** Every hold, release and
+  recovery locks it, so they serialise globally, like `fee_income` at a
+  non-zero fee. A posting locks the wallet and `fraud_hold` in ascending
+  `account_id` order and never takes either below zero.
+- **Only the recipient's user lock is taken.** The reporter's wallet is
+  credited by recovery with just its row lock, as a withdrawal reversal is, so
+  no second user lock is needed and no ordering question arises. A report, a
+  response, a withdrawal by the reporter and a resolution all take the
+  recipient's lock first, then the case row.
+- **Recovery is exempt from the balance cap and not inflow.** Like a withdrawal
+  reversal, `scam_recovery` and `fraud_hold_release` post without a cap check,
+  and `getReceivedSince` counts only fundings and P2P transfers, so they never
+  count toward the new-account inflow cap. A recovery can leave the reporter
+  over their tier cap by its own amount, as a reversal can.
+- **`scam_report` is a `fraud_rules` row** (mode `enforce`, params
+  `minDistinctReporters` 2 and `windowDays` 30), so the flag and the restriction
+  follow the usual modes: `off` raises neither, `shadow` raises an unenforced
+  flag and no restriction. The hold itself always happens.
+- **One flag stands for all open cases against a recipient.** A rejected or
+  withdrawn case clears it only when no other case is open, so their
+  withdrawals stay held; an upheld case confirms it whatever else is open.
+- **The restriction follows the open reporters.** The report that reaches two
+  distinct reporters with open cases in the window adds a `fraud` outbound
+  restriction sourced to its own case (`restrictionAdded` on the case). When a
+  case is rejected or withdrawn and the open cases no longer reach the
+  threshold, every pending restriction of that kind for the recipient is lifted.
+  An upheld case's restriction is its own and is never lifted by this.
+- **Reporters never see the held amount.** `min(amount, balance)` would let a
+  reporter read a recipient's balance, so the reporter's responses carry the
+  reported and recovered amounts only. Reviewers see the held amount and the
+  shortfall.
+- **A report is addressed by transaction id,** the id history already returns,
+  because a scheduled payment's reference is hidden from its recipient and a
+  non-sender gets the same 404 as a missing transfer.
+- **Rate limit:** 5 reports per user per hour, counted per attempt.
+- **Notifications.** The recipient hears of the hold by email, push and in-app;
+  both parties hear of a decision. A recipient with nothing to hold is told the
+  transfer is under review. Neither message names the other party's balance.
+- **Ops alert.** The existing 6-hourly job also calls `alertCasesDue`, which
+  emails the reconciliation alert address a second digest (its own template, so
+  the review-overdue one is untouched) listing open cases due within two
+  working days or overdue. It keeps no state and decides nothing.
+- **Working days are UTC weekdays.** `dueAt` is 14 weekdays after the report;
+  the alert threshold is two weekdays before it.

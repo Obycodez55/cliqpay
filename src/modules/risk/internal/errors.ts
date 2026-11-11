@@ -37,3 +37,54 @@ export class RestrictionNotFoundException extends DomainException {
     );
   }
 }
+
+export class ScamCaseNotFoundException extends DomainException {
+  readonly code = 'SCAM_CASE_NOT_FOUND';
+  constructor() {
+    super('No scam case found for the given reference', HttpStatus.NOT_FOUND);
+  }
+}
+
+export class ScamCaseAlreadyDecidedException extends DomainException {
+  readonly code = 'SCAM_CASE_ALREADY_DECIDED';
+  constructor() {
+    super(
+      'This case has already been decided and cannot be changed',
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
+export class ScamReportTransferNotFoundException extends DomainException {
+  readonly code = 'SCAM_REPORT_TRANSFER_NOT_FOUND';
+  constructor() {
+    super('No transfer you sent matches the given id', HttpStatus.NOT_FOUND);
+  }
+}
+
+export class ScamReportNotReportableException extends DomainException {
+  readonly code = 'SCAM_REPORT_NOT_REPORTABLE';
+  constructor() {
+    super(
+      'Only a completed transfer to another Cliqpay user can be reported',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
+export class ScamReportWindowExpiredException extends DomainException {
+  readonly code = 'SCAM_REPORT_WINDOW_EXPIRED';
+  constructor() {
+    super(
+      'This transfer is more than 30 days old and can no longer be reported here. Contact support.',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+  }
+}
+
+export class ScamReportAlreadyFiledException extends DomainException {
+  readonly code = 'SCAM_REPORT_ALREADY_FILED';
+  constructor() {
+    super('This transfer has already been reported', HttpStatus.CONFLICT);
+  }
+}

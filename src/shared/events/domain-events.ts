@@ -388,6 +388,40 @@ export interface RiskReviewOverdueEventPayload {
   occurredAt: string; // ISO timestamp
 }
 
+export const SCAM_FUNDS_HELD_EVENT = 'scam_funds_held';
+
+export interface ScamFundsHeldEventPayload {
+  userId: string; // the recipient whose balance is on hold
+  email: string;
+  amount: string; // decimal display string, the amount actually held
+  currency: string;
+  held: boolean; // false when the recipient had nothing to hold
+  caseReference: string;
+}
+
+export const SCAM_CASE_RESOLVED_EVENT = 'scam_case_resolved';
+
+export interface ScamCaseResolvedEventPayload {
+  userId: string;
+  email: string;
+  caseReference: string;
+  party: 'reporter' | 'recipient';
+  outcome: 'upheld' | 'rejected' | 'withdrawn';
+  amount: string; // decimal display string: what moved for this party, if any
+  currency: string;
+  reason: string | null;
+}
+
+export const SCAM_CASES_DUE_EVENT = 'scam_cases_due';
+
+export interface ScamCasesDueEventPayload {
+  email: string;
+  dueSoon: number;
+  overdue: number;
+  caseReferences: string[];
+  occurredAt: string; // ISO timestamp
+}
+
 export const NEW_FOLLOWER_EVENT = 'new_follower';
 
 export interface NewFollowerEventPayload {

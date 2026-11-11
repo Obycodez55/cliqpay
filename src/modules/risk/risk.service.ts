@@ -58,7 +58,7 @@ export interface WithdrawalEvaluation {
   flagIds: string[];
 }
 
-interface Hit {
+export interface Hit {
   ruleCode: FraudRuleCode;
   enforced: boolean;
   evidence: Record<string, unknown>;
@@ -424,7 +424,7 @@ export class RiskService {
   // `enforced` is only ever set by the insert; a repeat hit on an open flag
   // appends evidence and counts, whatever the rule's mode is by now. Evidence
   // keeps the latest hits only: `send_burst` can hit on every send.
-  private async recordHit(
+  async recordHit(
     manager: EntityManager,
     userId: string,
     hit: Hit,

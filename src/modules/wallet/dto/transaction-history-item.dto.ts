@@ -34,6 +34,9 @@ export class TransactionHistoryItemDto {
       'profit_withdrawal',
       'bill_split',
       'scheduled',
+      'fraud_hold',
+      'fraud_hold_release',
+      'scam_recovery',
     ],
   })
   type: TransactionHistoryEntry['type'];

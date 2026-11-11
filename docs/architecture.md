@@ -184,6 +184,7 @@ MFA is a **challenge/verify** cycle (`mfa_challenges`), not a single check: a ch
 | `fee_recovery` | **Yes**                | Equity  | **[v2]** Offsetting recovery — always equals fee_expense above                             |
 | `fee_income`   | No — per currency only | Equity  | Cliqpay's own platform fee revenue, regardless of which provider processed the transaction |
 | `suspense`     | **Yes**                | Liability | **[v14]** Money in a provider's float that is owed back to a payer, not to a user wallet: a funding held because crediting it would breach the balance cap, until its refund settles |
+| `fraud_hold`   | No — per currency only | Liability | **[v19]** Money moved out of a recipient's wallet while a scam report on the transfer is reviewed, until it is released to the recipient or paid to the reporter (ADR-0033) |
 
 
 **[v3] Why the split:** `float`, `fee_expense`, and `fee_recovery` are provider-scoped because they represent something specific to *that* provider — real cash sitting there, and that provider's own fee structure. `fee_income` is Cliqpay's own margin and doesn't change based on which rail moved the money, so it stays per-currency only. Example for NGN with Kora as the only active provider: `float_ngn` (provider: `'kora'`), `fee_expense_ngn` (provider: `'kora'`), `fee_recovery_ngn` (provider: `'kora'`), `fee_income_ngn` (provider: `null`). If Paystack were added later for NGN, it would get its own `float_ngn` / `fee_expense_ngn` / `fee_recovery_ngn` rows (same role, same currency, different `provider` value) — `fee_income_ngn` stays a single shared account. **[v14]** `suspense` is provider-scoped like `float`, because the held money sits in one provider's balance.
@@ -347,11 +348,11 @@ CREDIT float_ngn       amount
 At any point in time, per currency, this must hold across **all active providers for that currency**:
 
 ```
-Σ over active providers p: float_<ccy>[p] = Σ(user wallet balances in <ccy>) + fee_income_<ccy> + Σ over active providers p: suspense_<ccy>[p]
+Σ over active providers p: float_<ccy>[p] = Σ(user wallet balances in <ccy>) + fee_income_<ccy> + Σ over active providers p: suspense_<ccy>[p] + fraud_hold_<ccy>
 
 ```
 
-With Kora as the only active provider, this collapses to exactly the v2 equation (`float_ngn[kora] = Σ(user wallets) + fee_income_ngn + suspense_ngn[kora]`) — the generalization only starts to matter the day a second provider is added, and it costs nothing to write it this way now.
+With Kora as the only active provider, this collapses to exactly the v2 equation (`float_ngn[kora] = Σ(user wallets) + fee_income_ngn + suspense_ngn[kora] + fraud_hold_ngn`) — the generalization only starts to matter the day a second provider is added, and it costs nothing to write it this way now.
 
 **[v2] Note:** `fee_expense` and `fee_recovery` don't appear in this equation — they always move together in equal amounts, so they cancel out and never affect the invariant. They exist purely for fee reporting, not for reconciliation math.
 

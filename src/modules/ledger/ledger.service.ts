@@ -30,6 +30,10 @@ import {
   ChargebackAmountExceedsRemainingException,
   InsufficientFundsException,
 } from './internal/errors';
+import {
+  FraudHoldMovement,
+  postFraudHoldMovement,
+} from './internal/fraud-hold-postings';
 
 // Re-exported through the module's one door (this file) — `payments` needs
 // TransactionProvider for its active-(provider, currency)-pairs list (issue
@@ -282,6 +286,18 @@ export interface PostWithdrawalResult {
   providerFee: Money;
   createdAt: Date;
 }
+
+export interface P2pTransferFacts {
+  transactionId: string;
+  reference: string;
+  status: TransactionStatus;
+  amount: Money;
+  senderUserId: string;
+  recipientUserId: string;
+  createdAt: Date;
+}
+
+export type { FraudHoldMovement };
 
 export interface ReverseWithdrawalParams {
   reference: string;
@@ -931,6 +947,86 @@ export class LedgerService {
       sends: Number(row.sends),
       firstTimeRecipients: Number(row.firstTimeRecipients),
     };
+  }
+
+  async getP2pTransfer(
+    manager: EntityManager,
+    transactionId: string,
+  ): Promise<P2pTransferFacts | null> {
+    const rows = await manager.query<
+      {
+        id: string;
+        reference: string;
+        status: TransactionStatus;
+        amount: string;
+        currency: string;
+        senderUserId: string;
+        recipientUserId: string;
+        createdAt: Date;
+      }[]
+    >(
+      `SELECT t.id, t.reference, t.status, t.amount, t.currency,
+              s.user_id AS "senderUserId", r.user_id AS "recipientUserId",
+              t.created_at AS "createdAt"
+         FROM transactions t
+         JOIN accounts s ON s.id = t.sender_wallet_id
+         JOIN accounts r ON r.id = t.recipient_wallet_id
+        WHERE t.id = $1 AND t.type = 'p2p_transfer'`,
+      [transactionId],
+    );
+    const row = rows[0];
+    return row
+      ? {
+          transactionId: row.id,
+          reference: row.reference,
+          status: row.status,
+          amount: Money.of(BigInt(row.amount), row.currency),
+          senderUserId: row.senderUserId,
+          recipientUserId: row.recipientUserId,
+          createdAt: row.createdAt,
+        }
+      : null;
+  }
+
+  // Moves at most the wallet's balance: a hold never takes it negative. Null
+  // when there is nothing to move.
+  postFraudHoldWithinTransaction(
+    manager: EntityManager,
+    params: { caseReference: string; recipientUserId: string; amount: Money },
+  ): Promise<FraudHoldMovement | null> {
+    return postFraudHoldMovement(manager, {
+      type: 'fraud_hold',
+      caseReference: params.caseReference,
+      userId: params.recipientUserId,
+      amount: params.amount,
+      clampToBalance: true,
+    });
+  }
+
+  postFraudHoldReleaseWithinTransaction(
+    manager: EntityManager,
+    params: { caseReference: string; recipientUserId: string; amount: Money },
+  ): Promise<FraudHoldMovement | null> {
+    return postFraudHoldMovement(manager, {
+      type: 'fraud_hold_release',
+      caseReference: params.caseReference,
+      userId: params.recipientUserId,
+      amount: params.amount,
+    });
+  }
+
+  // Like a reversal, this is the reporter's own money returning, so it is
+  // neither checked against the balance cap nor counted as received inflow.
+  postScamRecoveryWithinTransaction(
+    manager: EntityManager,
+    params: { caseReference: string; reporterUserId: string; amount: Money },
+  ): Promise<FraudHoldMovement | null> {
+    return postFraudHoldMovement(manager, {
+      type: 'scam_recovery',
+      caseReference: params.caseReference,
+      userId: params.reporterUserId,
+      amount: params.amount,
+    });
   }
 
   // Feeds the external reconciliation job (issue #15) — a plain read of

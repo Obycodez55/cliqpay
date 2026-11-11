@@ -300,6 +300,34 @@ export interface RiskReviewOverduePayload {
   occurredAt: string;
 }
 
+export interface ScamFundsHeldPayload {
+  userId: string;
+  email: string;
+  amount: string;
+  currency: string;
+  held: boolean;
+  caseReference: string;
+}
+
+export interface ScamCaseResolvedPayload {
+  userId: string;
+  email: string;
+  caseReference: string;
+  party: 'reporter' | 'recipient';
+  outcome: 'upheld' | 'rejected' | 'withdrawn';
+  amount: string;
+  currency: string;
+  reason: string | null;
+}
+
+export interface ScamCasesDuePayload {
+  email: string;
+  dueSoon: number;
+  overdue: number;
+  caseReferences: string[];
+  occurredAt: string;
+}
+
 export interface NewFollowerPayload {
   userId: string;
   followerUserId: string;
@@ -353,6 +381,9 @@ export interface NotificationPayloadMap {
   reconciliation_mismatch: ReconciliationMismatchPayload;
   refund_attention_required: RefundAttentionRequiredPayload;
   risk_review_overdue: RiskReviewOverduePayload;
+  scam_funds_held: ScamFundsHeldPayload;
+  scam_case_resolved: ScamCaseResolvedPayload;
+  scam_cases_due: ScamCasesDuePayload;
   new_follower: NewFollowerPayload;
   post_reaction: PostReactionPayload;
   post_comment: PostCommentPayload;
@@ -430,6 +461,9 @@ export const NOTIFICATION_CATALOG = {
   account_frozen: { channels: ['email'] },
   reconciliation_mismatch: { channels: ['email'] },
   risk_review_overdue: { channels: ['email'] },
+  scam_funds_held: { channels: ['email', 'push', 'in_app'] },
+  scam_case_resolved: { channels: ['email', 'push', 'in_app'] },
+  scam_cases_due: { channels: ['email'] },
   refund_attention_required: { channels: ['email'] },
   new_follower: { channels: ['push', 'in_app'] },
   post_reaction: { channels: ['in_app'] },

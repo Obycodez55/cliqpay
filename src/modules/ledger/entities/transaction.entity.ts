@@ -37,6 +37,9 @@ export const TRANSACTION_TYPES = [
   'profit_withdrawal',
   'bill_split',
   'scheduled',
+  'fraud_hold',
+  'fraud_hold_release',
+  'scam_recovery',
 ] as const;
 export type TransactionType = (typeof TRANSACTION_TYPES)[number];
 export const TRANSACTION_STATUSES = [
@@ -129,6 +132,10 @@ export interface ChargebackTransactionMetadata {
   disputeReference: string;
 }
 
+export interface ScamCaseTransactionMetadata {
+  caseReference: string;
+}
+
 /**
  * Metadata is shaped per transaction type, not a free-form bag — `payments`
  * writing an untyped field here and casting it back on read is exactly the
@@ -141,7 +148,8 @@ export type TransactionMetadata =
   | TransferTransactionMetadata
   | WithdrawalTransactionMetadata
   | WithdrawalReversalTransactionMetadata
-  | ChargebackTransactionMetadata;
+  | ChargebackTransactionMetadata
+  | ScamCaseTransactionMetadata;
 
 /**
  * See docs/architecture.md §5. `sender_wallet_id`/`recipient_wallet_id` are

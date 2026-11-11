@@ -16,7 +16,11 @@ export type AuditAction =
   | 'email_recovered'
   | 'fraud_flag_reviewed'
   | 'withdrawal_released'
-  | 'withdrawal_rejected';
+  | 'withdrawal_rejected'
+  | 'scam_report_filed'
+  | 'scam_report_responded'
+  | 'scam_case_resolved'
+  | 'scam_report_withdrawn';
 
 export interface AuditActor {
   type: AuditActorType;
