@@ -39,6 +39,16 @@ export interface SecurityAlertPayload {
   // in-app channel's dedupe_key is derived from this (see templates.ts),
   // since this payload carries no other stable event identifier.
   occurredAt: string;
+  // Added when the alert is routed, never by the publisher: a signed link
+  // that can only lock the account. Not on in-app rows, which belong to a
+  // signed-in user who has the lock button.
+  lockUrl?: string;
+}
+
+export interface AccountSelfLockedPayload {
+  userId: string;
+  email: string;
+  occurredAt: string;
 }
 
 export interface FundingCompletedPayload {
@@ -309,6 +319,7 @@ export interface NotificationPayloadMap {
   password_reset_otp: PasswordResetOtpPayload;
   mfa_challenge_otp: MfaChallengeOtpPayload;
   security_alert: SecurityAlertPayload;
+  account_self_locked: AccountSelfLockedPayload;
   funding_completed: FundingCompletedPayload;
   funding_held: FundingHeldPayload;
   funding_refunded: FundingRefundedPayload;
@@ -371,6 +382,7 @@ export const NOTIFICATION_CATALOG = {
   password_reset_otp: { channels: ['email'] },
   mfa_challenge_otp: { channels: ['email'] },
   security_alert: { channels: ['email', 'push', 'in_app'] },
+  account_self_locked: { channels: ['email', 'push'] },
   funding_completed: { channels: ['email', 'in_app'] },
   funding_held: { channels: ['email', 'in_app'] },
   funding_refunded: { channels: ['email', 'in_app'] },

@@ -9,6 +9,8 @@ import {
 } from './entities/account-restriction.entity';
 import { AuditActor, AuditService } from '../../shared/audit/audit.service';
 import {
+  AccountSelfLockedException,
+  UserNotFoundException,
   NoPendingEmailChangeException,
   NoPendingPhoneChangeException,
   UsernameChangeCooldownException,
@@ -304,6 +306,87 @@ export class UsersService {
       blocksOutbound: open.length > 0,
       blocksInbound: open.some((row) => row.scope === 'all'),
     };
+  }
+
+  // With a manager it takes the user's lock first, so the answer holds for the
+  // rest of the caller's transaction; without one it is a plain read.
+  async assertNotSelfLocked(
+    userId: string,
+    manager?: EntityManager,
+  ): Promise<void> {
+    if (manager) {
+      await this.lockUser(manager, userId);
+    }
+    const locked = await (manager ?? this.dataSource.manager)
+      .getRepository(AccountRestriction)
+      .existsBy({
+        userId,
+        reason: 'self_lock',
+        liftedAt: IsNull(),
+      });
+    if (locked) {
+      throw new AccountSelfLockedException();
+    }
+  }
+
+  async getOpenSelfLock(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<{ createdAt: Date } | null> {
+    const row = await manager.getRepository(AccountRestriction).findOne({
+      where: { userId, reason: 'self_lock', liftedAt: IsNull() },
+      select: { createdAt: true },
+    });
+    return row ? { createdAt: row.createdAt } : null;
+  }
+
+  async clearPendingContactChanges(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<void> {
+    await manager
+      .getRepository(User)
+      .update({ id: userId }, { pendingEmail: null, pendingPhone: null });
+  }
+
+  // For a reviewer who has verified out of band that the owner controls the
+  // new address, so the address is marked verified and any pending change
+  // is dropped.
+  async recoverEmail(
+    manager: EntityManager,
+    params: { userId: string; newEmail: string; reviewerId: string },
+  ): Promise<void> {
+    await this.lockUser(manager, params.userId);
+    const repo = manager.getRepository(User);
+    const user = await repo.findOneBy({ id: params.userId });
+    if (!user) {
+      throw new UserNotFoundException();
+    }
+    try {
+      await repo.update(
+        { id: params.userId },
+        {
+          email: params.newEmail,
+          emailVerifiedAt: new Date(),
+          pendingEmail: null,
+        },
+      );
+    } catch (error) {
+      mapUsersUniqueViolation(error);
+    }
+    const actor: AuditActor = { type: 'reviewer', id: params.reviewerId };
+    await this.auditService.record(manager, {
+      actor,
+      action: 'email_recovered',
+      subject: { type: 'user', id: params.userId },
+      metadata: { previousEmail: user.email, newEmail: params.newEmail },
+    });
+    await this.startSecurityCooldown(
+      manager,
+      params.userId,
+      'email_changed',
+      actor,
+    );
   }
 
   async getOpenRestrictionUserIds(userIds: string[]): Promise<Set<string>> {

@@ -25,6 +25,7 @@ import {
   ReconciliationMismatchPayload,
   RefundAttentionRequiredPayload,
   SecurityAlertPayload,
+  AccountSelfLockedPayload,
   TransferReceivedPayload,
   TransferSentPayload,
   WithdrawalCompletedPayload,
@@ -127,7 +128,11 @@ const STEP_UP_PURPOSES: Record<StepUpAction, string> = {
   enroll_totp: 'set up an authenticator app',
   save_bank_account: 'save a bank account',
   raise_daily_limit: 'raise your daily limit',
+  unlock_account: 'unlock your account',
 };
+
+const ACCOUNT_SELF_LOCKED_MESSAGE =
+  'Your account is locked. Sending money is blocked and you were signed out everywhere. To unlock it, reset your password by email, sign in again, then confirm in the app.';
 
 function mfaCodeName(action: MfaChallengeOtpPayload['action']): string {
   return action === 'sign_in'
@@ -166,7 +171,19 @@ export const emailTemplates: {
   },
   security_alert: (payload: SecurityAlertPayload) => ({
     subject: 'Security alert on your Cliqpay account',
-    ...renderEmail('security_alert', payload),
+    ...renderEmail('security_alert', {
+      ...payload,
+      message: payload.lockUrl
+        ? `${payload.message} This wasn’t me, lock my account: ${payload.lockUrl}`
+        : payload.message,
+    }),
+  }),
+  account_self_locked: (payload: AccountSelfLockedPayload) => ({
+    subject: 'Your Cliqpay account is locked',
+    ...renderEmail('security_alert', {
+      ...payload,
+      message: ACCOUNT_SELF_LOCKED_MESSAGE,
+    }),
   }),
   funding_completed: (payload: FundingCompletedPayload) => ({
     subject: 'Your Cliqpay wallet has been funded',
@@ -266,6 +283,11 @@ export const pushTemplates: {
   security_alert: (payload: SecurityAlertPayload) => ({
     title: 'Security alert',
     body: payload.message,
+    ...(payload.lockUrl && { data: { lockUrl: payload.lockUrl } }),
+  }),
+  account_self_locked: () => ({
+    title: 'Your account is locked',
+    body: ACCOUNT_SELF_LOCKED_MESSAGE,
   }),
   transfer_sent: (payload: TransferSentPayload) => ({
     title: 'Money sent',

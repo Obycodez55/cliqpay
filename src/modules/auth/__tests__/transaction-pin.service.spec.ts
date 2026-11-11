@@ -60,6 +60,7 @@ function buildCredential(overrides: Partial<Credential> = {}): Credential {
 describe('TransactionPinService', () => {
   let usersService: {
     startSecurityCooldown: jest.Mock;
+    assertNotSelfLocked: jest.Mock;
     findById: jest.Mock<Promise<UserFixture>, [string]>;
   };
   let mfaService: {
@@ -89,6 +90,7 @@ describe('TransactionPinService', () => {
   beforeEach(() => {
     usersService = {
       startSecurityCooldown: jest.fn(() => Promise.resolve()),
+      assertNotSelfLocked: jest.fn(() => Promise.resolve()),
       findById: jest.fn((_userId: string) => Promise.resolve(buildUser())),
     };
     mfaService = {

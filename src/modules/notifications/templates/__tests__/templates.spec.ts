@@ -274,3 +274,43 @@ describe('mfa_challenge_otp email', () => {
     expect(email.text).not.toContain('sign-in');
   });
 });
+
+describe('self-lock alert content', () => {
+  const alert = {
+    userId: 'u1',
+    email: 'a@example.com',
+    message: 'A bank account was added.',
+    occurredAt: '2026-08-15T10:32:47.123Z',
+  };
+
+  it('puts the lock link in the email and the push data when the alert has one', () => {
+    const lockUrl = 'https://app.cliqpay.test/lock?token=abc';
+    const email = emailTemplates.security_alert!({ ...alert, lockUrl });
+    expect(email.text).toContain(`lock my account: ${lockUrl}`);
+    expect(pushTemplates.security_alert!({ ...alert, lockUrl }).data).toEqual({
+      lockUrl,
+    });
+  });
+
+  it('leaves the in-app row without the link', () => {
+    const content = inAppTemplates.security_alert!({
+      ...alert,
+      lockUrl: 'https://app.cliqpay.test/lock?token=abc',
+    });
+    expect(JSON.stringify(content)).not.toContain('token=abc');
+  });
+
+  it('renders the lock confirmation for email and push', () => {
+    const payload = {
+      userId: 'u1',
+      email: 'a@example.com',
+      occurredAt: alert.occurredAt,
+    };
+    expect(emailTemplates.account_self_locked!(payload).subject).toBe(
+      'Your Cliqpay account is locked',
+    );
+    expect(pushTemplates.account_self_locked!(payload).title).toBe(
+      'Your account is locked',
+    );
+  });
+});

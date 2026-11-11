@@ -1,7 +1,12 @@
 import { Job, Queue } from 'bullmq';
 import { NotificationEventsProcessor } from '../internal/notification-events.processor';
 import { ChannelDispatchJobData } from '../internal/channel-dispatch.queue';
+import { AppConfig } from '../../../config';
+import { verifySelfLockToken } from '../../../shared/crypto/self-lock-token.util';
 import { DomainEventEnvelope } from '../../../shared/events/domain-events';
+
+const SELF_LOCK_KEY_HEX = 'f'.repeat(64);
+const SELF_LOCK_LINK_URL = 'https://app.cliqpay.test/lock';
 
 describe('NotificationEventsProcessor', () => {
   let queue: jest.Mocked<Pick<Queue<ChannelDispatchJobData>, 'add'>>;
@@ -11,6 +16,9 @@ describe('NotificationEventsProcessor', () => {
     queue = { add: jest.fn().mockResolvedValue(undefined) };
     processor = new NotificationEventsProcessor(
       queue as unknown as Queue<ChannelDispatchJobData>,
+      {
+        selfLock: { tokenKey: SELF_LOCK_KEY_HEX, linkUrl: SELF_LOCK_LINK_URL },
+      } as AppConfig,
     );
   });
 
@@ -31,21 +39,51 @@ describe('NotificationEventsProcessor', () => {
     await processor.process(jobFor('security_alert', payload));
 
     expect(queue.add).toHaveBeenCalledTimes(3);
-    expect(queue.add).toHaveBeenCalledWith('security_alert', {
-      channel: 'email',
-      type: 'security_alert',
-      payload,
-    });
-    expect(queue.add).toHaveBeenCalledWith('security_alert', {
-      channel: 'push',
-      type: 'security_alert',
-      payload,
-    });
-    expect(queue.add).toHaveBeenCalledWith('security_alert', {
-      channel: 'in_app',
-      type: 'security_alert',
-      payload,
-    });
+    for (const channel of ['email', 'push', 'in_app']) {
+      expect(queue.add).toHaveBeenCalledWith('security_alert', {
+        channel,
+        type: 'security_alert',
+        payload: { ...payload, lockUrl: expect.any(String) as string },
+      });
+    }
+  });
+
+  it('adds a lock link to every security alert whose token locks that user', async () => {
+    await processor.process(
+      jobFor('security_alert', {
+        userId: '6f1c2f1e-9a3b-4c55-8d0e-2b7c9e1a4d10',
+        email: 'a@example.com',
+        message: 'Bank account added',
+        occurredAt: '2026-08-15T10:32:00.000Z',
+      }),
+    );
+
+    const { payload } = queue.add.mock.calls[0][1] as {
+      payload: { lockUrl: string };
+    };
+    const url = new URL(payload.lockUrl);
+    expect(url.origin + url.pathname).toBe(SELF_LOCK_LINK_URL);
+    expect(
+      verifySelfLockToken(
+        Buffer.from(SELF_LOCK_KEY_HEX, 'hex'),
+        url.searchParams.get('token')!,
+      ),
+    ).toEqual({ userId: '6f1c2f1e-9a3b-4c55-8d0e-2b7c9e1a4d10' });
+  });
+
+  it('adds no lock link to other notification types', async () => {
+    await processor.process(
+      jobFor('account_self_locked', {
+        userId: 'u1',
+        email: 'a@example.com',
+        occurredAt: '2026-08-15T10:32:00.000Z',
+      }),
+    );
+
+    for (const [, data] of queue.add.mock.calls) {
+      expect(data.payload).not.toHaveProperty('lockUrl');
+    }
+    expect(queue.add).toHaveBeenCalledTimes(2);
   });
 
   it('enqueues a single channel-dispatch job for a single-channel type', async () => {

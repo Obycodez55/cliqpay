@@ -8,6 +8,8 @@ export const TEST_JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
 export const TEST_ENCRYPTION_KEY = 'a'.repeat(64);
 export const TEST_PIN_PEPPER = 'b'.repeat(64);
 export const TEST_IDENTIFIER_HASH_KEY = 'c'.repeat(64);
+export const TEST_SELF_LOCK_TOKEN_KEY = 'd'.repeat(64);
+export const TEST_SELF_LOCK_LINK_URL = 'https://app.cliqpay.test/lock';
 export const TEST_INTERNAL_API_SECRET =
   'test-internal-api-secret-at-least-32-chars';
 
@@ -22,6 +24,10 @@ function defaultTestAppConfig(): AppConfig {
     encryption: { key: TEST_ENCRYPTION_KEY },
     transactionPin: { pepper: TEST_PIN_PEPPER },
     identifierHash: { key: TEST_IDENTIFIER_HASH_KEY },
+    selfLock: {
+      tokenKey: TEST_SELF_LOCK_TOKEN_KEY,
+      linkUrl: TEST_SELF_LOCK_LINK_URL,
+    },
     notifications: {
       emailProvider: 'fake',
       smsProvider: 'fake',

@@ -7,6 +7,7 @@ import { EventBusModule } from '../../shared/events/event-bus.module';
 import { LedgerModule } from '../ledger/ledger.module';
 import { UsersModule } from '../users/users.module';
 import { AuthController } from './auth.controller';
+import { AuthRecoveryController } from './auth-recovery.controller';
 import { AuthService } from './auth.service';
 import { MfaController } from './mfa.controller';
 import { MfaService } from './mfa.service';
@@ -30,7 +31,7 @@ import { PlatformDeviceAttestationVerifier } from './attestation/platform-device
     AuditModule,
     TypeOrmModule.forFeature([DeviceChallenge, TrustedDevice]),
   ],
-  controllers: [AuthController, MfaController],
+  controllers: [AuthController, MfaController, AuthRecoveryController],
   providers: [
     AuthService,
     MfaService,

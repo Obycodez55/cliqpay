@@ -40,6 +40,10 @@ import {
 const TOTP_ISSUER = 'Cliqpay';
 const CHALLENGE_TTL_MS = 10 * 60 * 1000; // 10 minutes
 export const MAX_CHALLENGE_ATTEMPTS = 5;
+const SELF_LOCK_EXEMPT_ACTIONS: ReadonlySet<StepUpAction> = new Set([
+  'change_password',
+  'unlock_account',
+]);
 export const TRUSTED_DEVICE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // ~30 days
 // Constant-time-ish TOTP window — ±1 step (±30s) tolerates ordinary clock
 // drift between the server and the user's authenticator app.
@@ -120,6 +124,9 @@ export class MfaService {
     method: 'email' | 'totp';
     expiresAt: Date;
   }> {
+    if (!SELF_LOCK_EXEMPT_ACTIONS.has(action)) {
+      await this.usersService.assertNotSelfLocked(user.id);
+    }
     return this.buildChallenge(user, action);
   }
 
@@ -449,6 +456,7 @@ export class MfaService {
     }
 
     await runInTransaction(this.dataSource, async (manager) => {
+      await this.usersService.assertNotSelfLocked(userId, manager);
       method.status = 'active';
       await manager.getRepository(MfaMethod).save(method);
       await this.usersService.startSecurityCooldown(

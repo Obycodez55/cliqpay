@@ -60,6 +60,7 @@ import {
   JwtAuthGuard,
 } from '../../common/guards/jwt-auth.guard';
 import { SessionService } from './session.service';
+import { UnlockAccountDto } from './dto/unlock-account.dto';
 
 const DEVICE_ID_API_HEADER = {
   name: 'X-Device-Id',
@@ -225,6 +226,35 @@ export class AuthController {
       dto.newPassword,
       dto.revokeOtherSessions,
     );
+  }
+
+  @Post('unlock/step-up')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Start a step-up challenge for unlocking' })
+  initiateUnlockStepUp(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<StepUpChallengeResponseDto> {
+    return this.authService.initiateUnlockStepUp(req.user.userId);
+  }
+
+  @Post('unlock')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Unlock a self-locked account',
+    description:
+      'Needs a password reset completed after the lock, a normal login, a step-up challenge and the transaction PIN.',
+  })
+  unlock(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: UnlockAccountDto,
+  ): Promise<void> {
+    return this.authService.unlock(req.user.userId, dto);
   }
 
   // Step 1 of 2 (see docs/adr/0006, issue #11) — fires unconditionally,

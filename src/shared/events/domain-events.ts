@@ -21,6 +21,14 @@ export interface SecurityAlertEventPayload {
   occurredAt: string; // ISO-8601 — see notifications' SecurityAlertPayload
 }
 
+export const ACCOUNT_SELF_LOCKED_EVENT = 'account_self_locked';
+
+export interface AccountSelfLockedEventPayload {
+  userId: string;
+  email: string;
+  occurredAt: string;
+}
+
 export const MFA_CHALLENGE_OTP_EVENT = 'mfa_challenge_otp';
 
 export type StepUpAction =
@@ -32,7 +40,8 @@ export type StepUpAction =
   | 'change_phone'
   | 'enroll_totp'
   | 'save_bank_account'
-  | 'raise_daily_limit';
+  | 'raise_daily_limit'
+  | 'unlock_account';
 
 export type MfaChallengeAction = 'sign_in' | StepUpAction;
 

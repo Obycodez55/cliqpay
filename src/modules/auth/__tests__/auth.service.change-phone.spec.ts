@@ -33,6 +33,7 @@ function buildUser(overrides: Partial<UserFixture> = {}): UserFixture {
 describe('AuthService — change phone', () => {
   let usersService: {
     startSecurityCooldown: jest.Mock;
+    assertNotSelfLocked: jest.Mock;
     findById: jest.Mock<Promise<UserFixture>, [string]>;
     setPendingPhone: jest.Mock<Promise<void>, [string, string]>;
     confirmPendingPhone: jest.Mock<Promise<UserFixture>, [string, unknown?]>;
@@ -81,6 +82,7 @@ describe('AuthService — change phone', () => {
   beforeEach(() => {
     usersService = {
       startSecurityCooldown: jest.fn(() => Promise.resolve()),
+      assertNotSelfLocked: jest.fn(() => Promise.resolve()),
       findById: jest.fn((_userId: string) => Promise.resolve(buildUser())),
       setPendingPhone: jest.fn((_userId: string, _newPhone: string) =>
         Promise.resolve(),

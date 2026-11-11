@@ -3,7 +3,7 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource, EntityManager } from 'typeorm';
 import { runInTransaction } from '../../../database/transaction.util';
 import { Money } from '../../../shared/primitives/money';
-import { AuditService } from '../../../shared/audit/audit.service';
+import { AuditActor, AuditService } from '../../../shared/audit/audit.service';
 import { UsersService } from '../../users/users.service';
 import { TierLimit } from '../entities/tier-limit.entity';
 import { UserLimit } from '../entities/user-limit.entity';
@@ -59,7 +59,7 @@ export class UserLimitsService {
     const effectiveAt = new Date(Date.now() + LIMIT_INCREASE_DELAY_MS);
     const target = BigInt(amount);
     return runInTransaction(this.dataSource, async (manager) => {
-      await this.usersService.lockUser(manager, userId);
+      await this.usersService.assertNotSelfLocked(userId, manager);
       const { tierLimit, current } = await this.load(manager, userId);
       if (target > tierLimit.dailyDebitLimitMinor) {
         throw new LimitAboveTierException(
@@ -108,6 +108,32 @@ export class UserLimitsService {
       });
       return this.toView(saved);
     });
+  }
+
+  async cancelPendingIfAny(
+    manager: EntityManager,
+    userId: string,
+    actor: AuditActor,
+  ): Promise<boolean> {
+    await this.usersService.lockUser(manager, userId);
+    const current = await manager
+      .getRepository(UserLimit)
+      .findOneBy({ userId });
+    const resolved = resolveUserLimit(current, new Date());
+    if (!current || !resolved.pending) {
+      return false;
+    }
+    await this.save(manager, userId, current, {
+      pendingDailyOutflowLimitMinor: null,
+      pendingEffectiveAt: null,
+    });
+    await this.auditService.record(manager, {
+      actor,
+      action: 'daily_limit_raise_cancelled',
+      subject: { type: 'user', id: userId },
+      metadata: { cancelled: resolved.pending.amount.toString() },
+    });
+    return true;
   }
 
   private async load(

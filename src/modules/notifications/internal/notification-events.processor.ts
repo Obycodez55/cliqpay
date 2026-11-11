@@ -1,6 +1,9 @@
-import { Logger } from '@nestjs/common';
+import { Inject, Logger } from '@nestjs/common';
 import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job, Queue } from 'bullmq';
+import { APP_CONFIG, AppConfig } from '../../../config';
+import { signSelfLockToken } from '../../../shared/crypto/self-lock-token.util';
+import { encryptionKeyFromHex } from '../../../shared/crypto/secrets.util';
 import { DOMAIN_EVENTS_QUEUE } from '../../../shared/events/event-bus.service';
 import { DomainEventEnvelope } from '../../../shared/events/domain-events';
 import {
@@ -30,11 +33,28 @@ function isKnownNotificationType(name: string): name is NotificationType {
 export class NotificationEventsProcessor extends WorkerHost {
   private readonly logger = new Logger(NotificationEventsProcessor.name);
 
+  private readonly selfLockKey: Buffer;
+  private readonly selfLockLinkUrl: string;
+
   constructor(
     @InjectQueue(CHANNEL_DISPATCH_QUEUE)
     private readonly channelDispatchQueue: Queue<ChannelDispatchJobData>,
+    @Inject(APP_CONFIG) config: AppConfig,
   ) {
     super();
+    this.selfLockKey = encryptionKeyFromHex(config.selfLock.tokenKey);
+    this.selfLockLinkUrl = config.selfLock.linkUrl;
+  }
+
+  private withLockLink(
+    payload: NotificationPayloadMap['security_alert'],
+  ): NotificationPayloadMap['security_alert'] {
+    const url = new URL(this.selfLockLinkUrl);
+    url.searchParams.set(
+      'token',
+      signSelfLockToken(this.selfLockKey, payload.userId),
+    );
+    return { ...payload, lockUrl: url.toString() };
   }
 
   async process(job: Job<DomainEventEnvelope>): Promise<void> {
@@ -45,9 +65,15 @@ export class NotificationEventsProcessor extends WorkerHost {
       return;
     }
     const type: NotificationType = job.name;
+    const payload =
+      type === 'security_alert'
+        ? this.withLockLink(
+            job.data.payload as NotificationPayloadMap['security_alert'],
+          )
+        : job.data.payload;
     const channels = channelsFor(
       type,
-      job.data.payload as NotificationPayloadMap[typeof type],
+      payload as NotificationPayloadMap[typeof type],
     );
     // This job is "done" once each channel's job is enqueued, not once
     // they've delivered — that's what keeps one channel's BullMQ retry
@@ -57,7 +83,7 @@ export class NotificationEventsProcessor extends WorkerHost {
         this.channelDispatchQueue.add(type, {
           channel,
           type,
-          payload: job.data.payload,
+          payload,
         }),
       ),
     );

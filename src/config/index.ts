@@ -55,6 +55,18 @@ const envSchema = z
         'IDENTIFIER_HASH_KEY must be a 64-character hex string (32 bytes)',
       ),
 
+    // HMAC key for the "This wasn't me" lock token in security alerts. It
+    // can only lock an account, but a forged token would let anyone lock
+    // anyone, so it is kept apart from every other key.
+    SELF_LOCK_TOKEN_KEY: z
+      .string()
+      .regex(
+        /^[0-9a-fA-F]{64}$/,
+        'SELF_LOCK_TOKEN_KEY must be a 64-character hex string (32 bytes)',
+      ),
+    // Where the app handles the lock link; the token is appended as `?token=`.
+    SELF_LOCK_LINK_URL: z.url(),
+
     EMAIL_PROVIDER: z.enum(['brevo', 'fake']).default('fake'),
     SMS_PROVIDER: z.enum(['termii', 'fake']).default('fake'),
     PUSH_PROVIDER: z.enum(['fcm', 'fake']).default('fake'),
@@ -232,6 +244,24 @@ const envSchema = z
       { path: 'PREMBLY_SECRET_KEY', value: env.PREMBLY_SECRET_KEY },
     ]);
 
+    for (const other of [
+      'ENCRYPTION_KEY',
+      'TRANSACTION_PIN_PEPPER',
+      'IDENTIFIER_HASH_KEY',
+      'JWT_SECRET',
+    ] as const) {
+      if (
+        env.SELF_LOCK_TOKEN_KEY &&
+        env.SELF_LOCK_TOKEN_KEY.toLowerCase() === env[other].toLowerCase()
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['SELF_LOCK_TOKEN_KEY'],
+          message: `SELF_LOCK_TOKEN_KEY must differ from ${other}`,
+        });
+      }
+    }
+
     for (const other of ['ENCRYPTION_KEY', 'TRANSACTION_PIN_PEPPER'] as const) {
       if (
         env.IDENTIFIER_HASH_KEY &&
@@ -362,6 +392,10 @@ function buildConfig(env: Env) {
     },
     identifierHash: {
       key: env.IDENTIFIER_HASH_KEY,
+    },
+    selfLock: {
+      tokenKey: env.SELF_LOCK_TOKEN_KEY,
+      linkUrl: env.SELF_LOCK_LINK_URL,
     },
     notifications: {
       emailProvider: env.EMAIL_PROVIDER,

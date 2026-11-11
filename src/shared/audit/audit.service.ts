@@ -11,7 +11,9 @@ export type AuditAction =
   | 'bank_account_saved'
   | 'daily_limit_lowered'
   | 'daily_limit_raise_requested'
-  | 'daily_limit_raise_cancelled';
+  | 'daily_limit_raise_cancelled'
+  | 'account_self_locked'
+  | 'email_recovered';
 
 export interface AuditActor {
   type: AuditActorType;

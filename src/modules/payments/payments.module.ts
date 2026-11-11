@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { APP_CONFIG, AppConfig } from '../../config';
+import { AuditModule } from '../../shared/audit/audit.module';
 import { EventBusModule } from '../../shared/events/event-bus.module';
 import { LedgerModule } from '../ledger/ledger.module';
 import { UsersModule } from '../users/users.module';
@@ -8,6 +9,8 @@ import { KycModule } from '../kyc/kyc.module';
 import { AuthModule } from '../auth/auth.module';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
+import { SelfLockController } from './self-lock.controller';
+import { SelfLockService } from './internal/self-lock.service';
 import {
   PAYMENT_PROVIDER_ADAPTER,
   PaymentProviderAdapter,
@@ -48,6 +51,7 @@ const PAYMENT_ADAPTERS = {
     UsersModule,
     KycModule,
     AuthModule,
+    AuditModule,
     EventBusModule,
     BullModule.registerQueue({
       name: FUNDING_POLL_QUEUE,
@@ -86,9 +90,10 @@ const PAYMENT_ADAPTERS = {
       },
     }),
   ],
-  controllers: [PaymentsController],
+  controllers: [PaymentsController, SelfLockController],
   providers: [
     PaymentsService,
+    SelfLockService,
     FundingPollProcessor,
     WithdrawalPollProcessor,
     RefundPollProcessor,

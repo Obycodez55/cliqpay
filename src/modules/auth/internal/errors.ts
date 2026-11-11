@@ -228,3 +228,20 @@ export class DeviceKeyNotRegisteredException extends DomainException {
     );
   }
 }
+
+export class AccountNotSelfLockedException extends DomainException {
+  readonly code = 'ACCOUNT_NOT_SELF_LOCKED';
+  constructor() {
+    super('This account is not locked', HttpStatus.CONFLICT);
+  }
+}
+
+export class UnlockRequiresPasswordResetException extends DomainException {
+  readonly code = 'UNLOCK_REQUIRES_PASSWORD_RESET';
+  constructor() {
+    super(
+      'Reset your password by email before unlocking this account',
+      HttpStatus.FORBIDDEN,
+    );
+  }
+}

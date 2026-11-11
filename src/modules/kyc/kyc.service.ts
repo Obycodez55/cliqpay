@@ -18,6 +18,7 @@ import {
 } from '../../shared/crypto/secrets.util';
 import { isUniqueViolation } from '../../database/postgres-errors.util';
 import { runInTransaction } from '../../database/transaction.util';
+import { AuditActor } from '../../shared/audit/audit.service';
 import { UsersService } from '../users/users.service';
 import { UserLimit } from './entities/user-limit.entity';
 import {
@@ -1080,6 +1081,14 @@ export class KycService {
 
   cancelDailyOutflowLimitRaise(userId: string): Promise<UserLimitView> {
     return this.userLimits.cancelPending(userId);
+  }
+
+  cancelPendingLimitRaiseIfAny(
+    manager: EntityManager,
+    userId: string,
+    actor: AuditActor,
+  ): Promise<boolean> {
+    return this.userLimits.cancelPendingIfAny(manager, userId, actor);
   }
 
   async getVerifiedLegalName(userId: string): Promise<string | null> {

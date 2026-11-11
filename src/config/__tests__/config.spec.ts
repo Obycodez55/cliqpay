@@ -9,6 +9,8 @@ const baseEnv = (): NodeJS.ProcessEnv => ({
   IDENTIFIER_HASH_KEY: '3'.repeat(64),
   RECONCILIATION_ALERT_EMAIL: 'ops@cliqpay.test',
   INTERNAL_API_SECRET: '2'.repeat(64),
+  SELF_LOCK_TOKEN_KEY: '4'.repeat(64),
+  SELF_LOCK_LINK_URL: 'https://app.cliqpay.test/lock',
 });
 
 describe('IDENTIFIER_HASH_KEY', () => {
@@ -185,3 +187,23 @@ function productionEnv(): NodeJS.ProcessEnv {
     PREMBLY_SECRET_KEY: 'p',
   };
 }
+
+describe('SELF_LOCK_TOKEN_KEY', () => {
+  it('is exposed as selfLock.tokenKey and selfLock.linkUrl', () => {
+    const { selfLock } = loadConfig(baseEnv());
+    expect(selfLock.tokenKey).toBe('4'.repeat(64));
+    expect(selfLock.linkUrl).toBe('https://app.cliqpay.test/lock');
+  });
+
+  it('is required', () => {
+    const env = baseEnv();
+    delete env.SELF_LOCK_TOKEN_KEY;
+    expect(() => loadConfig(env)).toThrow('SELF_LOCK_TOKEN_KEY');
+  });
+
+  it('must differ from the other keys', () => {
+    expect(() =>
+      loadConfig({ ...baseEnv(), SELF_LOCK_TOKEN_KEY: '3'.repeat(64) }),
+    ).toThrow('SELF_LOCK_TOKEN_KEY must differ from IDENTIFIER_HASH_KEY');
+  });
+});

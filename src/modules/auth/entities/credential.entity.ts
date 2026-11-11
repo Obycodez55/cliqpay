@@ -40,6 +40,11 @@ export class Credential {
   @Column({ type: 'timestamptz', nullable: true })
   pinLockedUntil: Date | null;
 
+  // Set only by the emailed password-reset flow: unlocking a self-locked
+  // account needs a reset completed after the lock.
+  @Column({ type: 'timestamptz', nullable: true })
+  passwordResetAt: Date | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 

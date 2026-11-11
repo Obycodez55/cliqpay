@@ -260,6 +260,7 @@ export class WithdrawalsService {
 
     try {
       await runInTransaction(this.dataSource, async (manager) => {
+        await this.usersService.assertNotSelfLocked(userId, manager);
         await manager.getRepository(BankAccount).save(bankAccount);
         await this.auditService.record(manager, {
           actor: { type: 'user', id: userId },

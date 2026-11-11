@@ -1,5 +1,10 @@
 import { GenericContainer, StartedTestContainer } from 'testcontainers';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import {
+  DynamicModule,
+  INestApplication,
+  Type,
+  ValidationPipe,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { json, Request, urlencoded } from 'express';
@@ -118,6 +123,7 @@ export async function createWithdrawalsTestContext(
     platformFee?: number;
     providerFee?: number;
   } = {},
+  extraImports: (DynamicModule | Type<unknown>)[] = [],
 ): Promise<WithdrawalsTestContext> {
   const database = await createTestDatabase();
   const redis = await new GenericContainer('redis:7-alpine')
@@ -152,6 +158,7 @@ export async function createWithdrawalsTestContext(
       WithdrawalsModule,
       TransfersModule,
       NotificationsModule,
+      ...extraImports,
     ],
   }).compile();
 

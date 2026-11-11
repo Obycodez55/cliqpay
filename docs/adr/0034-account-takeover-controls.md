@@ -153,6 +153,63 @@ the same check; its runs do not.
   failure codes. Neither is permanent, so a run is retried within the Lagos
   day like `daily_limit_exceeded`; clients see them as they are.
 
+### Decisions made building the self-lock
+
+- **The link is added when an alert is routed, not by its publisher.**
+  `notifications` signs the token as it fans a `security_alert` out, so every
+  publisher (bank account saved, limit raise, new device, email and phone
+  changes, PIN, session theft) carries it without knowing about it. It is in
+  the email and the push data, not in the in-app row, whose reader is signed
+  in and has the lock button. The email template prints the link in the
+  message text; a clickable anchor needs a template edit.
+- **Token format and config.** `base64url(userId).expiryUnixSeconds.hmac`, the
+  HMAC-SHA256 over a versioned domain string, the user id and the expiry.
+  `SELF_LOCK_TOKEN_KEY` must differ from the other keys and
+  `SELF_LOCK_LINK_URL` is the app page that posts the token to
+  `POST /auth/self-lock/token` (a link that locked on `GET` would be fired by
+  mail scanners). Both lock endpoints are rate-limited 5/min.
+- **Where it lives.** The lock has to revoke sessions and devices (`auth`)
+  and cancel a pending raise (`kyc`) in one transaction, and `auth` may not
+  import `kyc`. It therefore sits in `payments` beside the limit endpoints,
+  which were placed there for the same reason: `payments/internal/
+self-lock.service.ts`, serving `/auth/self-lock` and `/auth/self-lock/
+token`. `AuthService.revokeAllAccess(manager, userId)` revokes sessions and
+  trusted devices (revoking a device revokes its key); the transaction also
+  adds the restriction, cancels the raise, drops a pending email and phone
+  change and audits. The restriction's `sourceId` is the user id, so a second
+  lock is a no-op insert; it still revokes again but sends no second
+  confirmation. Unlock needs only `auth` and `users`, so it stays in
+  `AuthService`.
+- **Where refusals are enforced.** Starting a step-up for email, phone, TOTP,
+  PIN set/change/reset, bank account or limit raise is refused up front
+  (`ACCOUNT_SELF_LOCKED`). The committing step checks again under the user's lock,
+  which guards the race with a request already in flight: email
+  and phone confirm, TOTP confirm, PIN save, bank-account save and the limit
+  raise transaction. Changing the password and lowering a limit stay allowed.
+- **Revoked sessions still hold an access token** until it expires (15
+  minutes): `JwtAuthGuard` verifies the signature and does not read the
+  session. The restriction and the refusals above are what stop an attacker in
+  that window, not the revocation.
+- **Unlock needs `credentials.password_reset_at`**, set only by the emailed
+  reset flow, to be later than the lock's `createdAt`. A password change from
+  a session does not count. Then a normal login, a step-up challenge
+  (`unlock_account`) and the PIN, checked again inside the lifting
+  transaction. Lifting writes `restriction_lifted` with the owner as actor,
+  and an unlock sends a security alert (with the lock link) so an unlock the
+  owner did not make is visible.
+- **The lock voids what was issued before it.** Unused verification codes
+  (password reset, email and phone change) are marked used and open MFA
+  challenges fail, so a reset code or step-up from before the lock cannot be
+  completed after it. Unlock needs a reset requested after the lock.
+- **Email recovery sits in `auth`**, as `POST /internal/risk/users/:id/
+recover-email` guarded like `disputes`, until the `risk` module owns the
+  prefix. The email setter is `UsersService.recoverEmail`, which touches only
+  `users`; `auth` then runs the same `revokeAllAccess` as the lock, since a code already mailed to
+  the old address would otherwise outlive the recovery. The address is stored
+  as verified, a security cooldown starts, and recovery does not unlock.
+- **A TOTP method added before the lock is not removed by it.** The owner's
+  password reset and the PIN still stand between that method and the account.
+
 ## Alternatives considered
 
 - **A counter reset by each security event.** An attacker resets it by

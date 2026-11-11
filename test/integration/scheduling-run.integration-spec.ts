@@ -258,6 +258,15 @@ describe('Scheduled payment execution', () => {
       await expectFailed(schedule.id, 'sender_frozen', sender, 5_000_000n);
     });
 
+    it('sender_frozen: a self-lock stops the run the same way', async () => {
+      const { sender, schedule } = await seedSchedule();
+      await addTestRestriction(ctx.dataSource, sender.userId, {
+        reason: 'self_lock',
+      });
+
+      await expectFailed(schedule.id, 'sender_frozen', sender, 5_000_000n);
+    });
+
     it('recipient_unavailable: a recipient whose wallet is gone', async () => {
       const { sender, recipient, schedule } = await seedSchedule();
       await ctx.dataSource.query(`DELETE FROM accounts WHERE id = $1`, [
