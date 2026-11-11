@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectDataSource } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
@@ -6,6 +6,8 @@ import { DataSource, EntityManager } from 'typeorm';
 import { DeviceMismatchException } from '../../common/device/device-id.util';
 import { runInTransaction } from '../../database/transaction.util';
 import {
+  DEVICE_REGISTERED_EVENT,
+  DeviceRegisteredEventPayload,
   SECURITY_ALERT_EVENT,
   SecurityAlertEventPayload,
 } from '../../shared/events/domain-events';
@@ -44,6 +46,8 @@ const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 // the login lockout; AuthController and MfaController are its only callers.
 @Injectable()
 export class SessionService {
+  private readonly logger = new Logger(SessionService.name);
+
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly usersService: UsersService,
@@ -206,6 +210,8 @@ export class SessionService {
         };
       });
 
+    await this.publishDeviceRegistered(userId, deviceId, registered);
+
     if (replaced.some((old) => old.deviceId !== deviceId)) {
       await this.publishAlert(
         userId,
@@ -267,6 +273,30 @@ export class SessionService {
       trustedDevice.userId,
       'We detected a sign-in attempt that did not come from your trusted device and signed that device out for your protection. If this wasn’t you, please change your password.',
     );
+  }
+
+  private async publishDeviceRegistered(
+    userId: string,
+    deviceId: string,
+    registered: {
+      attestationResult: DeviceRegisteredEventPayload['attestationResult'];
+    },
+  ): Promise<void> {
+    try {
+      await this.eventBus.publish<string, DeviceRegisteredEventPayload>({
+        name: DEVICE_REGISTERED_EVENT,
+        payload: {
+          userId,
+          deviceId,
+          attestationResult: registered.attestationResult,
+        },
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `publishDeviceRegistered: device trusted for user "${userId}", but publishing the event failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
   }
 
   // Published after the revoke has committed, per EventBusService's own

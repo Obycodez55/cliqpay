@@ -41,6 +41,8 @@ export const TRANSACTION_TYPES = [
 export type TransactionType = (typeof TRANSACTION_TYPES)[number];
 export const TRANSACTION_STATUSES = [
   'pending',
+  // Withdrawals only: posted but held for review, the payout not yet sent.
+  'under_review',
   'completed',
   'failed',
   'reversed',

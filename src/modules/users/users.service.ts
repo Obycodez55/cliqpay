@@ -29,6 +29,7 @@ import {
 export type { KycTier };
 export { KYC_TIERS } from './entities/user.entity';
 export type { RestrictionReason, RestrictionScope };
+export { RESTRICTION_REASONS } from './entities/account-restriction.entity';
 
 export interface RestrictionState {
   blocksOutbound: boolean;
@@ -389,12 +390,19 @@ export class UsersService {
     );
   }
 
-  async getOpenRestrictionUserIds(userIds: string[]): Promise<Set<string>> {
+  async getOpenRestrictionUserIds(
+    userIds: string[],
+    reason?: RestrictionReason,
+  ): Promise<Set<string>> {
     if (userIds.length === 0) {
       return new Set();
     }
     const rows = await this.dataSource.getRepository(AccountRestriction).find({
-      where: { userId: In(userIds), liftedAt: IsNull() },
+      where: {
+        userId: In(userIds),
+        liftedAt: IsNull(),
+        ...(reason && { reason }),
+      },
       select: { userId: true },
     });
     return new Set(rows.map((row) => row.userId));

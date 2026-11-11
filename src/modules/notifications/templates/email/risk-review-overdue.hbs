@@ -1,0 +1,7 @@
+<p style="font-size:16px;color:#222222;margin:0 0 8px;">Risk reviews are past their 24 hour target. Nothing is released or rejected automatically.</p>
+<p style="font-size:16px;color:#222222;margin:0 0 8px;">Enforced flags waiting: {{overdueFlags}}</p>
+<p style="font-size:16px;color:#222222;margin:0 0 8px;">Withdrawals held: {{overdueWithdrawals}}</p>
+<p style="font-size:16px;color:#222222;margin:0 0 8px;">Oldest: {{oldestHours}} hours</p>
+{{#each flagIds}}<p style="font-size:14px;color:#666666;margin:0 0 4px;">Flag: {{this}}</p>{{/each}}
+{{#each withdrawalReferences}}<p style="font-size:14px;color:#666666;margin:0 0 4px;">Withdrawal: {{this}}</p>{{/each}}
+<p style="font-size:16px;color:#222222;margin:8px 0 0;">Checked at: {{occurredAt}}</p>

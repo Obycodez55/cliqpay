@@ -73,6 +73,16 @@ export class WithdrawalPayoutFailedException extends DomainException {
   }
 }
 
+export class WithdrawalNotUnderReviewException extends DomainException {
+  readonly code = 'WITHDRAWAL_NOT_UNDER_REVIEW';
+  constructor() {
+    super(
+      'No withdrawal under review matches this reference',
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
 export class BankAccountCoolingException extends DomainException {
   readonly code = 'BANK_ACCOUNT_COOLING';
   readonly details: { eligibleAt: string; limit: object; remaining: object };

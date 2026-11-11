@@ -368,6 +368,26 @@ export interface RefundAttentionRequiredEventPayload {
   occurredAt: string; // ISO timestamp
 }
 
+export const DEVICE_REGISTERED_EVENT = 'device_registered';
+
+export interface DeviceRegisteredEventPayload {
+  userId: string;
+  deviceId: string;
+  attestationResult: 'passed' | 'failed' | 'unavailable';
+}
+
+export const RISK_REVIEW_OVERDUE_EVENT = 'risk_review_overdue';
+
+export interface RiskReviewOverdueEventPayload {
+  email: string;
+  overdueFlags: number;
+  overdueWithdrawals: number;
+  oldestHours: number;
+  flagIds: string[];
+  withdrawalReferences: string[];
+  occurredAt: string; // ISO timestamp
+}
+
 export const NEW_FOLLOWER_EVENT = 'new_follower';
 
 export interface NewFollowerEventPayload {

@@ -934,13 +934,16 @@ export class PaymentsService {
     // Kora debits a refund when it accepts it, before the ledger settles it,
     // so the provider should hold float minus refunds still in flight. Held
     // money itself is still in the provider's balance and needs no
-    // adjustment.
-    const expected = figures.float.subtract(figures.inFlightRefunds);
+    // adjustment. A withdrawal held for review has debited float but has not
+    // been paid out, so the provider still holds that money.
+    const expected = figures.float
+      .subtract(figures.inFlightRefunds)
+      .add(figures.heldWithdrawals);
 
     // Every run's result is logged, match or mismatch — §4.4's
     // "logged and reviewable" requirement.
     this.logger.debug(
-      `reconcileFloatBalances: ${pair.provider}/${pair.currency} ledger=${figures.float.toDecimalString()} suspense=${figures.suspense.toDecimalString()} inFlightRefunds=${figures.inFlightRefunds.toDecimalString()} provider=${providerBalance.toDecimalString()}`,
+      `reconcileFloatBalances: ${pair.provider}/${pair.currency} ledger=${figures.float.toDecimalString()} suspense=${figures.suspense.toDecimalString()} inFlightRefunds=${figures.inFlightRefunds.toDecimalString()} heldWithdrawals=${figures.heldWithdrawals.toDecimalString()} provider=${providerBalance.toDecimalString()}`,
     );
 
     if (expected.equals(providerBalance)) {

@@ -14,10 +14,13 @@ export class InitiateWithdrawalResponseDto {
   @ApiProperty({ type: MoneyDto })
   providerFee: MoneyDto;
 
-  // 'pending' is the only value issue #28 can ever return — the payout's
-  // final outcome (completed/failed) only arrives on the webhook (#29).
-  @ApiProperty({ enum: ['pending'] })
-  status: 'pending';
+  // The payout's final outcome (completed/failed) only arrives on the
+  // webhook. 'under_review' means the payout has not been sent yet.
+  @ApiProperty({ enum: ['pending', 'under_review'] })
+  status: 'pending' | 'under_review';
+
+  @ApiProperty({ required: false })
+  message?: string;
 
   @ApiProperty()
   createdAt: string;

@@ -24,6 +24,7 @@ import {
   ScheduledPaymentRunFailedPayload,
   ReconciliationMismatchPayload,
   RefundAttentionRequiredPayload,
+  RiskReviewOverduePayload,
   SecurityAlertPayload,
   AccountSelfLockedPayload,
   TransferReceivedPayload,
@@ -262,6 +263,10 @@ export const emailTemplates: {
   refund_attention_required: (payload: RefundAttentionRequiredPayload) => ({
     subject: `Refund needs attention: ${payload.currency} ${payload.amount} (${payload.reason})`,
     ...renderEmail('refund_attention_required', payload),
+  }),
+  risk_review_overdue: (payload: RiskReviewOverduePayload) => ({
+    subject: `Risk reviews overdue: ${payload.overdueFlags} flag(s), ${payload.overdueWithdrawals} held withdrawal(s)`,
+    ...renderEmail('risk_review_overdue', payload),
   }),
 };
 

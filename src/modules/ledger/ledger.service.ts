@@ -115,6 +115,16 @@ export interface ReconciliationFigures {
   float: Money;
   suspense: Money;
   inFlightRefunds: Money;
+  heldWithdrawals: Money;
+}
+
+export interface HeldWithdrawal {
+  transactionId: string;
+  reference: string;
+  userId: string;
+  amount: Money;
+  createdAt: Date;
+  metadata: WithdrawalTransactionMetadata;
 }
 
 export interface RefundContext {
@@ -143,7 +153,7 @@ export function debitedSinceQuery(
       types: ['p2p_transfer', 'withdrawal'],
     })
     .andWhere('transaction.status IN (:...statuses)', {
-      statuses: ['pending', 'completed'],
+      statuses: ['pending', 'under_review', 'completed'],
     })
     .andWhere('transaction.createdAt >= :since', { since });
 }
@@ -260,6 +270,7 @@ export interface PostWithdrawalParams {
   providerFee: Money;
   bankAccount: WithdrawalBankAccountSnapshot;
   extraMetadata?: Record<string, unknown>;
+  status?: 'pending' | 'under_review';
 }
 
 export interface PostWithdrawalResult {
@@ -275,6 +286,7 @@ export interface PostWithdrawalResult {
 export interface ReverseWithdrawalParams {
   reference: string;
   reason: string;
+  fromStatus?: 'pending' | 'under_review';
 }
 
 export interface ReverseWithdrawalResult {
@@ -643,7 +655,7 @@ export class LedgerService {
       .where('transaction.senderWalletId = :walletId', { walletId: wallet.id })
       .andWhere('transaction.type = :type', { type: 'withdrawal' })
       .andWhere('transaction.status IN (:...statuses)', {
-        statuses: ['pending', 'completed'],
+        statuses: ['pending', 'under_review', 'completed'],
       })
       .andWhere(
         `transaction.metadata -> 'bankAccount' ->> 'id' = :bankAccountId`,
@@ -786,6 +798,141 @@ export class LedgerService {
     }));
   }
 
+  async getHeldWithdrawal(
+    reference: string,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<HeldWithdrawal | null> {
+    const transaction = await manager
+      .getRepository(Transaction)
+      .findOneBy({ reference, type: 'withdrawal', status: 'under_review' });
+    return transaction
+      ? (await this.toHeldWithdrawals(manager, [transaction]))[0]
+      : null;
+  }
+
+  async findHeldWithdrawals(
+    filter: { olderThan?: Date; userId?: string } = {},
+    limit = 100,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<HeldWithdrawal[]> {
+    const query = manager
+      .getRepository(Transaction)
+      .createQueryBuilder('transaction')
+      .where('transaction.type = :type', { type: 'withdrawal' })
+      .andWhere('transaction.status = :status', { status: 'under_review' })
+      .orderBy('transaction.createdAt', 'ASC')
+      .addOrderBy('transaction.id', 'ASC')
+      .take(limit);
+    if (filter.olderThan) {
+      query.andWhere('transaction.createdAt < :olderThan', {
+        olderThan: filter.olderThan,
+      });
+    }
+    if (filter.userId) {
+      query.andWhere(
+        `transaction.senderWalletId IN (SELECT id FROM accounts WHERE user_id = :userId AND role = 'user_wallet')`,
+        { userId: filter.userId },
+      );
+    }
+    return this.toHeldWithdrawals(manager, await query.getMany());
+  }
+
+  private async toHeldWithdrawals(
+    manager: EntityManager,
+    transactions: Transaction[],
+  ): Promise<HeldWithdrawal[]> {
+    if (transactions.length === 0) {
+      return [];
+    }
+    const wallets = await manager.getRepository(Account).find({
+      where: { id: In(transactions.map((t) => t.senderWalletId!)) },
+      select: { id: true, userId: true },
+    });
+    const userIdByWallet = new Map(wallets.map((w) => [w.id, w.userId!]));
+    return transactions.map((transaction) => ({
+      transactionId: transaction.id,
+      reference: transaction.reference,
+      userId: userIdByWallet.get(transaction.senderWalletId!)!,
+      amount: Money.of(transaction.amount, transaction.currency),
+      createdAt: transaction.createdAt,
+      metadata:
+        transaction.metadata as unknown as WithdrawalTransactionMetadata,
+    }));
+  }
+
+  // Held -> pending is one guarded UPDATE so a release and a reject racing
+  // each other cannot both win.
+  async releaseWithdrawalHold(
+    manager: EntityManager,
+    reference: string,
+  ): Promise<boolean> {
+    const result = await manager
+      .createQueryBuilder()
+      .update(Transaction)
+      .set({ status: 'pending' })
+      .where('reference = :reference', { reference })
+      .andWhere('type = :type', { type: 'withdrawal' })
+      .andWhere('status = :status', { status: 'under_review' })
+      .execute();
+    return !!result.affected;
+  }
+
+  // Money received by P2P in the window, per distinct sending user.
+  async getP2pInflowBySender(
+    manager: EntityManager,
+    userId: string,
+    since: Date,
+  ): Promise<{ senderUserId: string; total: bigint }[]> {
+    const rows = await manager.query<{ senderUserId: string; total: string }[]>(
+      `SELECT s.user_id AS "senderUserId", SUM(t.amount) AS total
+         FROM transactions t
+         JOIN accounts w ON w.id = t.recipient_wallet_id
+         JOIN accounts s ON s.id = t.sender_wallet_id
+        WHERE w.user_id = $1 AND w.role = 'user_wallet'
+          AND t.type = 'p2p_transfer'
+          AND t.status IN ('pending', 'completed')
+          AND t.created_at >= $2
+        GROUP BY s.user_id`,
+      [userId, since],
+    );
+    return rows.map((row) => ({
+      senderUserId: row.senderUserId,
+      total: BigInt(row.total),
+    }));
+  }
+
+  async getP2pSendVelocity(
+    userId: string,
+    windows: { burstSince: Date; newRecipientsSince: Date },
+  ): Promise<{ sends: number; firstTimeRecipients: number }> {
+    const [row] = await this.dataSource.query<
+      { sends: string; firstTimeRecipients: string }[]
+    >(
+      `SELECT
+         COUNT(*) FILTER (WHERE t.created_at >= $2) AS sends,
+         COUNT(DISTINCT t.recipient_wallet_id) FILTER (
+           WHERE t.created_at >= $3 AND NOT EXISTS (
+             SELECT 1 FROM transactions earlier
+              WHERE earlier.sender_wallet_id = t.sender_wallet_id
+                AND earlier.recipient_wallet_id = t.recipient_wallet_id
+                AND earlier.type = 'p2p_transfer'
+                AND earlier.status IN ('pending', 'completed')
+                AND earlier.created_at < $3)
+         ) AS "firstTimeRecipients"
+         FROM transactions t
+         JOIN accounts w ON w.id = t.sender_wallet_id
+        WHERE w.user_id = $1 AND w.role = 'user_wallet'
+          AND t.type = 'p2p_transfer'
+          AND t.status IN ('pending', 'completed')
+          AND t.created_at >= LEAST($2::timestamptz, $3::timestamptz)`,
+      [userId, windows.burstSince, windows.newRecipientsSince],
+    );
+    return {
+      sends: Number(row.sends),
+      firstTimeRecipients: Number(row.firstTimeRecipients),
+    };
+  }
+
   // Feeds the external reconciliation job (issue #15) — a plain read of
   // `float_<ccy>`'s cached balance, ledger's own table, so `payments` gets
   // just the Money it needs to compare against the provider's reported
@@ -839,7 +986,29 @@ export class LedgerService {
     return Money.of(BigInt(row?.total ?? 0), currency);
   }
 
-  // The three figures read from one snapshot, so a refund settling between
+  // A held withdrawal has debited float but the provider has not paid it
+  // out yet, so the provider's balance is higher than float by this much.
+  async getHeldWithdrawalTotal(
+    provider: TransactionProvider,
+    currency: string,
+    manager: EntityManager | DataSource = this.dataSource,
+  ): Promise<Money> {
+    const row = await manager
+      .getRepository(Transaction)
+      .createQueryBuilder('transaction')
+      .select(
+        `COALESCE(SUM(transaction.amount + (transaction.metadata -> 'providerFee' ->> 'amount')::bigint), 0)`,
+        'total',
+      )
+      .where('transaction.type = :type', { type: 'withdrawal' })
+      .andWhere('transaction.status = :status', { status: 'under_review' })
+      .andWhere('transaction.provider = :provider', { provider })
+      .andWhere('transaction.currency = :currency', { currency })
+      .getRawOne<{ total: string }>();
+    return Money.of(BigInt(row?.total ?? 0), currency);
+  }
+
+  // The four figures read from one snapshot, so a refund settling between
   // two reads cannot show as a mismatch.
   async getReconciliationFigures(
     provider: TransactionProvider,
@@ -849,6 +1018,11 @@ export class LedgerService {
       float: await this.getFloatBalance(provider, currency, manager),
       suspense: await this.getSuspenseBalance(provider, currency, manager),
       inFlightRefunds: await this.getInFlightRefundTotal(
+        provider,
+        currency,
+        manager,
+      ),
+      heldWithdrawals: await this.getHeldWithdrawalTotal(
         provider,
         currency,
         manager,
@@ -2080,7 +2254,7 @@ export class LedgerService {
         provider: params.provider,
         providerReference: params.reference,
         type: 'withdrawal',
-        status: 'pending',
+        status: params.status ?? 'pending',
         reversesTransactionId: null,
         amount: params.amount.amount,
         currency,
@@ -2188,35 +2362,42 @@ export class LedgerService {
   async reverseWithdrawal(
     params: ReverseWithdrawalParams,
   ): Promise<ReverseWithdrawalResult | null> {
-    return runInTransaction(this.dataSource, async (manager) => {
-      const transactionRepo = manager.getRepository(Transaction);
-      const original = await transactionRepo.findOneBy({
-        reference: params.reference,
-        type: 'withdrawal',
-      });
-      if (!original) {
-        this.logger.error(
-          `reverseWithdrawal: no withdrawal transaction found for reference "${params.reference}"`,
-        );
-        return null;
-      }
+    return runInTransaction(this.dataSource, (manager) =>
+      this.reverseWithdrawalWithinTransaction(manager, params),
+    );
+  }
 
-      const updateResult = await manager
-        .createQueryBuilder()
-        .update(Transaction)
-        .set({ status: 'reversed' })
-        .where('reference = :reference', { reference: params.reference })
-        .andWhere('status = :pending', { pending: 'pending' })
-        .execute();
-      if (!updateResult.affected) {
-        this.logger.debug(
-          `reverseWithdrawal: no pending withdrawal for reference "${params.reference}" — already reversed or resolved`,
-        );
-        return null;
-      }
-
-      return this.reverseWithdrawalEntries(manager, original, params.reason);
+  async reverseWithdrawalWithinTransaction(
+    manager: EntityManager,
+    params: ReverseWithdrawalParams,
+  ): Promise<ReverseWithdrawalResult | null> {
+    const transactionRepo = manager.getRepository(Transaction);
+    const original = await transactionRepo.findOneBy({
+      reference: params.reference,
+      type: 'withdrawal',
     });
+    if (!original) {
+      this.logger.error(
+        `reverseWithdrawal: no withdrawal transaction found for reference "${params.reference}"`,
+      );
+      return null;
+    }
+
+    const updateResult = await manager
+      .createQueryBuilder()
+      .update(Transaction)
+      .set({ status: 'reversed' })
+      .where('reference = :reference', { reference: params.reference })
+      .andWhere('status = :from', { from: params.fromStatus ?? 'pending' })
+      .execute();
+    if (!updateResult.affected) {
+      this.logger.debug(
+        `reverseWithdrawal: no ${params.fromStatus ?? 'pending'} withdrawal for reference "${params.reference}" — already reversed or resolved`,
+      );
+      return null;
+    }
+
+    return this.reverseWithdrawalEntries(manager, original, params.reason);
   }
 
   private async reverseWithdrawalEntries(

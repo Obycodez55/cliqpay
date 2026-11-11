@@ -1,3 +1,5 @@
+import { DEVICE_REGISTERED_EVENT } from '../../src/shared/events/domain-events';
+import { EventBusService } from '../../src/shared/events/event-bus.service';
 import { DeviceAttestationFailedException } from '../../src/modules/auth/internal/errors';
 import {
   AuthTestContext,
@@ -92,6 +94,26 @@ describe('device attestation modes', () => {
     const { user, run } = await verifyWith('bad-token');
     await expect(run()).resolves.toBeDefined();
     expect(await stored(user.id)).toBe('failed');
+  });
+
+  it('publishes device_registered with the stored attestation result once the device is trusted', async () => {
+    attestationConfig().mode = 'shadow';
+    const publish = jest.spyOn(ctx.app.get(EventBusService), 'publish');
+    const { user, run } = await verifyWith('bad-token');
+
+    await run();
+
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: DEVICE_REGISTERED_EVENT,
+        payload: {
+          userId: user.id,
+          deviceId: TEST_DEVICE_ID,
+          attestationResult: 'failed',
+        },
+      }),
+    );
+    publish.mockRestore();
   });
 
   it('records unavailable when the device sends no attestation', async () => {

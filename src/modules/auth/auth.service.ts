@@ -666,6 +666,20 @@ export class AuthService {
     }
   }
 
+  async countUsersBoundToDevice(
+    deviceId: string,
+    since: Date,
+  ): Promise<number> {
+    const row = await this.dataSource
+      .getRepository(TrustedDevice)
+      .createQueryBuilder('device')
+      .select('COUNT(DISTINCT device.userId)', 'count')
+      .where('device.deviceId = :deviceId', { deviceId })
+      .andWhere('device.createdAt >= :since', { since })
+      .getRawOne<{ count: string }>();
+    return Number(row?.count ?? 0);
+  }
+
   // A reviewer restores an address the owner controls after verifying it out
   // of band. Everything that could still be waiting in the old address is
   // voided: sessions, trusted devices, unused codes and open MFA challenges.

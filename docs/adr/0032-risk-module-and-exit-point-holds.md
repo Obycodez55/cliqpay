@@ -102,3 +102,54 @@ write is audited.
   panel exists.
 - Phase 11b adds `kind = 'aml'` rules, screening and risk ratings to this
   module rather than a new one.
+
+## Decisions made building the risk module
+
+- **`evaluateWithdrawal` writes flags in the withdrawal's own transaction.** A
+  hit made by a withdrawal that then fails (say, insufficient funds) rolls back
+  with it. The withdrawal's id does not exist yet when rules run, so flags are
+  created with a null `transactionId` and `linkWithdrawal` fills it in after
+  the ledger posts. A repeat hit keeps the first withdrawal's id.
+- **`enforced` stays as created, but the hold follows the rule's current
+  mode.** If a rule is switched from shadow to enforce while a shadow flag is
+  open, the next trip still holds that withdrawal, and the flag stays shadow
+  with a higher `hitCount`. The flag is never promoted; once it is resolved,
+  the next hit opens a new, enforced one.
+- **Open means `open` or `reviewing`.** The partial unique index and the hold
+  check use the same pair. A flag moves `open → reviewing`, or either to
+  `cleared` / `confirmed`; a resolved flag cannot move again.
+- **Withdrawal-time rules only write when their mode is not `off`.** A rule in
+  `shadow` raises a shadow flag and holds nothing; `off` is skipped entirely.
+- **`tainted_inflow` and `mule_fan_in` read one query.** `LedgerService`
+  returns P2P inflow per sending user for a window; the rule logic is pure
+  functions over it in `risk/internal/rules.ts`. Tainted senders are users
+  with an open enforced flag or an open `fraud` restriction. Shadow flags and
+  cleared flags do not taint.
+- **Event-driven rules run from two events.** `transfer_sent` feeds
+  `send_burst`. A new `device_registered` event, published by `auth` after the
+  trusted-device transaction commits, feeds `shared_device` and
+  `device_integrity`, so `auth` never imports `risk`. `shared_device` asks
+  `AuthService` how many distinct users were bound to the device in the
+  window, and flags the user who just registered.
+- **Release and reject live in `withdrawals`.** They need the payout code, and
+  `withdrawals` depends on `risk`, so they are served under
+  `/internal/risk/withdrawals/*` by a controller in `withdrawals`. Release
+  flips `under_review → pending` with one guarded UPDATE and then calls Kora
+  as at initiation; a synchronous rejection reverses the withdrawal. Reject
+  reverses only from `under_review`, so a reviewer cannot reverse a payout
+  that was already sent. Both publish the usual withdrawal events so a
+  scheduled run settles; the failed event carries a generic reason.
+- **Reconciliation adds held withdrawals to the expected provider balance.** A
+  held withdrawal has debited float but Kora has not paid it, so the provider
+  still holds `amount + providerFee` for it.
+- **Overdue alert.** A job every 6 hours sends one digest email to the
+  reconciliation alert address when an enforced flag or a held withdrawal is
+  past 24 hours. It repeats every run until the backlog is cleared and keeps no
+  alert state. Shadow flags are observation only and are not chased. Nothing
+  is resolved by the job.
+- **Rule params live in `fraud_rules.params`.** Money thresholds are minor
+  units (`minAmountMinor`); the migration seeds the starting values from the
+  table above.
+- **Lifting a restriction** refuses `dispute` and `sanctions`; every other
+  reason can be lifted through `/internal/risk/restrictions/lift`. The
+  existing `restriction_lifted` audit event records the reviewer.

@@ -13,7 +13,10 @@ export type AuditAction =
   | 'daily_limit_raise_requested'
   | 'daily_limit_raise_cancelled'
   | 'account_self_locked'
-  | 'email_recovered';
+  | 'email_recovered'
+  | 'fraud_flag_reviewed'
+  | 'withdrawal_released'
+  | 'withdrawal_rejected';
 
 export interface AuditActor {
   type: AuditActorType;

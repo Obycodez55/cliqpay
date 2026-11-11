@@ -19,6 +19,7 @@ import {
 } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
 import { KycService, LimitCheckOptions } from '../kyc/kyc.service';
+import { RiskService } from '../risk/risk.service';
 import { AuditService } from '../../shared/audit/audit.service';
 import {
   SECURITY_ALERT_EVENT,
@@ -27,7 +28,9 @@ import {
 import { Money } from '../../shared/primitives/money';
 import { PaginatedResult } from '../../common/interfaces/paginated-result.interface';
 import {
+  WITHDRAWAL_FAILED_EVENT,
   WITHDRAWAL_INITIATED_EVENT,
+  WithdrawalFailedEventPayload,
   WithdrawalInitiatedEventPayload,
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
@@ -55,6 +58,7 @@ import {
   InitiatorAccountFrozenException,
   UnsupportedWithdrawalCurrencyException,
   WithdrawalAmountTooSmallException,
+  WithdrawalNotUnderReviewException,
   WithdrawalPayoutFailedException,
 } from './internal/errors';
 import {
@@ -74,6 +78,11 @@ type ResolveBankAccountResult = Awaited<
 const NGN = 'NGN'; // Withdrawals are NGN-only for now — same as transfers (issue #28).
 const BANK_ACCOUNT_COOLING_MS = 24 * 60 * 60 * 1000;
 const PROVIDER = 'kora'; // Same single-active-provider assumption payments.service.ts's fundWallet makes.
+
+// Identical whatever put the withdrawal under review.
+export const WITHDRAWAL_UNDER_REVIEW_MESSAGE =
+  'This withdrawal is being reviewed. This usually takes up to 24 hours.';
+const REVIEW_REJECTED_USER_REASON = 'The withdrawal could not be completed.';
 
 // `ledger`'s transactions.metadata is at-rest storage too, and has no
 // operational need for the full number once the payout call has already
@@ -182,6 +191,7 @@ export class WithdrawalsService {
     private readonly ledgerService: LedgerService,
     private readonly usersService: UsersService,
     private readonly kycService: KycService,
+    private readonly riskService: RiskService,
     private readonly eventBus: EventBusService,
     private readonly auditService: AuditService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
@@ -496,6 +506,7 @@ export class WithdrawalsService {
     const accountNumber = this.decryptAccountNumber(bankAccount);
 
     let posted: PostWithdrawalResult;
+    let held = false;
     try {
       posted = await runInTransaction(this.dataSource, async (manager) => {
         await this.kycService.checkAndReserveLimit(
@@ -517,22 +528,37 @@ export class WithdrawalsService {
         ) {
           throw new InitiatorAccountFrozenException();
         }
-        return this.ledgerService.postWithdrawalWithinTransaction(manager, {
-          reference: dto.reference,
-          walletId: wallet.id,
-          provider: PROVIDER,
+        const evaluation = await this.riskService.evaluateWithdrawal(manager, {
+          userId,
           amount,
-          platformFee: platformFeeMoney,
-          providerFee: providerFeeMoney,
-          bankAccount: {
-            id: bankAccount.id,
-            bankCode: bankAccount.bankCode,
-            bankName: bankAccount.bankName,
-            accountNumber: maskAccountNumber(accountNumber),
-            accountName: bankAccount.accountName,
-          },
-          extraMetadata,
         });
+        held = evaluation.held;
+        const result = await this.ledgerService.postWithdrawalWithinTransaction(
+          manager,
+          {
+            reference: dto.reference,
+            walletId: wallet.id,
+            provider: PROVIDER,
+            amount,
+            platformFee: platformFeeMoney,
+            providerFee: providerFeeMoney,
+            bankAccount: {
+              id: bankAccount.id,
+              bankCode: bankAccount.bankCode,
+              bankName: bankAccount.bankName,
+              accountNumber: maskAccountNumber(accountNumber),
+              accountName: bankAccount.accountName,
+            },
+            extraMetadata,
+            status: evaluation.held ? 'under_review' : 'pending',
+          },
+        );
+        await this.riskService.linkWithdrawal(
+          manager,
+          evaluation.flagIds,
+          result.transactionId,
+        );
+        return result;
       });
     } catch (error) {
       // A racing duplicate may have committed first; its result is the answer.
@@ -549,6 +575,23 @@ export class WithdrawalsService {
         return { ...racedReplay, outcome: 'accepted', replayed: true };
       }
       throw error;
+    }
+
+    if (held) {
+      return {
+        response: {
+          reference: posted.reference,
+          amount: posted.amount.toJSON(),
+          platformFee: posted.platformFee.toJSON(),
+          providerFee: posted.providerFee.toJSON(),
+          status: 'under_review',
+          message: WITHDRAWAL_UNDER_REVIEW_MESSAGE,
+          createdAt: posted.createdAt.toISOString(),
+        },
+        transactionId: posted.transactionId,
+        outcome: 'accepted',
+        replayed: false,
+      };
     }
 
     // Only a confirmed `rejected` result reverses the already-posted entries
@@ -657,6 +700,7 @@ export class WithdrawalsService {
             'this withdrawal was already rejected by the provider',
           );
         }
+        const underReview = replay.transaction.status === 'under_review';
         return {
           transactionId: replay.transaction.id,
           response: {
@@ -667,7 +711,8 @@ export class WithdrawalsService {
             ).toJSON(),
             platformFee: metadata.platformFee,
             providerFee: metadata.providerFee,
-            status: 'pending',
+            status: underReview ? 'under_review' : 'pending',
+            ...(underReview && { message: WITHDRAWAL_UNDER_REVIEW_MESSAGE }),
             createdAt: replay.transaction.createdAt.toISOString(),
           },
         };
@@ -685,8 +730,162 @@ export class WithdrawalsService {
     }
   }
 
+  async listHeldWithdrawals(filter: { userId?: string; limit?: number }) {
+    const held = await this.ledgerService.findHeldWithdrawals(
+      { userId: filter.userId },
+      filter.limit ?? 50,
+    );
+    return held.map((withdrawal) => ({
+      reference: withdrawal.reference,
+      userId: withdrawal.userId,
+      amount: withdrawal.amount.toJSON(),
+      bankAccount: withdrawal.metadata.bankAccount,
+      createdAt: withdrawal.createdAt.toISOString(),
+    }));
+  }
+
+  // The payout goes out exactly as it would have at initiation; a synchronous
+  // rejection reverses the money back to the wallet.
+  async releaseHeldWithdrawal(
+    reference: string,
+    reviewerId: string,
+  ): Promise<{ reference: string; status: 'pending' }> {
+    const held = await this.ledgerService.getHeldWithdrawal(reference);
+    if (!held) {
+      throw new WithdrawalNotUnderReviewException();
+    }
+    const bankAccount = await this.bankAccountRepo.findOneBy({
+      id: held.metadata.bankAccount.id,
+      userId: held.userId,
+    });
+    if (!bankAccount) {
+      throw new BankAccountNotFoundException();
+    }
+    const user = await this.usersService.findById(held.userId);
+
+    await runInTransaction(this.dataSource, async (manager) => {
+      if (
+        !(await this.ledgerService.releaseWithdrawalHold(manager, reference))
+      ) {
+        throw new WithdrawalNotUnderReviewException();
+      }
+      await this.auditService.record(manager, {
+        actor: { type: 'reviewer', id: reviewerId },
+        action: 'withdrawal_released',
+        subject: { type: 'transaction', id: held.transactionId },
+        metadata: { reference, userId: held.userId },
+      });
+    });
+
+    const accountNumber = this.decryptAccountNumber(bankAccount);
+    const payoutResult = await this.paymentsService.initiatePayout({
+      reference,
+      amount: held.amount,
+      bankCode: bankAccount.bankCode,
+      accountNumber,
+      accountName: bankAccount.accountName,
+      customerEmail: user.email,
+    });
+    if (payoutResult.status === 'rejected') {
+      const reversal = await this.ledgerService.reverseWithdrawal({
+        reference,
+        reason: payoutResult.reason,
+      });
+      if (reversal) {
+        await this.publishWithdrawalFailedEvent(
+          held.userId,
+          user.email,
+          held.amount,
+          reference,
+          REVIEW_REJECTED_USER_REASON,
+        );
+      }
+      throw new WithdrawalPayoutFailedException(payoutResult.reason);
+    }
+    if (payoutResult.status === 'unknown') {
+      this.logger.warn(
+        `releaseHeldWithdrawal: payout outcome unknown for reference "${reference}" (${payoutResult.detail}) — left pending for webhook/reconciliation`,
+      );
+    }
+    await this.publishWithdrawalInitiatedEvent(
+      {
+        userId: held.userId,
+        reference,
+        amount: held.amount,
+      },
+      bankAccount,
+      accountNumber,
+      user,
+    );
+    return { reference, status: 'pending' };
+  }
+
+  async rejectHeldWithdrawal(
+    reference: string,
+    reviewerId: string,
+    note?: string,
+  ): Promise<{ reference: string; status: 'reversed' }> {
+    const reversal = await runInTransaction(
+      this.dataSource,
+      async (manager) => {
+        const result =
+          await this.ledgerService.reverseWithdrawalWithinTransaction(manager, {
+            reference,
+            reason: 'rejected_on_review',
+            fromStatus: 'under_review',
+          });
+        if (!result) {
+          throw new WithdrawalNotUnderReviewException();
+        }
+        await this.auditService.record(manager, {
+          actor: { type: 'reviewer', id: reviewerId },
+          action: 'withdrawal_rejected',
+          subject: { type: 'transaction', id: result.originalTransactionId },
+          metadata: { reference, userId: result.userId, note: note ?? null },
+        });
+        return result;
+      },
+    );
+    const user = await this.usersService.findById(reversal.userId);
+    await this.publishWithdrawalFailedEvent(
+      reversal.userId,
+      user.email,
+      reversal.amount,
+      reference,
+      REVIEW_REJECTED_USER_REASON,
+    );
+    return { reference, status: 'reversed' };
+  }
+
+  private async publishWithdrawalFailedEvent(
+    userId: string,
+    email: string,
+    amount: Money,
+    reference: string,
+    reason: string,
+  ): Promise<void> {
+    try {
+      await this.eventBus.publish<string, WithdrawalFailedEventPayload>({
+        name: WITHDRAWAL_FAILED_EVENT,
+        payload: {
+          userId,
+          email,
+          amount: amount.toDecimalString(),
+          currency: amount.currency,
+          reference,
+          reason,
+        },
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `publishWithdrawalFailedEvent: withdrawal "${reference}" was reversed, but publishing the event failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
+  }
+
   private async publishWithdrawalInitiatedEvent(
-    result: PostWithdrawalResult,
+    result: Pick<PostWithdrawalResult, 'userId' | 'reference' | 'amount'>,
     bankAccount: BankAccount,
     accountNumber: string,
     user: { email: string },

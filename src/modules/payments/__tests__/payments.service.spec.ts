@@ -860,10 +860,11 @@ describe('PaymentsService.reconcileFloatBalances', () => {
   let adapter: FakeAdapter;
   let service: PaymentsService;
 
-  const figures = (float: bigint, suspense = 0n, inFlight = 0n) => ({
+  const figures = (float: bigint, suspense = 0n, inFlight = 0n, held = 0n) => ({
     float: Money.of(float, 'NGN'),
     suspense: Money.of(suspense, 'NGN'),
     inFlightRefunds: Money.of(inFlight, 'NGN'),
+    heldWithdrawals: Money.of(held, 'NGN'),
   });
 
   beforeEach(() => {
@@ -902,6 +903,17 @@ describe('PaymentsService.reconcileFloatBalances', () => {
       figures(500_000n, 100_000n, 100_000n),
     );
     adapter.setBalance('NGN', Money.of(400_000n, 'NGN'));
+
+    await service.reconcileFloatBalances();
+
+    expect(eventBus.publish).not.toHaveBeenCalled();
+  });
+
+  it('adds withdrawals held for review to the expected provider balance, since the provider has not paid them out', async () => {
+    ledgerService.getReconciliationFigures.mockResolvedValue(
+      figures(500_000n, 0n, 0n, 60_000n),
+    );
+    adapter.setBalance('NGN', Money.of(560_000n, 'NGN'));
 
     await service.reconcileFloatBalances();
 

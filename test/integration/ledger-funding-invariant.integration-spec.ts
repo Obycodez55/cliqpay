@@ -322,6 +322,7 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
       providerFeeMinor: fc.integer({ min: 0, max: 5_000 }),
       platformFeeMinor: fc.integer({ min: 0, max: 5_000 }),
       afterWithdrawal: fc.constantFrom('keep', 'reverse', 'complete'),
+      held: fc.constantFrom('no', 'keep', 'reject', 'release'),
       chargebackMinor: fc.integer({ min: 1, max: 1_000_000 }),
       resolve: fc.boolean(),
     });
@@ -365,17 +366,38 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
                 accountNumber: '******7890',
                 accountName: 'Ada Lovelace',
               },
+              status: op.held === 'no' ? 'pending' : 'under_review',
             });
             await assertInvariantHolds(ctx.accountRepo);
             await assertCacheMatchesLedger(ctx, walletId);
 
-            if (op.afterWithdrawal === 'reverse') {
+            if (op.held === 'reject') {
+              await ctx.dataSource.transaction((manager) =>
+                ctx.ledgerService.reverseWithdrawalWithinTransaction(manager, {
+                  reference: withdrawalReference,
+                  reason: 'rejected_on_review',
+                  fromStatus: 'under_review',
+                }),
+              );
+              await assertInvariantHolds(ctx.accountRepo);
+              await assertCacheMatchesLedger(ctx, walletId);
+            } else if (op.held === 'release') {
+              await ctx.dataSource.transaction((manager) =>
+                ctx.ledgerService.releaseWithdrawalHold(
+                  manager,
+                  withdrawalReference,
+                ),
+              );
+            }
+
+            const settleable = op.held === 'no' || op.held === 'release';
+            if (settleable && op.afterWithdrawal === 'reverse') {
               await ctx.ledgerService.reverseWithdrawal({
                 reference: withdrawalReference,
                 reason: 'payout failed',
               });
               await assertInvariantHolds(ctx.accountRepo);
-            } else if (op.afterWithdrawal === 'complete') {
+            } else if (settleable && op.afterWithdrawal === 'complete') {
               await ctx.ledgerService.completeWithdrawal({
                 reference: withdrawalReference,
                 providerReportedAmount: Money.of(op.withdrawMinor, 'NGN'),

@@ -2,6 +2,7 @@ import { AppConfig } from '../../../config';
 import { WithdrawalsService } from '../withdrawals.service';
 import { LedgerService } from '../../ledger/ledger.service';
 import { DataSource } from 'typeorm';
+import { RiskService } from '../../risk/risk.service';
 import { KycService } from '../../kyc/kyc.service';
 import { UsersService } from '../../users/users.service';
 import { AuthService } from '../../auth/auth.service';
@@ -101,6 +102,7 @@ describe('WithdrawalsService.initiateWithdrawal', () => {
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
       {} as KycService,
+      {} as RiskService,
       eventBus as unknown as EventBusService,
       {} as AuditService,
       testConfig,

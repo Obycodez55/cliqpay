@@ -290,6 +290,16 @@ export interface RefundAttentionRequiredPayload {
   occurredAt: string;
 }
 
+export interface RiskReviewOverduePayload {
+  email: string;
+  overdueFlags: number;
+  overdueWithdrawals: number;
+  oldestHours: number;
+  flagIds: string[];
+  withdrawalReferences: string[];
+  occurredAt: string;
+}
+
 export interface NewFollowerPayload {
   userId: string;
   followerUserId: string;
@@ -342,6 +352,7 @@ export interface NotificationPayloadMap {
   account_frozen: AccountFrozenPayload;
   reconciliation_mismatch: ReconciliationMismatchPayload;
   refund_attention_required: RefundAttentionRequiredPayload;
+  risk_review_overdue: RiskReviewOverduePayload;
   new_follower: NewFollowerPayload;
   post_reaction: PostReactionPayload;
   post_comment: PostCommentPayload;
@@ -418,6 +429,7 @@ export const NOTIFICATION_CATALOG = {
   chargeback_received: { channels: ['email'] },
   account_frozen: { channels: ['email'] },
   reconciliation_mismatch: { channels: ['email'] },
+  risk_review_overdue: { channels: ['email'] },
   refund_attention_required: { channels: ['email'] },
   new_follower: { channels: ['push', 'in_app'] },
   post_reaction: { channels: ['in_app'] },

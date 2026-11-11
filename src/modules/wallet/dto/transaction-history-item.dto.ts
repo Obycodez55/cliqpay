@@ -41,6 +41,7 @@ export class TransactionHistoryItemDto {
   @ApiProperty({
     enum: [
       'pending',
+      'under_review',
       'completed',
       'failed',
       'reversed',

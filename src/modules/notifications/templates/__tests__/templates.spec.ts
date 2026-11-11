@@ -218,6 +218,35 @@ describe('refund_attention_required', () => {
   });
 });
 
+describe('risk_review_overdue', () => {
+  const payload = {
+    email: 'ops@cliqpay.test',
+    overdueFlags: 2,
+    overdueWithdrawals: 1,
+    oldestHours: 30,
+    flagIds: ['flag-1', 'flag-2'],
+    withdrawalReferences: ['wd-1'],
+    occurredAt: '2026-11-11T10:00:00.000Z',
+  };
+
+  it('counts what is overdue and lists the ids to look at', () => {
+    const email = emailTemplates.risk_review_overdue!(payload);
+
+    expect(email.subject).toContain('2 flag(s)');
+    expect(email.subject).toContain('1 held withdrawal(s)');
+    for (const part of [email.html, email.text]) {
+      expect(part).toContain('flag-1');
+      expect(part).toContain('flag-2');
+      expect(part).toContain('wd-1');
+      expect(part).toContain('30 hours');
+    }
+  });
+
+  it('has no in-app template: it is addressed to ops, not a user', () => {
+    expect(inAppTemplates.risk_review_overdue).toBeUndefined();
+  });
+});
+
 describe('reconciliation_mismatch', () => {
   it('shows the suspense balance and the refunds in flight next to the balances', () => {
     const email = emailTemplates.reconciliation_mismatch!({
