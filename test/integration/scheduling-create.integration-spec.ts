@@ -17,6 +17,7 @@ import {
   computeDueAt,
   lagosToday,
 } from '../../src/modules/scheduling/internal/run-time';
+import { addTestRestriction } from './support/restrictions';
 
 jest.setTimeout(180_000);
 
@@ -30,6 +31,39 @@ describe('POST /scheduled-payments', () => {
 
   afterAll(async () => {
     await destroyTransfersTestContext(ctx);
+  });
+
+  it('rejects the target field that does not match the target type', async () => {
+    const sender = await h.seedUser('sender');
+    const recipient = await h.seedUser('recipient');
+    const bank = await h.seedBank(sender.userId);
+    const userWithBank = h.createSchedule(sender.userId, recipient.userId, {
+      target: {
+        type: 'user',
+        userId: recipient.userId,
+        bankAccountId: bank.id,
+      },
+    });
+    const bankWithUser = h.createBankSchedule(sender.userId, bank.id, {
+      target: {
+        type: 'bank_account',
+        bankAccountId: bank.id,
+        userId: recipient.userId,
+      },
+    });
+
+    const first = await userWithBank;
+    const second = await bankWithUser;
+
+    expect(first.status).toBe(400);
+    expect(JSON.stringify(first.body)).toContain(
+      'bankAccountId cannot be set on a user target',
+    );
+    expect(second.status).toBe(400);
+    expect(JSON.stringify(second.body)).toContain(
+      'userId cannot be set on a bank_account target',
+    );
+    expect(await h.scheduleRepo().countBy({ userId: sender.userId })).toBe(0);
   });
 
   it('schedules a payment without checking the balance, at the window start plus a fixed offset', async () => {
@@ -206,7 +240,7 @@ describe('POST /scheduled-payments', () => {
     it('rejects a frozen sender with 403', async () => {
       const sender = await h.seedUser('sender');
       const recipient = await h.seedUser('recipient');
-      await ctx.userRepo.update({ id: sender.userId }, { isFrozen: true });
+      await addTestRestriction(ctx.dataSource, sender.userId);
 
       const res = await h
         .createSchedule(sender.userId, recipient.userId)
@@ -231,12 +265,16 @@ describe('POST /scheduled-payments', () => {
       const over = await h
         .createSchedule(sender.userId, recipient.userId, {
           amount: 5_000_001,
+          riskAcknowledged: true,
         })
         .expect(422);
       expect(errorOf(over).code).toBe('SCHEDULE_AMOUNT_EXCEEDS_DAILY_LIMIT');
 
       await h
-        .createSchedule(sender.userId, recipient.userId, { amount: 5_000_000 })
+        .createSchedule(sender.userId, recipient.userId, {
+          amount: 5_000_000,
+          riskAcknowledged: true,
+        })
         .expect(201);
     });
   });

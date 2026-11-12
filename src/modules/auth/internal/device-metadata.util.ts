@@ -10,12 +10,19 @@ export interface DeviceMetadata {
   userAgent: string | null;
 }
 
-// No trust-proxy config exists yet, so this reads the socket-level address
-// (req.ip) rather than trusting an X-Forwarded-For header a client could
-// spoof; revisit once the app actually sits behind a configured proxy.
+// req.ip is the socket address unless TRUST_PROXY is set, in which case
+// Express resolves it from X-Forwarded-For through the trusted hops only, so
+// a client can't spoof it.
 export function extractDeviceMetadata(req: Request): DeviceMetadata {
   return {
     ipAddress: req.ip ?? req.socket.remoteAddress ?? 'unknown',
     userAgent: req.headers['user-agent'] ?? null,
   };
+}
+
+export const TRUSTED_DEVICE_TOKEN_HEADER = 'x-trusted-device-token';
+
+export function readTrustedDeviceToken(req: Request): string | null {
+  const value = req.headers[TRUSTED_DEVICE_TOKEN_HEADER];
+  return typeof value === 'string' && value.length > 0 ? value : null;
 }

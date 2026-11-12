@@ -12,11 +12,14 @@ import { DataSource } from 'typeorm';
 import { APP_CONFIG, AppConfig } from '../../config';
 import { LedgerService } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
-import { KycService } from '../kyc/kyc.service';
+import { KycService, UserLimitView } from '../kyc/kyc.service';
+import { AuthService } from '../auth/auth.service';
 import { runInTransaction } from '../../database/transaction.util';
 import { Money } from '../../shared/primitives/money';
 import {
   FUNDING_COMPLETED_EVENT,
+  SECURITY_ALERT_EVENT,
+  SecurityAlertEventPayload,
   FUNDING_HELD_EVENT,
   FUNDING_REFUNDED_EVENT,
   FundingCompletedEventPayload,
@@ -36,6 +39,7 @@ import { EventBusService } from '../../shared/events/event-bus.service';
 import { FundWalletDto } from './dto/fund-wallet.dto';
 import { FundWalletResponseDto } from './dto/fund-wallet-response.dto';
 import { WalletLimitsResponseDto } from './dto/wallet-limits-response.dto';
+import { UserLimitResponseDto } from './dto/user-limit.dto';
 import {
   InitiatePaymentResult,
   InitiatePayoutParams,
@@ -46,6 +50,7 @@ import {
   ResolveBankAccountResult,
   VerifyChargeResult,
   VerifyPayoutResult,
+  VerifyRefundResult,
 } from './adapters/payment-provider.interface';
 import { extractTopLevelJsonField } from './internal/raw-json';
 import {
@@ -82,122 +87,26 @@ const MAX_REFUND_ATTEMPTS = REFUND_RETRY_DELAYS_MS.length + 1;
 const HELD_TOO_LONG_MS = 24 * 60 * 60 * 1000;
 const REFUND_ALERT_REPEAT_MS = 24 * 60 * 60 * 1000;
 
-// Ground truth: docs/adr/0007 — confirmed against a real webhook Kora
-// delivered during the Phase 2 e2e pass, not just docs. Only the fields
-// this handler actually reads. `amount`/`fee` are normalized to strings
-// here — Kora sends both as raw JSON numbers (not the decimal strings the
-// verify endpoint uses), so nothing downstream needs its own String()
-// wrapping or needs to know the type differs by endpoint.
-interface KoraChargeWebhookData {
-  reference: string;
-  status: string;
-  amount: string;
-  fee: string;
-}
-
-// A valid signature only proves Kora (or whoever holds the key) sent the
-// bytes — it says nothing about whether "data" is shaped like a charge
-// event. A malformed shape is a bad request (400), not a server bug (500);
-// letting `data.reference`/`.status`/`.amount` reach a Money/DB call
-// untyped risks an uncaught TypeError instead (see the Phase 2 audit, L4).
-function validateWebhookData(parsed: unknown): KoraChargeWebhookData {
+// The webhook body only names which reference to re-check with Kora; every
+// posted fact comes from the provider's own verify answer.
+function validateWebhookReference(parsed: unknown): string {
   if (typeof parsed !== 'object' || parsed === null) {
     throw new BadRequestException('Malformed webhook payload');
   }
-  const { reference, status, amount, fee } = parsed as Record<string, unknown>;
-  if (
-    typeof reference !== 'string' ||
-    reference.length === 0 ||
-    typeof status !== 'string' ||
-    status.length === 0 ||
-    (typeof amount !== 'string' && typeof amount !== 'number') ||
-    (typeof fee !== 'string' && typeof fee !== 'number')
-  ) {
+  const { reference } = parsed as Record<string, unknown>;
+  if (typeof reference !== 'string' || reference.length === 0) {
     throw new BadRequestException('Malformed webhook payload');
   }
-  return { reference, status, amount: String(amount), fee: String(fee) };
+  return reference;
 }
 
-// Ground truth: developers.korapay.com/docs/webhooks (issue #29) confirms
-// the payload envelope is `{ event: "transfer.success" | "transfer.failed",
-// data: { reference, amount, fee, currency, status, ... } }` — the same
-// `data` shape as charge events (see KoraChargeWebhookData above), just
-// under `transfer.*` rather than `charge.*`. A real sandbox disbursement
-// (POST /merchant/api/v1/transactions/disburse, then GET
-// /merchant/api/v1/transactions/{reference}) run for this issue separately
-// confirmed ADR-0007's Phase 4 correction still holds for the `data` shape
-// itself — `reference` is exactly what we sent, `amount` a decimal string
-// ("1000.00"), terminal `status` values "success"/"failed". The actual
-// webhook *delivery* couldn't be captured in this environment (no publicly
-// reachable receiver was available here) — the `data` shape is taken on
-// the strength of the docs and the matching status-endpoint response, not
-// a directly observed webhook, unlike ADR-0007's funding webhook capture.
-// Flagged for confirmation against a real captured delivery before this
-// handles production traffic.
-interface KoraPayoutWebhookData {
-  reference: string;
-  status: string;
-  amount: string | number;
-  message?: string;
-}
-
-function validatePayoutWebhookData(parsed: unknown): KoraPayoutWebhookData {
-  if (typeof parsed !== 'object' || parsed === null) {
-    throw new BadRequestException('Malformed webhook payload');
-  }
-  const { reference, status, amount, message } = parsed as Record<
-    string,
-    unknown
-  >;
-  if (
-    typeof reference !== 'string' ||
-    reference.length === 0 ||
-    typeof status !== 'string' ||
-    status.length === 0 ||
-    (typeof amount !== 'string' && typeof amount !== 'number')
-  ) {
-    throw new BadRequestException('Malformed webhook payload');
-  }
+function toUserLimitResponse(view: UserLimitView): UserLimitResponseDto {
   return {
-    reference,
-    status,
-    amount,
-    message: typeof message === 'string' ? message : undefined,
-  };
-}
-
-// Ground truth: docs/research/kora-refunds.md, captured refund webhooks.
-// `reference` is our refund reference; `payment_reference` is a Kora-internal
-// id and is deliberately not read. `amount` is the refund's own amount.
-interface KoraRefundWebhookData {
-  reference: string;
-  status: string;
-  amount: string | number;
-  statusReason?: string;
-}
-
-function validateRefundWebhookData(parsed: unknown): KoraRefundWebhookData {
-  if (typeof parsed !== 'object' || parsed === null) {
-    throw new BadRequestException('Malformed webhook payload');
-  }
-  const { reference, status, amount, status_reason } = parsed as Record<
-    string,
-    unknown
-  >;
-  if (
-    typeof reference !== 'string' ||
-    reference.length === 0 ||
-    typeof status !== 'string' ||
-    status.length === 0 ||
-    (typeof amount !== 'string' && typeof amount !== 'number')
-  ) {
-    throw new BadRequestException('Malformed webhook payload');
-  }
-  return {
-    reference,
-    status,
-    amount,
-    statusReason: typeof status_reason === 'string' ? status_reason : undefined,
+    dailyOutflowLimit: view.dailyOutflowLimit?.toJSON() ?? null,
+    pendingIncrease: view.pendingIncrease && {
+      amount: view.pendingIncrease.amount.toJSON(),
+      effectiveAt: view.pendingIncrease.effectiveAt.toISOString(),
+    },
   };
 }
 
@@ -224,6 +133,7 @@ export class PaymentsService {
     private readonly ledgerService: LedgerService,
     private readonly usersService: UsersService,
     private readonly kycService: KycService,
+    private readonly authService: AuthService,
     private readonly eventBus: EventBusService,
     @Inject(PAYMENT_PROVIDER_ADAPTER)
     private readonly adapter: PaymentProviderAdapter,
@@ -274,8 +184,12 @@ export class PaymentsService {
 
     try {
       await runInTransaction(this.dataSource, async (manager) => {
-        await this.kycService.checkBalanceCap(manager, userId, amount, (m) =>
-          this.ledgerService.getBalanceAndPendingFunding(m, userId),
+        await this.kycService.checkBalanceCap(
+          manager,
+          userId,
+          amount,
+          (m, since) =>
+            this.ledgerService.getBalanceAndPendingFunding(m, userId, since),
         );
         await this.ledgerService.createPendingFundingTransactionWithinTransaction(
           manager,
@@ -327,8 +241,8 @@ export class PaymentsService {
       this.kycService.getWalletCapacity(manager, userId, NGN, {
         readDebitedSince: (m, since) =>
           this.ledgerService.getDebitedSince(m, userId, since),
-        readBalanceAndPending: (m) =>
-          this.ledgerService.getBalanceAndPendingFunding(m, userId),
+        readBalanceAndPending: (m, since) =>
+          this.ledgerService.getBalanceAndPendingFunding(m, userId, since),
       }),
     );
     return {
@@ -336,12 +250,97 @@ export class PaymentsService {
       dailyLimit: capacity.dailyLimit.toJSON(),
       debitedToday: capacity.debitedToday.toJSON(),
       remainingToday: capacity.remainingToday.toJSON(),
+      userLimit: capacity.userLimit?.toJSON() ?? null,
+      pendingIncrease: capacity.pendingIncrease && {
+        amount: capacity.pendingIncrease.amount.toJSON(),
+        effectiveAt: capacity.pendingIncrease.effectiveAt.toISOString(),
+      },
+      cooldown: capacity.cooldown && {
+        endsAt: capacity.cooldown.endsAt.toISOString(),
+        limit: capacity.cooldown.cap.toJSON(),
+        remaining: capacity.cooldown.remaining.toJSON(),
+      },
+      effectiveRemaining: capacity.effectiveRemaining.toJSON(),
+      limitedBy: capacity.binding,
+      newAccountInflow: capacity.newAccountInflow && {
+        endsAt: capacity.newAccountInflow.endsAt.toISOString(),
+        limit: capacity.newAccountInflow.limit.toJSON(),
+        received: capacity.newAccountInflow.received.toJSON(),
+        remaining: capacity.newAccountInflow.remaining.toJSON(),
+      },
       resetsAt: capacity.resetsAt.toISOString(),
       balanceCap: capacity.balanceCap?.toJSON() ?? null,
       balance: capacity.balance.toJSON(),
       pendingFunding: capacity.pendingFunding.toJSON(),
       headroom: capacity.headroom?.toJSON() ?? null,
     };
+  }
+
+  initiateRaiseDailyLimitStepUp(userId: string) {
+    return this.authService.initiateStepUp(userId, 'raise_daily_limit');
+  }
+
+  async lowerDailyLimit(
+    userId: string,
+    amount: number,
+    pin: string,
+  ): Promise<UserLimitResponseDto> {
+    await this.authService.verifyTransactionPin(userId, pin);
+    return toUserLimitResponse(
+      await this.kycService.lowerDailyOutflowLimit(userId, amount),
+    );
+  }
+
+  async raiseDailyLimit(
+    userId: string,
+    dto: { amount: number; pin: string; challengeId: string; code: string },
+  ): Promise<UserLimitResponseDto> {
+    await this.authService.verifyStepUp(userId, dto.challengeId, dto.code);
+    await this.authService.verifyTransactionPin(userId, dto.pin);
+    const view = await this.kycService.requestDailyOutflowLimitRaise(
+      userId,
+      dto.amount,
+    );
+    await this.publishLimitRaiseAlert(userId, view);
+    return toUserLimitResponse(view);
+  }
+
+  async cancelDailyLimitRaise(
+    userId: string,
+    pin: string,
+  ): Promise<UserLimitResponseDto> {
+    await this.authService.verifyTransactionPin(userId, pin);
+    return toUserLimitResponse(
+      await this.kycService.cancelDailyOutflowLimitRaise(userId),
+    );
+  }
+
+  private async publishLimitRaiseAlert(
+    userId: string,
+    view: UserLimitView,
+  ): Promise<void> {
+    const pending = view.pendingIncrease;
+    if (!pending) {
+      return;
+    }
+    try {
+      const user = await this.usersService.findById(userId);
+      const occurredAt = new Date();
+      await this.eventBus.publish<string, SecurityAlertEventPayload>({
+        name: SECURITY_ALERT_EVENT,
+        payload: {
+          userId,
+          email: user.email,
+          message: `A request to raise your daily sending limit to ${pending.amount.toDecimalString()} was made. It takes effect at ${pending.effectiveAt.toISOString()}, and you can cancel it before then in the app. If this wasn’t you, cancel it and secure your account.`,
+          occurredAt: occurredAt.toISOString(),
+        },
+        occurredAt,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Limit raise recorded for user ${userId}, but publishing the security alert failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
   }
 
   // Signature verified against the raw bytes Kora actually signed (see
@@ -415,51 +414,14 @@ export class PaymentsService {
     );
   }
 
-  // Everything past signature verification is provider-fact mapping only:
-  // this owns no accounting knowledge, LedgerService.postFunding decides
-  // what these facts post to.
+  // Kora signs only `data`, with no timestamp, so a captured or forged
+  // delivery can't be told from a fresh one; posting from Kora's own verify
+  // answer makes the webhook just a nudge to check this reference now.
   private async processFundingWebhookData(parsed: unknown): Promise<void> {
-    const data = validateWebhookData(parsed);
-
-    // Matches KoraAdapter.verifyCharge's three-way mapping exactly: only
-    // "success"/"failed" are terminal. Anything else (e.g. "processing") is
-    // a charge still in flight — collapsing that into "failed" here would
-    // permanently kill a transaction Kora later reports as successful,
-    // since findStaleFundingTransactions only polls `status = 'pending'`
-    // rows. Leave it pending; the poll job (#14) resolves it once Kora
-    // reports a terminal outcome.
-    if (data.status !== 'success' && data.status !== 'failed') {
-      this.logger.debug(
-        `processFundingWebhookData: non-terminal status "${data.status}" for reference "${data.reference}" — leaving pending`,
-      );
-      return;
-    }
-    const providerStatus = data.status;
-    // Unused by postFunding for a `failed` outcome — see
-    // LedgerService.postFunding's early return before any entries are
-    // posted (same reasoning as PaymentsService.pollFundingTransaction).
-    let netAmount = Money.zero(NGN);
-    let providerFee = Money.zero(NGN);
-    if (providerStatus === 'success') {
-      try {
-        netAmount = Money.fromDecimalString(data.amount, NGN);
-        providerFee = Money.fromDecimalString(data.fee, NGN);
-      } catch (error) {
-        throw new BadRequestException(
-          `Malformed webhook payload: ${(error as Error).message}`,
-        );
-      }
-    }
-
-    await this.completeFunding(
-      {
-        reference: data.reference,
-        netAmount,
-        providerFee,
-        providerStatus,
-      },
-      'webhook',
-    );
+    await this.pollFundingTransaction({
+      reference: validateWebhookReference(parsed),
+      currency: NGN,
+    });
   }
 
   // The one path a funding outcome takes, from the webhook and the poll
@@ -467,28 +429,11 @@ export class PaymentsService {
   // advisory lock, in the same transaction that posts it: credited when it
   // fits, held in suspense when it would breach the cap. A
   // failed outcome moves no money, so it skips the check.
-  private async completeFunding(
-    reported: PostFundingFacts,
-    source: 'webhook' | 'poll',
-  ): Promise<void> {
+  private async completeFunding(facts: PostFundingFacts): Promise<void> {
     const pending =
-      reported.providerStatus === 'success'
-        ? await this.ledgerService.findPendingFunding(reported.reference)
+      facts.providerStatus === 'success'
+        ? await this.ledgerService.findPendingFunding(facts.reference)
         : null;
-    // Kora's webhook `amount` is the payer's gross when the payer bears the
-    // fee and the requested amount when the merchant does; the charge status
-    // the poll reads is the requested amount either way. The ledger's own
-    // cross-check against the request still rejects anything that matches
-    // neither reading.
-    const facts =
-      source === 'webhook' && pending
-        ? {
-            ...reported,
-            netAmount: reported.netAmount.equals(pending.amount)
-              ? reported.netAmount
-              : reported.netAmount.subtract(reported.providerFee),
-          }
-        : reported;
     if (!pending) {
       // Failed, unknown or already resolved: postFunding is idempotent and
       // handles each.
@@ -504,8 +449,28 @@ export class PaymentsService {
         manager,
         pending.userId,
         facts.netAmount,
-        (m) => this.ledgerService.getWalletBalance(m, pending.userId),
+        async (m, since) => ({
+          balance: await this.ledgerService.getWalletBalance(m, pending.userId),
+          received: since
+            ? await this.ledgerService.getReceivedSince(
+                m,
+                pending.userId,
+                since,
+              )
+            : Money.zero(facts.netAmount.currency),
+        }),
       );
+      const restricted = (
+        await this.usersService.getRestrictionState(manager, pending.userId)
+      ).blocksInbound;
+      if (restricted) {
+        const held =
+          await this.ledgerService.holdFundingForReviewWithinTransaction(
+            manager,
+            facts,
+          );
+        return held ? { kind: 'restricted' as const, held } : null;
+      }
       if (verdict.allowed) {
         const credited = await this.ledgerService.postFundingWithinTransaction(
           manager,
@@ -526,6 +491,12 @@ export class PaymentsService {
     }
     if (outcome.kind === 'credited') {
       await this.publishFundingCompletedEvent(outcome.credited);
+      return;
+    }
+    if (outcome.kind === 'restricted') {
+      this.logger.warn(
+        `completeFunding: funding "${outcome.held.fundingReference}" is for a user whose account restriction blocks incoming money — held in suspense, no refund started`,
+      );
       return;
     }
     this.logger.warn(
@@ -587,43 +558,23 @@ export class PaymentsService {
   }
 
   private async processRefundWebhookData(parsed: unknown): Promise<void> {
-    const data = validateRefundWebhookData(parsed);
-
-    if (data.status !== 'success' && data.status !== 'failed') {
-      this.logger.debug(
-        `processRefundWebhookData: non-terminal status "${data.status}" for refund "${data.reference}" — leaving pending`,
-      );
-      return;
-    }
-
-    if (data.status === 'failed') {
-      await this.ledgerService.failRefund({
-        refundReference: data.reference,
-        reason: data.statusReason ?? 'Refund failed',
-      });
-      return;
-    }
-
-    let amount: Money;
+    const reference = validateWebhookReference(parsed);
+    let result: VerifyRefundResult;
     try {
-      amount = Money.fromDecimalString(String(data.amount), NGN);
+      result = await this.adapter.verifyRefund(reference);
     } catch (error) {
-      throw new BadRequestException(
-        `Malformed webhook payload: ${(error as Error).message}`,
+      this.logger.error(
+        `verifyRefund failed for refund "${reference}" (${(error as Error).message}) — left as is for the next poll run`,
       );
-    }
-    const result = await this.ledgerService.settleRefund({
-      refundReference: data.reference,
-      providerReportedAmount: amount,
-    });
-    if (!result) {
-      // Usually a duplicate delivery, an unknown reference or a mismatched
-      // amount. A success for an attempt that did not settle the funding,
-      // when the funding is already refunded, means Kora paid out twice.
-      await this.alertOnLateSuccess(data.reference);
       return;
     }
-    await this.publishFundingRefundedEvent(result);
+    if (result.status === 'not_found') {
+      this.logger.warn(
+        `processRefundWebhookData: Kora has no refund "${reference}" — ignoring the webhook`,
+      );
+      return;
+    }
+    await this.applyVerifiedRefund(reference, result);
   }
 
   private async alertOnLateSuccess(refundReference: string): Promise<void> {
@@ -682,29 +633,37 @@ export class PaymentsService {
 
   private async resolveStaleRefund(refund: StalePendingRefund): Promise<void> {
     const result = await this.adapter.verifyRefund(refund.refundReference);
+    if (result.status === 'not_found') {
+      // The initiate call never reached Kora, so the same reference is
+      // still unused and safe to send again.
+      await this.initiateRefund(refund);
+      return;
+    }
+    await this.applyVerifiedRefund(refund.refundReference, result);
+  }
+
+  private async applyVerifiedRefund(
+    refundReference: string,
+    result: Exclude<VerifyRefundResult, { status: 'not_found' }>,
+  ): Promise<void> {
     switch (result.status) {
       case 'pending':
         return;
-      case 'not_found':
-        // The initiate call never reached Kora, so the same reference is
-        // still unused and safe to send again.
-        await this.initiateRefund(refund);
-        return;
       case 'failed':
         await this.ledgerService.failRefund({
-          refundReference: refund.refundReference,
+          refundReference,
           reason: result.reason,
         });
         return;
       case 'success': {
         const settled = await this.ledgerService.settleRefund({
-          refundReference: refund.refundReference,
+          refundReference,
           providerReportedAmount: result.amount,
         });
         if (settled) {
           await this.publishFundingRefundedEvent(settled);
         } else {
-          await this.alertOnLateSuccess(refund.refundReference);
+          await this.alertOnLateSuccess(refundReference);
         }
         return;
       }
@@ -826,60 +785,10 @@ export class PaymentsService {
     }
   }
 
-  // Issue #29. Resolves whichever of the two `pending` origins the
-  // withdrawal is sitting in (a synchronously `accepted` payout, or one
-  // left `pending` after an `unknown` initiate outcome — see
-  // InitiatePayoutResult) — from the webhook's perspective both are just a
-  // pending withdrawal transaction that now has a final answer, so there's
-  // one code path here, not two.
   private async processPayoutWebhookData(parsed: unknown): Promise<void> {
-    const data = validatePayoutWebhookData(parsed);
-
-    if (data.status !== 'success' && data.status !== 'failed') {
-      this.logger.debug(
-        `processPayoutWebhookData: non-terminal status "${data.status}" for reference "${data.reference}" — leaving pending`,
-      );
-      return;
-    }
-
-    if (data.status === 'failed') {
-      // reverseWithdrawal reads the reversal amount from the original
-      // transaction's own stored metadata, never from this webhook payload
-      // — nothing here needs (or trusts) a reported amount for the failure
-      // path, unlike the success path below.
-      const reason = data.message ?? 'Payout failed';
-      const result = await this.ledgerService.reverseWithdrawal({
-        reference: data.reference,
-        reason,
-      });
-      if (!result) {
-        // Duplicate delivery of an already-resolved transaction — no-op.
-        return;
-      }
-      await this.publishWithdrawalFailedEvent(result, reason);
-      return;
-    }
-
-    let providerAmount: Money;
-    try {
-      providerAmount = Money.fromDecimalString(String(data.amount), NGN);
-    } catch (error) {
-      throw new BadRequestException(
-        `Malformed webhook payload: ${(error as Error).message}`,
-      );
-    }
-
-    const result = await this.ledgerService.completeWithdrawal({
-      reference: data.reference,
-      providerReportedAmount: providerAmount,
+    await this.pollWithdrawalTransaction({
+      reference: validateWebhookReference(parsed),
     });
-    if (!result) {
-      // Duplicate delivery, an unresolved reference, or a mismatched
-      // amount left pending for investigation (see
-      // LedgerService.completeWithdrawal) — either way, nothing to publish.
-      return;
-    }
-    await this.publishWithdrawalCompletedEvent(result);
   }
 
   async pollStaleFundingTransactions(): Promise<void> {
@@ -902,7 +811,7 @@ export class PaymentsService {
       verifyResult = await this.adapter.verifyCharge(transaction.reference);
     } catch (error) {
       this.logger.error(
-        `pollStaleFundingTransactions: verifyCharge failed for reference "${transaction.reference}" (${(error as Error).message}) — will retry on the next poll run`,
+        `verifyCharge failed for reference "${transaction.reference}" (${(error as Error).message}) — left pending for the next poll run`,
       );
       return;
     }
@@ -931,7 +840,7 @@ export class PaymentsService {
             providerStatus: 'failed',
           };
 
-    await this.completeFunding(facts, 'poll');
+    await this.completeFunding(facts);
   }
 
   // The withdrawal self-verify poll job (issue #31, mirrors #14's funding
@@ -956,7 +865,7 @@ export class PaymentsService {
       verifyResult = await this.adapter.verifyPayout(transaction.reference);
     } catch (error) {
       this.logger.error(
-        `pollStaleWithdrawalTransactions: verifyPayout failed for reference "${transaction.reference}" (${(error as Error).message}) — will retry on the next poll run`,
+        `verifyPayout failed for reference "${transaction.reference}" (${(error as Error).message}) — left pending for the next poll run`,
       );
       return;
     }
@@ -1025,13 +934,16 @@ export class PaymentsService {
     // Kora debits a refund when it accepts it, before the ledger settles it,
     // so the provider should hold float minus refunds still in flight. Held
     // money itself is still in the provider's balance and needs no
-    // adjustment.
-    const expected = figures.float.subtract(figures.inFlightRefunds);
+    // adjustment. A withdrawal held for review has debited float but has not
+    // been paid out, so the provider still holds that money.
+    const expected = figures.float
+      .subtract(figures.inFlightRefunds)
+      .add(figures.heldWithdrawals);
 
     // Every run's result is logged, match or mismatch — §4.4's
     // "logged and reviewable" requirement.
     this.logger.debug(
-      `reconcileFloatBalances: ${pair.provider}/${pair.currency} ledger=${figures.float.toDecimalString()} suspense=${figures.suspense.toDecimalString()} inFlightRefunds=${figures.inFlightRefunds.toDecimalString()} provider=${providerBalance.toDecimalString()}`,
+      `reconcileFloatBalances: ${pair.provider}/${pair.currency} ledger=${figures.float.toDecimalString()} suspense=${figures.suspense.toDecimalString()} inFlightRefunds=${figures.inFlightRefunds.toDecimalString()} heldWithdrawals=${figures.heldWithdrawals.toDecimalString()} provider=${providerBalance.toDecimalString()}`,
     );
 
     if (expected.equals(providerBalance)) {

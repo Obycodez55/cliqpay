@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
+import { runInTransaction } from '../../database/transaction.util';
 import { APP_CONFIG, AppConfig } from '../../config';
 import {
   SECURITY_ALERT_EVENT,
@@ -73,7 +74,7 @@ export class TransactionPinService {
       dto.pin,
       this.config.transactionPin.pepper,
     );
-    await credentialRepo.save(credential);
+    await this.saveUnlessSelfLocked(credential);
   }
 
   async initiateChangePinStepUp(
@@ -108,7 +109,7 @@ export class TransactionPinService {
       dto.newPin,
       this.config.transactionPin.pepper,
     );
-    await this.dataSource.getRepository(Credential).save(credential);
+    await this.saveUnlessSelfLocked(credential);
   }
 
   // Recovery path for a forgotten PIN — deliberately does not call
@@ -141,7 +142,23 @@ export class TransactionPinService {
     );
     credential.failedPinAttempts = 0;
     credential.pinLockedUntil = null;
-    await credentialRepo.save(credential);
+    await runInTransaction(this.dataSource, async (manager) => {
+      await this.usersService.assertNotSelfLocked(userId, manager);
+      await manager.getRepository(Credential).save(credential);
+      await this.usersService.startSecurityCooldown(
+        manager,
+        userId,
+        'pin_reset',
+        { type: 'user', id: userId },
+      );
+    });
+  }
+
+  private saveUnlessSelfLocked(credential: Credential): Promise<void> {
+    return runInTransaction(this.dataSource, async (manager) => {
+      await this.usersService.assertNotSelfLocked(credential.userId, manager);
+      await manager.getRepository(Credential).save(credential);
+    });
   }
 
   // The only surface #22 (send-money) needs — verifies a PIN against the

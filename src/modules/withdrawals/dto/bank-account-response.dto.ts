@@ -19,6 +19,12 @@ export class BankAccountResponseDto {
 
   @ApiProperty()
   createdAt: Date;
+
+  @ApiProperty({
+    description:
+      'Until this time a withdrawal total cap applies to the account; it is the creation time when the holder name matched your verified name.',
+  })
+  fullyEligibleAt: Date;
 }
 
 // `accountNumber` is passed in decrypted — the entity only ever holds the
@@ -35,5 +41,6 @@ export function toBankAccountResponse(
     accountNumber,
     accountName: bankAccount.accountName,
     createdAt: bankAccount.createdAt,
+    fullyEligibleAt: bankAccount.fullyEligibleAt,
   };
 }

@@ -12,6 +12,7 @@ import {
   seedUser,
 } from './support/funding-completion';
 import { assertInvariantHolds } from './support/ledger-invariant';
+import { Money } from '../../src/shared/primitives/money';
 
 jest.setTimeout(180_000);
 
@@ -43,7 +44,7 @@ function capturedChargeSuccess(
   };
 }
 
-describe('Funding webhook amounts when the payer or the merchant bears the provider fee', () => {
+describe('Funding webhook posts the provider-verified amount, whichever party bears the fee', () => {
   let ctx: PaymentsTestContext;
 
   beforeAll(async () => {
@@ -58,12 +59,17 @@ describe('Funding webhook amounts when the payer or the merchant bears the provi
     const { walletId } = await seedUser(ctx, 'tier3');
     const reference = await seedPendingFunding(ctx, walletId, requestedMinor);
     const { body, signature, data } = capturedChargeSuccess(fixture, reference);
+    ctx.fakeAdapter.setVerifyChargeResult(reference, {
+      status: 'success',
+      netAmount: Money.of(PRINCIPAL, 'NGN'),
+      providerFee: Money.of(BigInt(Math.round(data.fee * 100)), 'NGN'),
+    });
     await ctx.paymentsService.handleKoraWebhook(body, signature);
     const funding = await ctx.transactionRepo.findOneByOrFail({ reference });
     return { walletId, reference, funding, data };
   }
 
-  it('credits the requested amount when Kora reports the payer’s gross (the payer bears the fee)', async () => {
+  it('credits the verified principal although the webhook body carries the payer’s gross', async () => {
     const { walletId, funding, data } = await deliverCaptured(
       'checkout.webhook.charge.success.payer_bears_fee',
       PRINCIPAL,
@@ -78,7 +84,7 @@ describe('Funding webhook amounts when the payer or the merchant bears the provi
     await assertInvariantHolds(ctx.accountRepo);
   });
 
-  it('credits the requested amount when Kora reports it as is (the merchant bears the fee)', async () => {
+  it('credits the verified principal when the webhook body carries it as is', async () => {
     const { walletId, funding, data } = await deliverCaptured(
       'checkout.webhook.charge.success.merchant_bears_fee',
       PRINCIPAL,
@@ -90,7 +96,7 @@ describe('Funding webhook amounts when the payer or the merchant bears the provi
     await assertInvariantHolds(ctx.accountRepo);
   });
 
-  it('fails a funding whose reported amount matches the request under neither reading, crediting nothing', async () => {
+  it('fails a funding whose verified amount differs from the request, crediting nothing', async () => {
     const { walletId, funding } = await deliverCaptured(
       'checkout.webhook.charge.success.payer_bears_fee',
       PRINCIPAL + 50_000n,

@@ -100,6 +100,9 @@ export class ScheduledPayment {
   @Column({ type: 'varchar', nullable: true })
   visibility: ScheduleVisibility | null;
 
+  @Column({ type: 'jsonb', nullable: true })
+  riskAcknowledgement: { codes: string[]; acknowledgedAt: string } | null;
+
   @Column('date')
   startDate: string;
 

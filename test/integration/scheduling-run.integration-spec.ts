@@ -16,6 +16,7 @@ import { RunProcessor } from '../../src/modules/scheduling/internal/run.processo
 import { ScheduledPaymentAttempt } from '../../src/modules/scheduling/entities/scheduled-payment-attempt.entity';
 import { ScheduledPaymentChange } from '../../src/modules/scheduling/entities/scheduled-payment-change.entity';
 import { ScheduledPaymentRun } from '../../src/modules/scheduling/entities/scheduled-payment-run.entity';
+import { addTestRestriction } from './support/restrictions';
 
 jest.setTimeout(180_000);
 
@@ -252,7 +253,16 @@ describe('Scheduled payment execution', () => {
 
     it('sender_frozen: a freeze after creation stops the run', async () => {
       const { sender, schedule } = await seedSchedule();
-      await ctx.userRepo.update({ id: sender.userId }, { isFrozen: true });
+      await addTestRestriction(ctx.dataSource, sender.userId);
+
+      await expectFailed(schedule.id, 'sender_frozen', sender, 5_000_000n);
+    });
+
+    it('sender_frozen: a self-lock stops the run the same way', async () => {
+      const { sender, schedule } = await seedSchedule();
+      await addTestRestriction(ctx.dataSource, sender.userId, {
+        reason: 'self_lock',
+      });
 
       await expectFailed(schedule.id, 'sender_frozen', sender, 5_000_000n);
     });

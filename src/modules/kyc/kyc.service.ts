@@ -18,7 +18,21 @@ import {
 } from '../../shared/crypto/secrets.util';
 import { isUniqueViolation } from '../../database/postgres-errors.util';
 import { runInTransaction } from '../../database/transaction.util';
+import { AuditActor } from '../../shared/audit/audit.service';
 import { UsersService } from '../users/users.service';
+import { UserLimit } from './entities/user-limit.entity';
+import {
+  UserLimitsService,
+  UserLimitView,
+} from './internal/user-limits.service';
+import {
+  COOLDOWN_WINDOW_MS,
+  cooldownApplies,
+  effectiveOutflow,
+  newAccountCapEndsAt,
+  OutflowTerm,
+} from './internal/outflow-allowance';
+import { resolveUserLimit } from './internal/user-limit';
 import { KycVerification } from './entities/kyc-verification.entity';
 import { TierLimit } from './entities/tier-limit.entity';
 import { KycLivenessJob } from './entities/kyc-liveness-job.entity';
@@ -48,6 +62,8 @@ import {
   KycVerificationRequiredException,
   LivenessInProgressException,
   RecipientCannotReceiveException,
+  NewAccountInflowLimitException,
+  SecurityCooldownLimitException,
   NinAlreadyLinkedException,
   NinAlreadyVerifiedException,
   NinVerificationFailedException,
@@ -64,6 +80,8 @@ import { KycStatusResponseDto } from './dto/kyc-status-response.dto';
 // Becomes the user's own timezone once profiles carry one.
 const DEFAULT_USER_TIME_ZONE = 'Africa/Lagos';
 
+export type { UserLimitView };
+
 export type IncomingCreditVerdict =
   | { allowed: true }
   | {
@@ -71,20 +89,56 @@ export type IncomingCreditVerdict =
       reason: 'zero_cap' | 'over_cap';
       cap: Money;
       remaining: Money;
+    }
+  | {
+      allowed: false;
+      reason: 'new_account_inflow';
+      cap: Money;
+      remaining: Money;
+      windowEndsAt: Date;
     };
 
+// `receivedSince` is the start of the new-account window when it is open and
+// null otherwise, so a reader only counts inflow when it is needed.
 type BalanceAndPendingReader = (
   manager: EntityManager,
-) => Promise<{ balance: Money; pending: Money }>;
+  receivedSince: Date | null,
+) => Promise<{ balance: Money; pending: Money; received: Money }>;
 
 // The only currency with tier limits so far.
 const STATUS_CURRENCY = 'NGN';
+
+export interface LimitCheckOptions {
+  // A scheduled run passes its schedule's creation time so the security
+  // cooldown can exempt schedules that predate it.
+  scheduleCreatedAt?: Date;
+}
+
+interface OutflowPosition {
+  tier: KycTier;
+  dailyLimit: Money;
+  debitedToday: Money;
+  userLimit: Money | null;
+  pendingIncrease: { amount: Money; effectiveAt: Date } | null;
+  cooldown: { endsAt: Date; cap: Money; debitedRolling: Money } | null;
+}
 
 export interface WalletCapacity {
   tier: KycTier;
   dailyLimit: Money;
   debitedToday: Money;
   remainingToday: Money;
+  userLimit: Money | null;
+  pendingIncrease: { amount: Money; effectiveAt: Date } | null;
+  cooldown: { endsAt: Date; cap: Money; remaining: Money } | null;
+  effectiveRemaining: Money;
+  binding: OutflowTerm;
+  newAccountInflow: {
+    endsAt: Date;
+    limit: Money;
+    received: Money;
+    remaining: Money;
+  } | null;
   resetsAt: Date;
   balanceCap: Money | null;
   balance: Money;
@@ -128,13 +182,16 @@ export class KycService {
   private readonly logger = new Logger(KycService.name);
   private readonly encryptionKey: Buffer;
   private readonly identifierHashKey: Buffer;
+  private readonly cooldownLimitMinor: bigint;
 
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     @Inject(KYC_PROVIDER) private readonly kycProvider: KycProvider,
     private readonly usersService: UsersService,
     @Inject(APP_CONFIG) config: AppConfig,
+    private readonly userLimits: UserLimitsService,
   ) {
+    this.cooldownLimitMinor = BigInt(config.securityControls.cooldownLimit);
     this.encryptionKey = encryptionKeyFromHex(config.encryption.key);
     this.identifierHashKey = encryptionKeyFromHex(config.identifierHash.key);
   }
@@ -571,9 +628,16 @@ export class KycService {
     userId: string,
     amount: Money,
     readDebitedSince: (manager: EntityManager, since: Date) => Promise<Money>,
+    options: LimitCheckOptions = {},
   ): Promise<void> {
     await this.lockUser(manager, userId);
-    await this.checkDailyLimitLocked(manager, userId, amount, readDebitedSince);
+    await this.checkDailyLimitLocked(
+      manager,
+      userId,
+      amount,
+      readDebitedSince,
+      options,
+    );
   }
 
   // A tier with no daily limit (unverified) can't send at all, so it is
@@ -652,20 +716,61 @@ export class KycService {
   ): Promise<WalletCapacity> {
     const tierLimit = await this.tierLimitFor(manager, userId, currency);
     const timeZone = this.timeZoneFor(userId);
-    const dayStart = startOfDay(new Date(), timeZone);
-    const dailyLimit = Money.of(tierLimit.dailyDebitLimitMinor, currency);
-    const debitedToday = await readers.readDebitedSince(manager, dayStart);
-    const { balance, pending } = await readers.readBalanceAndPending(manager);
+    const position = await this.readOutflowPosition(
+      manager,
+      userId,
+      tierLimit,
+      currency,
+      readers.readDebitedSince,
+    );
+    const now = new Date();
+    const dayStart = startOfDay(now, timeZone);
+    const controls = await this.usersService.getSecurityControls(
+      manager,
+      userId,
+    );
+    const windowEndsAt = newAccountCapEndsAt(controls, now);
+    const { balance, pending, received } = await readers.readBalanceAndPending(
+      manager,
+      windowEndsAt && controls.tier1ReachedAt,
+    );
     const balanceCap =
       tierLimit.balanceCapMinor === null
         ? null
         : Money.of(tierLimit.balanceCapMinor, currency);
+    const inflowLimit = Money.of(this.cooldownLimitMinor, currency);
+
+    const { debitedToday, dailyLimit, cooldown } = position;
+    const effective = effectiveOutflow({
+      dailyLimit: dailyLimit.amount,
+      debitedToday: debitedToday.amount,
+      userLimit: position.userLimit?.amount ?? null,
+      cooldown: cooldown && {
+        cap: cooldown.cap.amount,
+        debitedRolling: cooldown.debitedRolling.amount,
+      },
+    });
 
     return {
       tier: tierLimit.tier,
       dailyLimit,
       debitedToday,
       remainingToday: remainingBelow(dailyLimit, debitedToday),
+      userLimit: position.userLimit,
+      pendingIncrease: position.pendingIncrease,
+      cooldown: cooldown && {
+        endsAt: cooldown.endsAt,
+        cap: cooldown.cap,
+        remaining: remainingBelow(cooldown.cap, cooldown.debitedRolling),
+      },
+      effectiveRemaining: Money.of(effective.remaining, currency),
+      binding: effective.binding,
+      newAccountInflow: windowEndsAt && {
+        endsAt: windowEndsAt,
+        limit: inflowLimit,
+        received,
+        remaining: remainingBelow(inflowLimit, received.add(pending)),
+      },
       resetsAt: startOfDay(
         new Date(dayStart.getTime() + 36 * 60 * 60 * 1000),
         timeZone,
@@ -687,15 +792,18 @@ export class KycService {
     manager: EntityManager,
     userId: string,
     amount: Money,
-    readBalance: (manager: EntityManager) => Promise<Money>,
+    readBalanceAndReceived: (
+      manager: EntityManager,
+      receivedSince: Date | null,
+    ) => Promise<{ balance: Money; received: Money }>,
   ): Promise<IncomingCreditVerdict> {
     await this.lockUser(manager, userId);
     return this.evaluateBalanceCapLocked(
       manager,
       userId,
       amount,
-      async (m) => ({
-        balance: await readBalance(m),
+      async (m, since) => ({
+        ...(await readBalanceAndReceived(m, since)),
         pending: Money.zero(amount.currency),
       }),
     );
@@ -713,6 +821,7 @@ export class KycService {
       readDebitedSince: (manager: EntityManager, since: Date) => Promise<Money>;
       readRecipientBalanceAndPending: BalanceAndPendingReader;
     },
+    options: LimitCheckOptions = {},
   ): Promise<void> {
     await this.lockUsersInKeyOrder(manager, senderId, recipientId);
     await this.checkDailyLimitLocked(
@@ -720,6 +829,7 @@ export class KycService {
       senderId,
       amount,
       readers.readDebitedSince,
+      options,
     );
     await this.checkBalanceCapLocked(
       manager,
@@ -729,6 +839,7 @@ export class KycService {
       {
         zeroCap: () => new RecipientCannotReceiveException(),
         overCap: () => new RecipientCannotReceiveException(),
+        newAccountInflow: () => new RecipientCannotReceiveException(),
       },
     );
   }
@@ -738,27 +849,100 @@ export class KycService {
     userId: string,
     amount: Money,
     readDebitedSince: (manager: EntityManager, since: Date) => Promise<Money>,
+    options: LimitCheckOptions,
   ): Promise<void> {
     const tierLimit = await this.tierLimitFor(manager, userId, amount.currency);
-
     if (tierLimit.dailyDebitLimitMinor === 0n) {
       throw new KycVerificationRequiredException();
     }
 
-    const dailyLimit = Money.of(
-      tierLimit.dailyDebitLimitMinor,
-      amount.currency,
-    );
-    const debited = await readDebitedSince(
+    const position = await this.readOutflowPosition(
       manager,
-      startOfDay(new Date(), this.timeZoneFor(userId)),
+      userId,
+      tierLimit,
+      amount.currency,
+      readDebitedSince,
+      options.scheduleCreatedAt,
     );
-    if (debited.add(amount).greaterThan(dailyLimit)) {
+    const { debitedToday } = position;
+    if (debitedToday.add(amount).greaterThan(position.dailyLimit)) {
       throw new DailyLimitExceededException(
-        dailyLimit,
-        remainingBelow(dailyLimit, debited),
+        position.dailyLimit,
+        remainingBelow(position.dailyLimit, debitedToday),
       );
     }
+    if (
+      position.userLimit &&
+      debitedToday.add(amount).greaterThan(position.userLimit)
+    ) {
+      throw new DailyLimitExceededException(
+        position.userLimit,
+        remainingBelow(position.userLimit, debitedToday),
+      );
+    }
+    const { cooldown } = position;
+    if (
+      cooldown &&
+      cooldown.debitedRolling.add(amount).greaterThan(cooldown.cap)
+    ) {
+      throw new SecurityCooldownLimitException(
+        cooldown.endsAt,
+        cooldown.cap,
+        remainingBelow(cooldown.cap, cooldown.debitedRolling),
+      );
+    }
+  }
+
+  // The one place the three outflow terms (tier limit, the user's own limit,
+  // the security cooldown cap) are read, for enforcement and for the
+  // informational view alike.
+  private async readOutflowPosition(
+    manager: EntityManager,
+    userId: string,
+    tierLimit: TierLimit,
+    currency: string,
+    readDebitedSince: (manager: EntityManager, since: Date) => Promise<Money>,
+    scheduleCreatedAt?: Date,
+  ): Promise<OutflowPosition> {
+    const now = new Date();
+    const dailyLimit = Money.of(tierLimit.dailyDebitLimitMinor, currency);
+    const debitedToday = await readDebitedSince(
+      manager,
+      startOfDay(now, this.timeZoneFor(userId)),
+    );
+
+    const resolved = resolveUserLimit(
+      await manager.getRepository(UserLimit).findOneBy({ userId }),
+      now,
+    );
+
+    const controls = await this.usersService.getSecurityControls(
+      manager,
+      userId,
+    );
+    const cooldown = cooldownApplies(controls, now, scheduleCreatedAt)
+      ? {
+          endsAt: controls.securityCooldownUntil!,
+          cap: Money.of(this.cooldownLimitMinor, currency),
+          debitedRolling: await readDebitedSince(
+            manager,
+            new Date(now.getTime() - COOLDOWN_WINDOW_MS),
+          ),
+        }
+      : null;
+
+    return {
+      tier: tierLimit.tier,
+      dailyLimit,
+      debitedToday,
+      userLimit:
+        resolved.limit === null ? null : Money.of(resolved.limit, currency),
+      pendingIncrease: resolved.pending && {
+        amount: Money.of(resolved.pending.amount, currency),
+        effectiveAt: resolved.pending.effectiveAt,
+      },
+      cooldown,
+    };
   }
 
   private async checkBalanceCapLocked(
@@ -769,6 +953,11 @@ export class KycService {
     errors: {
       zeroCap: () => Error;
       overCap: (cap: Money, remaining: Money) => Error;
+      newAccountInflow?: (
+        cap: Money,
+        remaining: Money,
+        windowEndsAt: Date,
+      ) => Error;
     },
   ): Promise<void> {
     const verdict = await this.evaluateBalanceCapLocked(
@@ -780,9 +969,24 @@ export class KycService {
     if (verdict.allowed) {
       return;
     }
-    throw verdict.reason === 'zero_cap'
-      ? errors.zeroCap()
-      : errors.overCap(verdict.cap, verdict.remaining);
+    if (verdict.reason === 'zero_cap') {
+      throw errors.zeroCap();
+    }
+    if (verdict.reason === 'new_account_inflow') {
+      throw (
+        errors.newAccountInflow?.(
+          verdict.cap,
+          verdict.remaining,
+          verdict.windowEndsAt,
+        ) ??
+        new NewAccountInflowLimitException(
+          verdict.cap,
+          verdict.remaining,
+          verdict.windowEndsAt,
+        )
+      );
+    }
+    throw errors.overCap(verdict.cap, verdict.remaining);
   }
 
   private async evaluateBalanceCapLocked(
@@ -796,22 +1000,47 @@ export class KycService {
       userId,
       requested.currency,
     );
-    if (tierLimit.balanceCapMinor === null) {
-      return { allowed: true };
-    }
     if (tierLimit.balanceCapMinor === 0n) {
       const zero = Money.zero(requested.currency);
       return { allowed: false, reason: 'zero_cap', cap: zero, remaining: zero };
     }
 
-    const cap = Money.of(tierLimit.balanceCapMinor, requested.currency);
-    const { balance, pending } = await readBalanceAndPending(manager);
-    const projected = balance.add(pending);
-    if (projected.add(requested).greaterThan(cap)) {
-      const remaining = cap.greaterThan(projected)
-        ? cap.subtract(projected)
-        : Money.zero(requested.currency);
-      return { allowed: false, reason: 'over_cap', cap, remaining };
+    const controls = await this.usersService.getSecurityControls(
+      manager,
+      userId,
+    );
+    const now = new Date();
+    const windowEndsAt = newAccountCapEndsAt(controls, now);
+    if (tierLimit.balanceCapMinor === null && windowEndsAt === null) {
+      return { allowed: true };
+    }
+
+    const { balance, pending, received } = await readBalanceAndPending(
+      manager,
+      windowEndsAt && controls.tier1ReachedAt,
+    );
+    if (tierLimit.balanceCapMinor !== null) {
+      const cap = Money.of(tierLimit.balanceCapMinor, requested.currency);
+      const projected = balance.add(pending);
+      if (projected.add(requested).greaterThan(cap)) {
+        const remaining = cap.greaterThan(projected)
+          ? cap.subtract(projected)
+          : Money.zero(requested.currency);
+        return { allowed: false, reason: 'over_cap', cap, remaining };
+      }
+    }
+    if (windowEndsAt) {
+      const cap = Money.of(this.cooldownLimitMinor, requested.currency);
+      const projected = received.add(pending);
+      if (projected.add(requested).greaterThan(cap)) {
+        return {
+          allowed: false,
+          reason: 'new_account_inflow',
+          cap,
+          remaining: remainingBelow(cap, projected),
+          windowEndsAt,
+        };
+      }
     }
     return { allowed: true };
   }
@@ -833,6 +1062,40 @@ export class KycService {
 
   private timeZoneFor(_userId: string): string {
     return DEFAULT_USER_TIME_ZONE;
+  }
+
+  lowerDailyOutflowLimit(
+    userId: string,
+    amount: number,
+  ): Promise<UserLimitView> {
+    return this.userLimits.lower(userId, amount);
+  }
+
+  // Takes effect 24 hours later; the caller owns the step-up, PIN and alert.
+  requestDailyOutflowLimitRaise(
+    userId: string,
+    amount: number,
+  ): Promise<UserLimitView> {
+    return this.userLimits.raise(userId, amount);
+  }
+
+  cancelDailyOutflowLimitRaise(userId: string): Promise<UserLimitView> {
+    return this.userLimits.cancelPending(userId);
+  }
+
+  cancelPendingLimitRaiseIfAny(
+    manager: EntityManager,
+    userId: string,
+    actor: AuditActor,
+  ): Promise<boolean> {
+    return this.userLimits.cancelPendingIfAny(manager, userId, actor);
+  }
+
+  async getVerifiedLegalName(userId: string): Promise<string | null> {
+    const record = await this.dataSource
+      .getRepository(KycVerification)
+      .findOneBy({ userId });
+    return record?.verifiedLegalName ?? null;
   }
 
   async getStatus(userId: string): Promise<KycStatusResponseDto> {

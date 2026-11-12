@@ -37,10 +37,15 @@ export const TRANSACTION_TYPES = [
   'profit_withdrawal',
   'bill_split',
   'scheduled',
+  'fraud_hold',
+  'fraud_hold_release',
+  'scam_recovery',
 ] as const;
 export type TransactionType = (typeof TRANSACTION_TYPES)[number];
 export const TRANSACTION_STATUSES = [
   'pending',
+  // Withdrawals only: posted but held for review, the payout not yet sent.
+  'under_review',
   'completed',
   'failed',
   'reversed',
@@ -92,6 +97,7 @@ export interface FundingRefundTransactionMetadata {
 export interface TransferTransactionMetadata {
   platformFee: { amount: string; currency: string };
   note?: string;
+  riskAcknowledgement?: { codes: string[]; acknowledgedAt: string };
 }
 
 // §4.2's Withdrawal posting example: `metadata: { bank_account, net_amount }`.
@@ -127,6 +133,10 @@ export interface ChargebackTransactionMetadata {
   disputeReference: string;
 }
 
+export interface ScamCaseTransactionMetadata {
+  caseReference: string;
+}
+
 /**
  * Metadata is shaped per transaction type, not a free-form bag — `payments`
  * writing an untyped field here and casting it back on read is exactly the
@@ -139,7 +149,8 @@ export type TransactionMetadata =
   | TransferTransactionMetadata
   | WithdrawalTransactionMetadata
   | WithdrawalReversalTransactionMetadata
-  | ChargebackTransactionMetadata;
+  | ChargebackTransactionMetadata
+  | ScamCaseTransactionMetadata;
 
 /**
  * See docs/architecture.md §5. `sender_wallet_id`/`recipient_wallet_id` are
@@ -164,6 +175,10 @@ export type TransactionMetadata =
 ])
 @Index('IDX_transactions_sender_wallet_created_at', [
   'senderWalletId',
+  'createdAt',
+])
+@Index('IDX_transactions_recipient_wallet_created_at', [
+  'recipientWalletId',
   'createdAt',
 ])
 @Index('IDX_transactions_held_funding', ['createdAt'], {

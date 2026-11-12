@@ -328,6 +328,7 @@ describe('Scheduled payments to bank accounts: settling', () => {
             reference: refOf(schedule.id, 1, 1),
             scheduleId: schedule.id,
             runNumber: 1,
+            scheduleCreatedAt: new Date(0),
           }),
       ).rejects.toMatchObject({ failureCode: 'payout_rejected' });
 
@@ -379,6 +380,7 @@ describe('Scheduled payments to bank accounts: settling', () => {
           amount: Number(AMOUNT),
           reference,
           scheduleId,
+          scheduleCreatedAt: new Date(0),
           runNumber: 1,
         });
 

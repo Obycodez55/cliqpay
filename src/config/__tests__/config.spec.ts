@@ -9,6 +9,8 @@ const baseEnv = (): NodeJS.ProcessEnv => ({
   IDENTIFIER_HASH_KEY: '3'.repeat(64),
   RECONCILIATION_ALERT_EMAIL: 'ops@cliqpay.test',
   INTERNAL_API_SECRET: '2'.repeat(64),
+  SELF_LOCK_TOKEN_KEY: '4'.repeat(64),
+  SELF_LOCK_LINK_URL: 'https://app.cliqpay.test/lock',
 });
 
 describe('IDENTIFIER_HASH_KEY', () => {
@@ -125,5 +127,83 @@ describe('scheduled payments', () => {
     expect(() =>
       loadConfig({ ...baseEnv(), SCHEDULED_PAYMENT_WINDOW_START: '6am' }),
     ).toThrow('SCHEDULED_PAYMENT_WINDOW_START');
+  });
+});
+
+describe('device binding', () => {
+  it('requires device keys and shadows attestation by default', () => {
+    const config = loadConfig(baseEnv());
+
+    expect(config.device.keyRequired).toBe(true);
+    expect(config.device.attestation.mode).toBe('shadow');
+    expect(config.device.attestation.provider).toBe('fake');
+  });
+
+  it('allows DEVICE_KEY_REQUIRED=false outside production', () => {
+    expect(
+      loadConfig({ ...baseEnv(), DEVICE_KEY_REQUIRED: 'false' }).device
+        .keyRequired,
+    ).toBe(false);
+  });
+
+  it('refuses DEVICE_KEY_REQUIRED=false in production', () => {
+    expect(() =>
+      loadConfig({
+        ...productionEnv(),
+        DEVICE_KEY_REQUIRED: 'false',
+      }),
+    ).toThrow('DEVICE_KEY_REQUIRED must not be "false" in production');
+  });
+
+  it('refuses the fake attestation provider in production unless attestation is off', () => {
+    expect(() =>
+      loadConfig({ ...productionEnv(), DEVICE_ATTESTATION_PROVIDER: 'fake' }),
+    ).toThrow('DEVICE_ATTESTATION_PROVIDER');
+    expect(
+      loadConfig({
+        ...productionEnv(),
+        DEVICE_ATTESTATION_PROVIDER: 'fake',
+        DEVICE_ATTESTATION_MODE: 'off',
+      }).device.attestation.mode,
+    ).toBe('off');
+  });
+
+  it('requires the Apple and Google settings for the platform provider', () => {
+    expect(() =>
+      loadConfig({ ...baseEnv(), DEVICE_ATTESTATION_PROVIDER: 'platform' }),
+    ).toThrow('APPLE_TEAM_ID');
+  });
+});
+
+function productionEnv(): NodeJS.ProcessEnv {
+  return {
+    ...baseEnv(),
+    NODE_ENV: 'production',
+    PAYMENT_PROVIDER: 'kora',
+    KORA_SECRET_KEY: 'k',
+    KORA_WEBHOOK_URL: 'https://example.com/hook',
+    PAYMENT_REDIRECT_URL: 'https://example.com/back',
+    KYC_PROVIDER: 'prembly',
+    PREMBLY_SECRET_KEY: 'p',
+  };
+}
+
+describe('SELF_LOCK_TOKEN_KEY', () => {
+  it('is exposed as selfLock.tokenKey and selfLock.linkUrl', () => {
+    const { selfLock } = loadConfig(baseEnv());
+    expect(selfLock.tokenKey).toBe('4'.repeat(64));
+    expect(selfLock.linkUrl).toBe('https://app.cliqpay.test/lock');
+  });
+
+  it('is required', () => {
+    const env = baseEnv();
+    delete env.SELF_LOCK_TOKEN_KEY;
+    expect(() => loadConfig(env)).toThrow('SELF_LOCK_TOKEN_KEY');
+  });
+
+  it('must differ from the other keys', () => {
+    expect(() =>
+      loadConfig({ ...baseEnv(), SELF_LOCK_TOKEN_KEY: '3'.repeat(64) }),
+    ).toThrow('SELF_LOCK_TOKEN_KEY must differ from IDENTIFIER_HASH_KEY');
   });
 });

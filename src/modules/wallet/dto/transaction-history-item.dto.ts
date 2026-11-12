@@ -34,6 +34,9 @@ export class TransactionHistoryItemDto {
       'profit_withdrawal',
       'bill_split',
       'scheduled',
+      'fraud_hold',
+      'fraud_hold_release',
+      'scam_recovery',
     ],
   })
   type: TransactionHistoryEntry['type'];
@@ -41,6 +44,7 @@ export class TransactionHistoryItemDto {
   @ApiProperty({
     enum: [
       'pending',
+      'under_review',
       'completed',
       'failed',
       'reversed',

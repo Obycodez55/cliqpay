@@ -218,6 +218,138 @@ describe('refund_attention_required', () => {
   });
 });
 
+describe('risk_review_overdue', () => {
+  const payload = {
+    email: 'ops@cliqpay.test',
+    overdueFlags: 2,
+    overdueWithdrawals: 1,
+    oldestHours: 30,
+    flagIds: ['flag-1', 'flag-2'],
+    withdrawalReferences: ['wd-1'],
+    occurredAt: '2026-11-11T10:00:00.000Z',
+  };
+
+  it('counts what is overdue and lists the ids to look at', () => {
+    const email = emailTemplates.risk_review_overdue!(payload);
+
+    expect(email.subject).toContain('2 flag(s)');
+    expect(email.subject).toContain('1 held withdrawal(s)');
+    for (const part of [email.html, email.text]) {
+      expect(part).toContain('flag-1');
+      expect(part).toContain('flag-2');
+      expect(part).toContain('wd-1');
+      expect(part).toContain('30 hours');
+    }
+  });
+
+  it('has no in-app template: it is addressed to ops, not a user', () => {
+    expect(inAppTemplates.risk_review_overdue).toBeUndefined();
+  });
+});
+
+describe('scam case notifications', () => {
+  const base = {
+    userId: 'user-1',
+    email: 'user@cliqpay.test',
+    caseReference: 'SCM-000123',
+    currency: 'NGN',
+  };
+
+  it('tells the recipient what is on hold and which case it is', () => {
+    const payload = { ...base, amount: '20000.00', held: true };
+
+    const email = emailTemplates.scam_funds_held!(payload);
+
+    for (const part of [email.html, email.text]) {
+      expect(part).toContain('NGN 20000.00');
+      expect(part).toContain('SCM-000123');
+    }
+    expect(pushTemplates.scam_funds_held!(payload).body).toContain('on hold');
+    expect(inAppTemplates.scam_funds_held!(payload).dedupeKey).toBe(
+      'SCM-000123-held',
+    );
+  });
+
+  it('does not claim an amount is held when the recipient had nothing', () => {
+    const body = pushTemplates.scam_funds_held!({
+      ...base,
+      amount: '0.00',
+      held: false,
+    }).body;
+
+    expect(body).toContain('under review');
+    expect(body).not.toContain('0.00');
+  });
+
+  it('gives the reporter the reason when a case is rejected', () => {
+    const body = pushTemplates.scam_case_resolved!({
+      ...base,
+      party: 'reporter',
+      outcome: 'rejected',
+      amount: '0.00',
+      reason: 'The transfer matches an order.',
+    }).body;
+
+    expect(body).toContain('not upheld');
+    expect(body).toContain('The transfer matches an order.');
+  });
+
+  it('says what came back to the reporter, or that nothing was left', () => {
+    const upheld = {
+      ...base,
+      party: 'reporter' as const,
+      outcome: 'upheld' as const,
+      reason: null,
+    };
+
+    expect(
+      pushTemplates.scam_case_resolved!({ ...upheld, amount: '500.00' }).body,
+    ).toContain('NGN 500.00 has been returned');
+    expect(
+      pushTemplates.scam_case_resolved!({ ...upheld, amount: '0.00' }).body,
+    ).toContain('Nothing was left');
+  });
+
+  it('tells the recipient the held amount is released or went to the sender', () => {
+    const recipient = { ...base, party: 'recipient' as const, reason: null };
+
+    expect(
+      pushTemplates.scam_case_resolved!({
+        ...recipient,
+        outcome: 'rejected',
+        amount: '500.00',
+      }).body,
+    ).toContain('released to your balance');
+    expect(
+      pushTemplates.scam_case_resolved!({
+        ...recipient,
+        outcome: 'upheld',
+        amount: '0.00',
+      }).body,
+    ).toContain('returned to the sender');
+  });
+
+  it('lists the due cases for ops and has no in-app template', () => {
+    const payload = {
+      email: 'ops@cliqpay.test',
+      dueSoon: 2,
+      overdue: 1,
+      caseReferences: ['SCM-000001', 'SCM-000002'],
+      occurredAt: '2026-11-11T10:00:00.000Z',
+    };
+
+    const email = emailTemplates.scam_cases_due!(payload);
+
+    expect(email.subject).toContain('2 soon');
+    expect(email.subject).toContain('1 overdue');
+    for (const part of [email.html, email.text]) {
+      expect(part).toContain('SCM-000001');
+      expect(part).toContain('SCM-000002');
+    }
+    expect(inAppTemplates.scam_cases_due).toBeUndefined();
+  });
+});
+
 describe('reconciliation_mismatch', () => {
   it('shows the suspense balance and the refunds in flight next to the balances', () => {
     const email = emailTemplates.reconciliation_mismatch!({
@@ -272,5 +404,45 @@ describe('mfa_challenge_otp email', () => {
     expect(email.subject).toBe(`Your Cliqpay code to ${purpose}`);
     expect(email.text).toContain(`Your Cliqpay code to ${purpose} is: 123456`);
     expect(email.text).not.toContain('sign-in');
+  });
+});
+
+describe('self-lock alert content', () => {
+  const alert = {
+    userId: 'u1',
+    email: 'a@example.com',
+    message: 'A bank account was added.',
+    occurredAt: '2026-08-15T10:32:47.123Z',
+  };
+
+  it('puts the lock link in the email and the push data when the alert has one', () => {
+    const lockUrl = 'https://app.cliqpay.test/lock?token=abc';
+    const email = emailTemplates.security_alert!({ ...alert, lockUrl });
+    expect(email.text).toContain(`lock my account: ${lockUrl}`);
+    expect(pushTemplates.security_alert!({ ...alert, lockUrl }).data).toEqual({
+      lockUrl,
+    });
+  });
+
+  it('leaves the in-app row without the link', () => {
+    const content = inAppTemplates.security_alert!({
+      ...alert,
+      lockUrl: 'https://app.cliqpay.test/lock?token=abc',
+    });
+    expect(JSON.stringify(content)).not.toContain('token=abc');
+  });
+
+  it('renders the lock confirmation for email and push', () => {
+    const payload = {
+      userId: 'u1',
+      email: 'a@example.com',
+      occurredAt: alert.occurredAt,
+    };
+    expect(emailTemplates.account_self_locked!(payload).subject).toBe(
+      'Your Cliqpay account is locked',
+    );
+    expect(pushTemplates.account_self_locked!(payload).title).toBe(
+      'Your account is locked',
+    );
   });
 });

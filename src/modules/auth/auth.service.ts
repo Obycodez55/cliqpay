@@ -1,7 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
-import { DataSource, Not } from 'typeorm';
+import { DataSource, EntityManager, IsNull, Not } from 'typeorm';
 import { runInTransaction } from '../../database/transaction.util';
 import {
   DomainEventEnvelope,
@@ -19,8 +19,12 @@ import { EventBusService } from '../../shared/events/event-bus.service';
 import { LedgerService } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
 import { Credential } from './entities/credential.entity';
+import { MfaChallenge } from './entities/mfa-challenge.entity';
 import { Session } from './entities/session.entity';
+import { TrustedDevice } from './entities/trusted-device.entity';
+import { VerificationCode } from './entities/verification-code.entity';
 import { RegisterDto } from './dto/register.dto';
+import { UnlockAccountDto } from './dto/unlock-account.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { ChangeEmailDto } from './dto/change-email.dto';
 import { ConfirmChangeEmailDto } from './dto/confirm-change-email.dto';
@@ -38,6 +42,8 @@ import {
   InvalidCredentialsException,
   MfaChallengeInvalidException,
   PhoneAlreadyVerifiedException,
+  AccountNotSelfLockedException,
+  UnlockRequiresPasswordResetException,
   VerificationCodeInvalidException,
   VerificationCodeRateLimitedException,
 } from './internal/errors';
@@ -63,6 +69,8 @@ const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000; // 1 hour
  */
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly usersService: UsersService,
@@ -293,23 +301,32 @@ export class AuthService {
     newPassword: string,
     revokeOtherSessions: boolean,
   ): Promise<void> {
-    const { userId } = await this.verificationCodeService.consume(
-      'password_reset',
-      token,
-    );
-
     const passwordHash = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
-    await this.dataSource
-      .getRepository(Credential)
-      .update({ userId }, { passwordHash });
+    await runInTransaction(this.dataSource, async (manager) => {
+      const { userId } = await this.verificationCodeService.consumeWithin(
+        manager,
+        'password_reset',
+        token,
+        (ownerId) => this.usersService.lockUser(manager, ownerId),
+      );
+      await manager
+        .getRepository(Credential)
+        .update({ userId }, { passwordHash, passwordResetAt: new Date() });
+      await this.usersService.startSecurityCooldown(
+        manager,
+        userId,
+        'password_reset',
+        { type: 'user', id: userId },
+      );
 
-    if (revokeOtherSessions) {
-      // Unauthenticated flow — no session is "completing the request" to
-      // exclude, so every session for the user is revoked.
-      await this.dataSource
-        .getRepository(Session)
-        .update({ userId }, { status: 'revoked' });
-    }
+      if (revokeOtherSessions) {
+        // Unauthenticated flow — no session is "completing the request" to
+        // exclude, so every session for the user is revoked.
+        await manager
+          .getRepository(Session)
+          .update({ userId }, { status: 'revoked' });
+      }
+    });
   }
 
   // Step 1 of 2 for change-password (see docs/adr/0006 — 2 calls, not 3, per
@@ -338,8 +355,9 @@ export class AuthService {
       throw new MfaChallengeInvalidException();
     }
 
-    const credentialRepo = this.dataSource.getRepository(Credential);
-    const credential = await credentialRepo.findOneByOrFail({ userId });
+    const credential = await this.dataSource
+      .getRepository(Credential)
+      .findOneByOrFail({ userId });
 
     const passwordMatches = await bcrypt.compare(
       dto.currentPassword,
@@ -353,16 +371,24 @@ export class AuthService {
       dto.newPassword,
       BCRYPT_SALT_ROUNDS,
     );
-    await credentialRepo.save(credential);
+    await runInTransaction(this.dataSource, async (manager) => {
+      await manager.getRepository(Credential).save(credential);
+      await this.usersService.startSecurityCooldown(
+        manager,
+        userId,
+        'password_changed',
+        { type: 'user', id: userId },
+      );
 
-    if (dto.revokeOtherSessions) {
-      await this.dataSource
-        .getRepository(Session)
-        .update(
-          { userId, status: 'active', id: Not(sessionId) },
-          { status: 'revoked' },
-        );
-    }
+      if (dto.revokeOtherSessions) {
+        await manager
+          .getRepository(Session)
+          .update(
+            { userId, status: 'active', id: Not(sessionId) },
+            { status: 'revoked' },
+          );
+      }
+    });
   }
 
   // Step-up for TOTP enrollment (docs/architecture.md §3.8 lists "MFA
@@ -394,6 +420,7 @@ export class AuthService {
     if (challengeUserId !== userId) {
       throw new MfaChallengeInvalidException();
     }
+    await this.usersService.assertNotSelfLocked(userId);
     return this.mfaService.enrollTotp(userId);
   }
 
@@ -425,6 +452,8 @@ export class AuthService {
     if (challengeUserId !== userId) {
       throw new MfaChallengeInvalidException();
     }
+
+    await this.usersService.assertNotSelfLocked(userId);
 
     // Same 60s/5-per-hour bound as every other email_verification send
     // (resendEmailVerification) — without it, a caller could repeatedly
@@ -475,16 +504,25 @@ export class AuthService {
       throw new VerificationCodeInvalidException();
     }
 
-    await this.usersService.confirmPendingEmail(userId);
+    await runInTransaction(this.dataSource, async (manager) => {
+      await this.usersService.assertNotSelfLocked(userId, manager);
+      await this.usersService.confirmPendingEmail(userId, manager);
+      await this.usersService.startSecurityCooldown(
+        manager,
+        userId,
+        'email_changed',
+        { type: 'user', id: userId },
+      );
 
-    if (dto.revokeOtherSessions) {
-      await this.dataSource
-        .getRepository(Session)
-        .update(
-          { userId, status: 'active', id: Not(sessionId) },
-          { status: 'revoked' },
-        );
-    }
+      if (dto.revokeOtherSessions) {
+        await manager
+          .getRepository(Session)
+          .update(
+            { userId, status: 'active', id: Not(sessionId) },
+            { status: 'revoked' },
+          );
+      }
+    });
   }
 
   // Step 1 of 3 for change-phone (see docs/adr/0006, issue #10) — same
@@ -512,6 +550,8 @@ export class AuthService {
     if (challengeUserId !== userId) {
       throw new MfaChallengeInvalidException();
     }
+
+    await this.usersService.assertNotSelfLocked(userId);
 
     // Same 60s/5-per-hour bound as every other phone_verification send
     // (resendPhoneVerification) — SMS costs real money per send, so this
@@ -558,16 +598,25 @@ export class AuthService {
       throw new VerificationCodeInvalidException();
     }
 
-    await this.usersService.confirmPendingPhone(userId);
+    await runInTransaction(this.dataSource, async (manager) => {
+      await this.usersService.assertNotSelfLocked(userId, manager);
+      await this.usersService.confirmPendingPhone(userId, manager);
+      await this.usersService.startSecurityCooldown(
+        manager,
+        userId,
+        'phone_changed',
+        { type: 'user', id: userId },
+      );
 
-    if (dto.revokeOtherSessions) {
-      await this.dataSource
-        .getRepository(Session)
-        .update(
-          { userId, status: 'active', id: Not(sessionId) },
-          { status: 'revoked' },
-        );
-    }
+      if (dto.revokeOtherSessions) {
+        await manager
+          .getRepository(Session)
+          .update(
+            { userId, status: 'active', id: Not(sessionId) },
+            { status: 'revoked' },
+          );
+      }
+    });
   }
 
   // The only surface #22 (send-money) needs — delegates to
@@ -615,6 +664,142 @@ export class AuthService {
     );
     if (challengeUserId !== userId) {
       throw new MfaChallengeInvalidException();
+    }
+  }
+
+  async countUsersBoundToDevice(
+    deviceId: string,
+    since: Date,
+  ): Promise<number> {
+    const row = await this.dataSource
+      .getRepository(TrustedDevice)
+      .createQueryBuilder('device')
+      .select('COUNT(DISTINCT device.userId)', 'count')
+      .where('device.deviceId = :deviceId', { deviceId })
+      .andWhere('device.createdAt >= :since', { since })
+      .getRawOne<{ count: string }>();
+    return Number(row?.count ?? 0);
+  }
+
+  // A reviewer restores an address the owner controls after verifying it out
+  // of band. Everything that could still be waiting in the old address is
+  // voided: sessions, trusted devices, unused codes and open MFA challenges.
+  async recoverEmail(
+    userId: string,
+    newEmail: string,
+    reviewerId: string,
+  ): Promise<void> {
+    await runInTransaction(this.dataSource, async (manager) => {
+      await this.usersService.recoverEmail(manager, {
+        userId,
+        newEmail,
+        reviewerId,
+      });
+      await this.revokeAllAccess(manager, userId);
+    });
+  }
+
+  // Cuts off everything issued so far: sessions, trusted devices (revoking a
+  // device revokes its key), unused verification codes and open MFA
+  // challenges. The caller owns the transaction.
+  async revokeAllAccess(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<{
+    sessionsRevoked: number;
+    devicesRevoked: number;
+    codesVoided: number;
+    challengesFailed: number;
+  }> {
+    const sessions = await manager
+      .getRepository(Session)
+      .update({ userId, status: 'active' }, { status: 'revoked' });
+    const devices = await manager
+      .getRepository(TrustedDevice)
+      .update({ userId, revokedAt: IsNull() }, { revokedAt: new Date() });
+    const codes = await manager
+      .getRepository(VerificationCode)
+      .update({ userId, usedAt: IsNull() }, { usedAt: new Date() });
+    const challenges = await manager
+      .createQueryBuilder()
+      .update(MfaChallenge)
+      .set({ status: 'failed' })
+      .where(
+        `status = 'pending' AND method_id IN (SELECT id FROM mfa_methods WHERE user_id = :userId)`,
+        { userId },
+      )
+      .execute();
+    return {
+      sessionsRevoked: sessions.affected ?? 0,
+      devicesRevoked: devices.affected ?? 0,
+      codesVoided: codes.affected ?? 0,
+      challengesFailed: challenges.affected ?? 0,
+    };
+  }
+
+  initiateUnlockStepUp(userId: string): Promise<StepUpChallengeResponseDto> {
+    return this.initiateStepUp(userId, 'unlock_account');
+  }
+
+  // Needs a password reset completed after the lock (an emailed reset, not a
+  // change from a session), then the step-up and the PIN. The reset is checked
+  // again under the user's lock when the restriction is lifted.
+  async unlock(userId: string, dto: UnlockAccountDto): Promise<void> {
+    await this.assertPasswordResetAfterLock(this.dataSource.manager, userId);
+    await this.verifyStepUp(userId, dto.challengeId, dto.code);
+    await this.transactionPinService.verifyTransactionPin(userId, dto.pin);
+
+    await runInTransaction(this.dataSource, async (manager) => {
+      await this.usersService.lockUser(manager, userId);
+      await this.assertPasswordResetAfterLock(manager, userId);
+      await this.usersService.liftRestriction(manager, {
+        userId,
+        reason: 'self_lock',
+        sourceId: userId,
+        actor: { type: 'user', id: userId },
+      });
+    });
+    await this.publishUnlockAlert(userId);
+  }
+
+  private async assertPasswordResetAfterLock(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<void> {
+    const lock = await this.usersService.getOpenSelfLock(manager, userId);
+    if (!lock) {
+      throw new AccountNotSelfLockedException();
+    }
+    const credential = await manager
+      .getRepository(Credential)
+      .findOneByOrFail({ userId });
+    if (
+      !credential.passwordResetAt ||
+      credential.passwordResetAt <= lock.createdAt
+    ) {
+      throw new UnlockRequiresPasswordResetException();
+    }
+  }
+
+  private async publishUnlockAlert(userId: string): Promise<void> {
+    try {
+      const user = await this.usersService.findById(userId);
+      const occurredAt = new Date();
+      await this.eventBus.publish<string, SecurityAlertEventPayload>({
+        name: SECURITY_ALERT_EVENT,
+        payload: {
+          userId,
+          email: user.email,
+          message:
+            'Your account was unlocked after a password reset. If this wasn’t you, lock it again now.',
+          occurredAt: occurredAt.toISOString(),
+        },
+        occurredAt,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Account ${userId} unlocked, but publishing the security alert failed (${(error as Error).message}) — this will not be retried`,
+      );
     }
   }
 }

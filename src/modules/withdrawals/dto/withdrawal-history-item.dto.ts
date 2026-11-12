@@ -20,8 +20,10 @@ export class WithdrawalHistoryItemDto {
   @ApiProperty()
   reference: string;
 
-  @ApiProperty({ enum: ['pending', 'completed', 'reversed'] })
-  status: 'pending' | 'completed' | 'reversed';
+  @ApiProperty({
+    enum: ['pending', 'under_review', 'completed', 'reversed'],
+  })
+  status: 'pending' | 'under_review' | 'completed' | 'reversed';
 
   @ApiProperty({ type: MoneyDto })
   amount: MoneyDto;
@@ -40,15 +42,15 @@ export class WithdrawalHistoryItemDto {
 }
 
 // `status` is narrowed from ledger's full TransactionStatus — a `type:
-// 'withdrawal'` row can only ever be 'pending', 'completed', or 'reversed'
-// (see postWithdrawal/completeWithdrawal/reverseWithdrawal in
+// 'withdrawal'` row can only ever be 'pending', 'under_review', 'completed',
+// or 'reversed' (see postWithdrawal/completeWithdrawal/reverseWithdrawal in
 // LedgerService); 'failed'/'disputed' belong to other transaction types.
 export function toWithdrawalHistoryItem(
   entry: WithdrawalHistoryEntry,
 ): WithdrawalHistoryItemDto {
   return {
     reference: entry.reference,
-    status: entry.status as 'pending' | 'completed' | 'reversed',
+    status: entry.status as WithdrawalHistoryItemDto['status'],
     amount: entry.amount.toJSON(),
     platformFee: entry.metadata.platformFee,
     providerFee: entry.metadata.providerFee,

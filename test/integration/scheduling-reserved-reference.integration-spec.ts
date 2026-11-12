@@ -112,6 +112,7 @@ describe('The sched_ reference prefix is reserved', () => {
           .http()
           .post('/disputes/chargebacks')
           .set('X-Internal-Secret', TEST_INTERNAL_API_SECRET)
+          .set('X-Reviewer-Id', 'reviewer-1')
           .send({
             fundingReference: 'cliqpay-fund-1',
             amount: 100_000,

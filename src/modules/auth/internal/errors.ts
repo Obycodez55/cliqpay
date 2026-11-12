@@ -147,3 +147,101 @@ export class TransactionPinLockedException extends DomainException {
     );
   }
 }
+
+export class DeviceChallengeInvalidException extends DomainException {
+  readonly code = 'DEVICE_CHALLENGE_INVALID';
+  constructor() {
+    super(
+      'Device challenge is unknown, expired, already used, or for a different device or purpose',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+export class DeviceSignatureRequiredException extends DomainException {
+  readonly code = 'DEVICE_SIGNATURE_REQUIRED';
+  constructor() {
+    super(
+      'A device challenge nonce and signature are required',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+export class DevicePublicKeyRequiredException extends DomainException {
+  readonly code = 'DEVICE_PUBLIC_KEY_REQUIRED';
+  constructor() {
+    super('devicePublicKey is required', HttpStatus.BAD_REQUEST);
+  }
+}
+
+export class DevicePublicKeyInvalidException extends DomainException {
+  readonly code = 'DEVICE_PUBLIC_KEY_INVALID';
+  constructor(reason: string) {
+    super(reason, HttpStatus.BAD_REQUEST);
+  }
+}
+
+export class DeviceAttestationFailedException extends DomainException {
+  readonly code = 'DEVICE_ATTESTATION_FAILED';
+  constructor() {
+    super('This device could not be attested', HttpStatus.FORBIDDEN);
+  }
+}
+
+export class ActionSignatureRequiredException extends DomainException {
+  readonly code = 'ACTION_SIGNATURE_REQUIRED';
+  constructor() {
+    super(
+      'X-Device-Signature and X-Signature-Timestamp headers are required for this action',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+export class ActionSignatureStaleException extends DomainException {
+  readonly code = 'ACTION_SIGNATURE_STALE';
+  constructor() {
+    super(
+      'X-Signature-Timestamp must be Unix seconds within 2 minutes of server time',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+export class ActionSignatureInvalidException extends DomainException {
+  readonly code = 'ACTION_SIGNATURE_INVALID';
+  constructor() {
+    super(
+      'The device signature does not match this request',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+export class DeviceKeyNotRegisteredException extends DomainException {
+  readonly code = 'DEVICE_KEY_NOT_REGISTERED';
+  constructor() {
+    super(
+      'No trusted device with a registered key exists for this device',
+      HttpStatus.UNAUTHORIZED,
+    );
+  }
+}
+
+export class AccountNotSelfLockedException extends DomainException {
+  readonly code = 'ACCOUNT_NOT_SELF_LOCKED';
+  constructor() {
+    super('This account is not locked', HttpStatus.CONFLICT);
+  }
+}
+
+export class UnlockRequiresPasswordResetException extends DomainException {
+  readonly code = 'UNLOCK_REQUIRES_PASSWORD_RESET';
+  constructor() {
+    super(
+      'Reset your password by email before unlocking this account',
+      HttpStatus.FORBIDDEN,
+    );
+  }
+}

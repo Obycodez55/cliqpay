@@ -13,6 +13,7 @@ import {
   AMOUNT,
   FEE,
 } from './support/scheduling-bank-run-helpers';
+import { addTestRestriction } from './support/restrictions';
 
 jest.setTimeout(180_000);
 
@@ -342,10 +343,7 @@ describe('Scheduled payments to bank accounts: running', () => {
       const frozenRun = await insertRun(frozen.schedule.id, 1, {
         keepNextRun: true,
       });
-      await ctx.userRepo.update(
-        { id: frozen.sender.userId },
-        { isFrozen: true },
-      );
+      await addTestRestriction(ctx.dataSource, frozen.sender.userId);
       await execute(frozenRun);
       expect((await attemptsOf(frozenRun.id))[0].failureCode).toBe(
         'sender_frozen',

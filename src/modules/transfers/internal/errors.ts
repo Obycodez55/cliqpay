@@ -152,3 +152,15 @@ export class RecipientUnableToReceiveException extends DomainException {
     );
   }
 }
+
+export class RiskAcknowledgementRequiredException extends DomainException {
+  readonly code = 'RISK_ACKNOWLEDGEMENT_REQUIRED';
+  readonly details: { warnings: string[] };
+  constructor(warnings: string[]) {
+    super(
+      'Please review the warnings about this payment and confirm before sending',
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
+    this.details = { warnings };
+  }
+}

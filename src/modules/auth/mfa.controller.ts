@@ -3,16 +3,19 @@ import {
   Controller,
   HttpCode,
   HttpStatus,
-  Inject,
   Post,
   Req,
   Res,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiHeader,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Request, Response } from 'express';
-import { APP_CONFIG, AppConfig } from '../../config';
 import { AuthService } from './auth.service';
 import { ConfirmTotpDto } from './dto/confirm-totp.dto';
 import { EnrollTotpDto } from './dto/enroll-totp.dto';
@@ -20,12 +23,12 @@ import { EnrollTotpResponseDto } from './dto/enroll-totp-response.dto';
 import { StepUpChallengeResponseDto } from './dto/step-up-challenge-response.dto';
 import { TokenPairResponseDto } from './dto/token-pair-response.dto';
 import { VerifyMfaChallengeDto } from './dto/verify-mfa-challenge.dto';
-import { setTrustedDeviceCookie } from './internal/cookie.util';
+import { readDeviceId } from '../../common/device/device-id.util';
 import {
   AuthenticatedRequest,
   JwtAuthGuard,
 } from '../../common/guards/jwt-auth.guard';
-import { MfaService, TRUSTED_DEVICE_TTL_MS } from './mfa.service';
+import { MfaService } from './mfa.service';
 import { extractDeviceMetadata } from './internal/device-metadata.util';
 import { SessionService } from './session.service';
 
@@ -36,7 +39,6 @@ export class MfaController {
     private readonly mfaService: MfaService,
     private readonly authService: AuthService,
     private readonly sessionService: SessionService,
-    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   // Step-up initiate for TOTP enrollment — see docs/architecture.md §3.8
@@ -87,7 +89,17 @@ export class MfaController {
   @Post('verify')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  @ApiOperation({ summary: 'Verify an MFA challenge and issue a token pair' })
+  @ApiHeader({
+    name: 'X-Device-Id',
+    required: true,
+    description: 'Stable app-install id; the device being trusted.',
+  })
+  @ApiOperation({
+    summary: 'Verify an MFA challenge and issue a token pair',
+    description:
+      'Trusts this device: registers `devicePublicKey`, revokes every other trusted device and session for the user, ' +
+      'and returns the new trusted-device token in the `X-Trusted-Device-Token` response header.',
+  })
   async verify(
     @Body() dto: VerifyMfaChallengeDto,
     @Req() req: Request,
@@ -96,14 +108,10 @@ export class MfaController {
     const { tokens, trustedDeviceToken } =
       await this.sessionService.verifyMfaChallenge(
         dto,
+        readDeviceId(req),
         extractDeviceMetadata(req),
       );
-    setTrustedDeviceCookie(
-      res,
-      trustedDeviceToken,
-      TRUSTED_DEVICE_TTL_MS,
-      this.config.app.env !== 'development',
-    );
+    res.setHeader('X-Trusted-Device-Token', trustedDeviceToken);
     return tokens;
   }
 }

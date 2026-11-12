@@ -221,6 +221,12 @@ export function createSchedulingHelpers(getCtx: () => TransfersTestContext) {
       ...(status === 'failed' ? { message: 'Bank declined' } : {}),
     };
     const event = status === 'failed' ? 'transfer.failed' : 'transfer.success';
+    fakeAdapter().setVerifyPayoutResult(
+      reference,
+      status === 'failed'
+        ? { status: 'failed', reason: 'Bank declined' }
+        : { status: 'success', amount: Money.of(amountMinor, 'NGN') },
+    );
     const signature = createHmac('sha256', 'fake-kora-secret-key')
       .update(JSON.stringify(data))
       .digest('hex');

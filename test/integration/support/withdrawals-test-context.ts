@@ -1,5 +1,10 @@
 import { GenericContainer, StartedTestContainer } from 'testcontainers';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import {
+  DynamicModule,
+  INestApplication,
+  Type,
+  ValidationPipe,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { json, Request, urlencoded } from 'express';
@@ -29,6 +34,8 @@ import {
 import { AuthModule } from '../../../src/modules/auth/auth.module';
 import { AuthService } from '../../../src/modules/auth/auth.service';
 import { MfaService } from '../../../src/modules/auth/mfa.service';
+import { DeviceBindingService } from '../../../src/modules/auth/device-binding.service';
+import { DeviceChallenge } from '../../../src/modules/auth/entities/device-challenge.entity';
 import { SessionService } from '../../../src/modules/auth/session.service';
 import { Credential } from '../../../src/modules/auth/entities/credential.entity';
 import { Session } from '../../../src/modules/auth/entities/session.entity';
@@ -64,6 +71,7 @@ import { FakeEmailAdapter } from '../../../src/modules/notifications/channels/em
 import { SMS_SENDER } from '../../../src/modules/notifications/channels/sms/sms-sender.interface';
 import { FakeSmsAdapter } from '../../../src/modules/notifications/channels/sms/fake-sms.adapter';
 import { Money } from '../../../src/shared/primitives/money';
+import { establishAccount } from './established-account';
 import { closeBullmqWorkers } from './bullmq-teardown';
 
 // A superset of AuthTestContext's own fields (plus payments/withdrawals'
@@ -77,6 +85,8 @@ export interface WithdrawalsTestContext {
   authService: AuthService;
   mfaService: MfaService;
   sessionService: SessionService;
+  deviceBindingService: DeviceBindingService;
+  deviceChallengeRepo: Repository<DeviceChallenge>;
   usersService: UsersService;
   ledgerService: LedgerService;
   paymentsService: PaymentsService;
@@ -113,6 +123,7 @@ export async function createWithdrawalsTestContext(
     platformFee?: number;
     providerFee?: number;
   } = {},
+  extraImports: (DynamicModule | Type<unknown>)[] = [],
 ): Promise<WithdrawalsTestContext> {
   const database = await createTestDatabase();
   const redis = await new GenericContainer('redis:7-alpine')
@@ -147,6 +158,7 @@ export async function createWithdrawalsTestContext(
       WithdrawalsModule,
       TransfersModule,
       NotificationsModule,
+      ...extraImports,
     ],
   }).compile();
 
@@ -188,6 +200,8 @@ export async function createWithdrawalsTestContext(
     authService: moduleRef.get(AuthService),
     mfaService: moduleRef.get(MfaService),
     sessionService: moduleRef.get(SessionService),
+    deviceBindingService: moduleRef.get(DeviceBindingService),
+    deviceChallengeRepo: dataSource.getRepository(DeviceChallenge),
     usersService: moduleRef.get(UsersService),
     ledgerService: moduleRef.get(LedgerService),
     paymentsService: moduleRef.get(PaymentsService),
@@ -255,6 +269,7 @@ export async function seedWithdrawalUser(
       user.id,
       overrides.kycTier ?? 'tier3',
     );
+    await establishAccount(manager, user.id);
     const wallet = await ctx.ledgerService.createUserWallet(
       manager,
       user.id,
@@ -314,6 +329,7 @@ export async function seedBankAccount(
     accountNumber?: string;
     bankName?: string;
     accountName?: string;
+    fullyEligibleAt?: Date;
   },
 ): Promise<BankAccount & { accountNumber: string }> {
   const accountNumber = args.accountNumber ?? '0000000000';
@@ -329,6 +345,7 @@ export async function seedBankAccount(
       encryptionKeyFromHex(TEST_IDENTIFIER_HASH_KEY),
     ),
     accountName: args.accountName ?? 'Ada Lovelace',
+    fullyEligibleAt: args.fullyEligibleAt ?? new Date(),
   });
   const saved = await ctx.bankAccountRepo.save(bankAccount);
   return Object.assign(saved, { accountNumber });

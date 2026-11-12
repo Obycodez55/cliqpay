@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform } from 'class-transformer';
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -75,4 +76,13 @@ export class SendTransferDto {
   @Matches(/^\d{4}$/, { message: 'pin must be exactly 4 digits' })
   @ApiProperty({ description: '4-digit transaction PIN' })
   pin: string;
+
+  @IsOptional()
+  @IsBoolean()
+  @ApiProperty({
+    required: false,
+    description:
+      'Send true to proceed after a 422 RISK_ACKNOWLEDGEMENT_REQUIRED response. The reference and signature stay the same.',
+  })
+  riskAcknowledged?: boolean;
 }

@@ -5,5 +5,7 @@
 declare namespace Express {
   export interface Request {
     rawBody?: Buffer;
+    // Set by InternalSecretGuard from the X-Reviewer-Id header.
+    reviewerId?: string;
   }
 }

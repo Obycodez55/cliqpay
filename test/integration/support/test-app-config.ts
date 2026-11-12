@@ -8,12 +8,14 @@ export const TEST_JWT_SECRET = 'test-jwt-secret-at-least-32-characters-long';
 export const TEST_ENCRYPTION_KEY = 'a'.repeat(64);
 export const TEST_PIN_PEPPER = 'b'.repeat(64);
 export const TEST_IDENTIFIER_HASH_KEY = 'c'.repeat(64);
+export const TEST_SELF_LOCK_TOKEN_KEY = 'd'.repeat(64);
+export const TEST_SELF_LOCK_LINK_URL = 'https://app.cliqpay.test/lock';
 export const TEST_INTERNAL_API_SECRET =
   'test-internal-api-secret-at-least-32-chars';
 
 function defaultTestAppConfig(): AppConfig {
   return {
-    app: { env: 'test', port: 0, corsAllowedOrigins: [] },
+    app: { env: 'test', port: 0, corsAllowedOrigins: [], trustProxy: false },
     database: { url: '' },
     redis: { url: 'redis://localhost:6379' },
     sentry: { dsn: undefined },
@@ -22,6 +24,10 @@ function defaultTestAppConfig(): AppConfig {
     encryption: { key: TEST_ENCRYPTION_KEY },
     transactionPin: { pepper: TEST_PIN_PEPPER },
     identifierHash: { key: TEST_IDENTIFIER_HASH_KEY },
+    selfLock: {
+      tokenKey: TEST_SELF_LOCK_TOKEN_KEY,
+      linkUrl: TEST_SELF_LOCK_LINK_URL,
+    },
     notifications: {
       emailProvider: 'fake',
       smsProvider: 'fake',
@@ -48,7 +54,11 @@ function defaultTestAppConfig(): AppConfig {
       },
       reconciliation: { alertEmail: 'ops@cliqpay.test' },
     },
-    transfers: { platformFee: 0, minAmount: 10_000 },
+    transfers: {
+      platformFee: 0,
+      minAmount: 10_000,
+      firstPaymentWarningThreshold: 2_000_000,
+    },
     moneyRequests: { expiryDays: 7, maxPendingPerPair: 3 },
     billSplits: { maxParticipants: 20 },
     scheduledPayments: {
@@ -65,11 +75,35 @@ function defaultTestAppConfig(): AppConfig {
       platformFee: 0,
       providerFee: 3_000,
     },
+    securityControls: {
+      cooldownLimit: 2_000_000,
+      bankAccountCoolingLimit: 2_000_000,
+    },
     internal: { apiSecret: TEST_INTERNAL_API_SECRET },
     kyc: {
       provider: 'fake',
       retentionDays: 30,
       prembly: { secretKey: undefined },
+    },
+    device: testDeviceConfig(false),
+  };
+}
+
+// Off by default so the many specs that forge tokens and call money routes
+// need no signing; specs that exercise device keys opt in.
+export function testDeviceConfig(keyRequired: boolean): AppConfig['device'] {
+  return {
+    keyRequired,
+    attestation: {
+      mode: 'shadow',
+      provider: 'fake',
+      allowDevelopmentApple: true,
+      apple: { teamId: undefined, bundleId: undefined, rootCaPem: undefined },
+      google: {
+        packageName: undefined,
+        decryptionKey: undefined,
+        verificationKey: undefined,
+      },
     },
   };
 }

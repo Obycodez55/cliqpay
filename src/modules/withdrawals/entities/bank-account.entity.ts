@@ -51,6 +51,10 @@ export class BankAccount {
   @Column('varchar')
   accountName: string;
 
+  // Until this time, withdrawals to the account are capped in total.
+  @Column({ type: 'timestamptz' })
+  fullyEligibleAt: Date;
+
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;
 }

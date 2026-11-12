@@ -24,7 +24,12 @@ import {
   ScheduledPaymentRunFailedPayload,
   ReconciliationMismatchPayload,
   RefundAttentionRequiredPayload,
+  RiskReviewOverduePayload,
+  ScamCaseResolvedPayload,
+  ScamCasesDuePayload,
+  ScamFundsHeldPayload,
   SecurityAlertPayload,
+  AccountSelfLockedPayload,
   TransferReceivedPayload,
   TransferSentPayload,
   WithdrawalCompletedPayload,
@@ -43,6 +48,10 @@ const RECIPIENT_UNABLE_TO_RECEIVE =
 const SCHEDULE_FAILURE_REASONS: Record<string, string> = {
   insufficient_balance: 'your wallet balance was too low',
   daily_limit_exceeded: 'it would have gone over your daily limit',
+  security_cooldown_limit:
+    'a recent security change limits what you can send for 24 hours',
+  bank_account_cooling:
+    'this bank account is new and limited to a small total for its first 24 hours',
   recipient_unable_to_receive: RECIPIENT_UNABLE_TO_RECEIVE,
   recipient_cap: RECIPIENT_UNABLE_TO_RECEIVE,
   blocked: RECIPIENT_UNABLE_TO_RECEIVE,
@@ -122,7 +131,41 @@ const STEP_UP_PURPOSES: Record<StepUpAction, string> = {
   change_phone: 'change your phone number',
   enroll_totp: 'set up an authenticator app',
   save_bank_account: 'save a bank account',
+  raise_daily_limit: 'raise your daily limit',
+  unlock_account: 'unlock your account',
 };
+
+function scamFundsHeldMessage(payload: ScamFundsHeldPayload): string {
+  return payload.held
+    ? `${payload.currency} ${payload.amount} of your balance is on hold while we review a transfer you received (case ${payload.caseReference}). You can give your side in the app.`
+    : `A transfer you received is under review (case ${payload.caseReference}). You can give your side in the app.`;
+}
+
+function scamCaseResolvedMessage(payload: ScamCaseResolvedPayload): string {
+  const ref = payload.caseReference;
+  const money = `${payload.currency} ${payload.amount}`;
+  const moved = Number(payload.amount) > 0;
+  if (payload.party === 'reporter') {
+    if (payload.outcome === 'upheld') {
+      return moved
+        ? `Your report ${ref} was upheld. ${money} has been returned to your wallet.`
+        : `Your report ${ref} was upheld. Nothing was left in the recipient's wallet to return.`;
+    }
+    if (payload.outcome === 'rejected') {
+      return `Your report ${ref} was not upheld.${payload.reason ? ` Reason: ${payload.reason}` : ''}`;
+    }
+    return `Your report ${ref} was withdrawn.`;
+  }
+  if (payload.outcome === 'upheld') {
+    return `Case ${ref} has been decided and the amount on hold was returned to the sender. Contact support if you have questions.`;
+  }
+  return moved
+    ? `Case ${ref} is closed. ${money} on hold has been released to your balance.`
+    : `Case ${ref} is closed.`;
+}
+
+const ACCOUNT_SELF_LOCKED_MESSAGE =
+  'Your account is locked. Sending money is blocked and you were signed out everywhere. To unlock it, reset your password by email, sign in again, then confirm in the app.';
 
 function mfaCodeName(action: MfaChallengeOtpPayload['action']): string {
   return action === 'sign_in'
@@ -161,7 +204,19 @@ export const emailTemplates: {
   },
   security_alert: (payload: SecurityAlertPayload) => ({
     subject: 'Security alert on your Cliqpay account',
-    ...renderEmail('security_alert', payload),
+    ...renderEmail('security_alert', {
+      ...payload,
+      message: payload.lockUrl
+        ? `${payload.message} This wasn’t me, lock my account: ${payload.lockUrl}`
+        : payload.message,
+    }),
+  }),
+  account_self_locked: (payload: AccountSelfLockedPayload) => ({
+    subject: 'Your Cliqpay account is locked',
+    ...renderEmail('security_alert', {
+      ...payload,
+      message: ACCOUNT_SELF_LOCKED_MESSAGE,
+    }),
   }),
   funding_completed: (payload: FundingCompletedPayload) => ({
     subject: 'Your Cliqpay wallet has been funded',
@@ -237,9 +292,31 @@ export const emailTemplates: {
     subject: `Reconciliation mismatch: ${payload.provider}/${payload.currency}`,
     ...renderEmail('reconciliation_mismatch', payload),
   }),
+  scam_funds_held: (payload: ScamFundsHeldPayload) => ({
+    subject: 'A transfer you received is under review',
+    ...renderEmail('scam_notice', {
+      message: scamFundsHeldMessage(payload),
+      caseReference: payload.caseReference,
+    }),
+  }),
+  scam_case_resolved: (payload: ScamCaseResolvedPayload) => ({
+    subject: `Update on case ${payload.caseReference}`,
+    ...renderEmail('scam_notice', {
+      message: scamCaseResolvedMessage(payload),
+      caseReference: payload.caseReference,
+    }),
+  }),
+  scam_cases_due: (payload: ScamCasesDuePayload) => ({
+    subject: `Scam cases due: ${payload.dueSoon} soon, ${payload.overdue} overdue`,
+    ...renderEmail('scam_cases_due', payload),
+  }),
   refund_attention_required: (payload: RefundAttentionRequiredPayload) => ({
     subject: `Refund needs attention: ${payload.currency} ${payload.amount} (${payload.reason})`,
     ...renderEmail('refund_attention_required', payload),
+  }),
+  risk_review_overdue: (payload: RiskReviewOverduePayload) => ({
+    subject: `Risk reviews overdue: ${payload.overdueFlags} flag(s), ${payload.overdueWithdrawals} held withdrawal(s)`,
+    ...renderEmail('risk_review_overdue', payload),
   }),
 };
 
@@ -261,6 +338,11 @@ export const pushTemplates: {
   security_alert: (payload: SecurityAlertPayload) => ({
     title: 'Security alert',
     body: payload.message,
+    ...(payload.lockUrl && { data: { lockUrl: payload.lockUrl } }),
+  }),
+  account_self_locked: () => ({
+    title: 'Your account is locked',
+    body: ACCOUNT_SELF_LOCKED_MESSAGE,
   }),
   transfer_sent: (payload: TransferSentPayload) => ({
     title: 'Money sent',
@@ -311,6 +393,16 @@ export const pushTemplates: {
     body: `Your ${payload.currency} ${payload.amount} payment to ${payload.counterpartyLabel} was paused because ${scheduleReason(payload.reason)}.`,
     data: { scheduledPaymentId: payload.scheduledPaymentId },
   }),
+  scam_funds_held: (payload: ScamFundsHeldPayload) => ({
+    title: 'A transfer you received is under review',
+    body: scamFundsHeldMessage(payload),
+    data: { caseReference: payload.caseReference },
+  }),
+  scam_case_resolved: (payload: ScamCaseResolvedPayload) => ({
+    title: `Update on case ${payload.caseReference}`,
+    body: scamCaseResolvedMessage(payload),
+    data: { caseReference: payload.caseReference },
+  }),
   new_follower: (payload: NewFollowerPayload) => ({
     title: 'New follower',
     body: `${payload.followerUsername} started following you.`,
@@ -332,6 +424,18 @@ export const inAppTemplates: {
     payload: NotificationPayloadMap[K],
   ) => InAppContent;
 } = {
+  scam_funds_held: (payload: ScamFundsHeldPayload) => ({
+    title: 'A transfer you received is under review',
+    body: scamFundsHeldMessage(payload),
+    data: { caseReference: payload.caseReference },
+    dedupeKey: `${payload.caseReference}-held`,
+  }),
+  scam_case_resolved: (payload: ScamCaseResolvedPayload) => ({
+    title: `Update on case ${payload.caseReference}`,
+    body: scamCaseResolvedMessage(payload),
+    data: { caseReference: payload.caseReference, outcome: payload.outcome },
+    dedupeKey: `${payload.caseReference}-${payload.party}`,
+  }),
   funding_completed: (payload: FundingCompletedPayload) => ({
     title: 'Wallet funded',
     body: `Your wallet was funded with ${payload.currency} ${payload.amount}.`,

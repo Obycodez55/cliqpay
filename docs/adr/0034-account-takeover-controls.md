@@ -1,0 +1,348 @@
+# ADR-0034: Account-takeover controls: security cooldown, user limits, bank-account cooling, self-lock, recipient name and warnings
+
+**Status:** accepted
+**Date:** 2026-11-09
+
+## Context
+
+Account takeover is the most likely real loss for a Nigerian wallet: SIM swap,
+phished credentials and social engineering, then the balance is moved out
+within minutes. The controls so far are the PIN (ADR-0009), step-up MFA for
+security changes and for saving a bank account (ADR-0006), and session
+reuse detection (§3.7). Saving a bank account raises no alert.
+
+The CBN instant-payment circular (12 March 2026) caps outflows at ₦20,000 for
+24 hours after an app is activated on a device (inflows too for new accounts),
+lets customers set their own limits with changes taking effect after MFA, and
+requires real-time restriction of suspicious transactions. The CBN APP-fraud
+draft weighs whether an institution had "warning, or verification protocols"
+when apportioning a loss.
+
+## Decision
+
+### Security cooldown
+
+Triggers: trusting a new device, a password reset or change, an email or phone
+change, adding or removing an MFA method, a PIN reset. Each sets
+`User.securityCooldownUntil = max(current, now + 24h)` in the same transaction
+as the change, through a `users` method, and writes an audit event.
+
+While a cooldown is active, P2P sends plus withdrawals over the **rolling last
+24 hours** may not exceed ₦20,000. A rolling sum, not a counter reset per
+trigger, so re-triggering can only extend the window. It is checked in `kyc`'s
+limit check under the existing advisory lock; the effective allowance is the
+minimum of tier limit, user limit and cooldown cap. Error
+`SECURITY_COOLDOWN_LIMIT` with `cooldownEndsAt` and the remaining allowance;
+`GET /wallet/limits` shows it.
+
+New accounts: inflows are also capped at ₦20,000 for 24h from first reaching
+Tier 1, enforced in `checkCanReceive` and the funding cap check.
+
+Schedules created before the cooldown started are exempt (a standing mandate
+from before any takeover); schedules created during it count, and a run that
+would exceed the cap fails as transient.
+
+### User-set limits
+
+An optional `dailyOutflowLimit` per user, held by `kyc`, at most the tier
+limit, over the same measure as the tier's daily limit. Lowering is immediate
+with the PIN. Raising needs step-up MFA and the PIN and takes effect 24 hours
+later, with an immediate security alert carrying the self-lock link; a pending
+increase can be cancelled with the PIN. Scheduled runs are not exempt.
+`GET /wallet/limits` shows the user limit and any pending increase.
+
+### Bank accounts
+
+Saving a bank account sends a `security_alert` (email, push, in-app) naming
+the bank, the masked number and the holder's name, with the self-lock link,
+and writes an audit event.
+
+The name Kora returns is compared with the user's KYC legal name (from `kyc`):
+normalised for case, punctuation and order, it matches when the surname and at
+least one other name appear on both sides. A match sets
+`fullyEligibleAt = createdAt`; a mismatch sets `createdAt + 24h`, and until
+then withdrawals to that account are capped at ₦20,000 in total
+(`BANK_ACCOUNT_COOLING`, with `eligibleAt`). The check is in
+`processWithdrawal`, covering live and scheduled withdrawals; a scheduled run
+blocked by it is transient. Saving a bank account does not start the account
+cooldown.
+
+### Self-lock
+
+Every security alert carries a "This wasn't me" link: a stateless HMAC token
+of `userId` and a 7-day expiry, usable only to lock, rate-limited. The app
+also has a lock button. Locking, in one transaction under the user's advisory
+lock:
+
+1. adds a `self_lock` restriction (ADR-0029); active schedules pause on their
+   next run as a frozen sender;
+2. revokes every session, trusted device and device key;
+3. cancels any pending limit increase;
+4. blocks security changes (email, phone, MFA, bank accounts, PIN, limit
+   increases) except a password reset by email;
+5. audits, and confirms by email and push.
+
+Unlocking needs a password reset completed after the lock, then login (MFA,
+device binding, cooldown), then step-up MFA and the PIN. If the email was
+changed before the owner locked, a reviewer restores an email the owner
+controls after out-of-band verification (`/internal/risk/users/:id/
+recover-email`); there is no self-service path.
+
+### Recipient name and warnings
+
+Recipient lookup returns `verifiedName`, the KYC legal name, alongside the
+user-chosen names. It appears only in the payment flow, never on social
+surfaces. The lookup's per-user rate limit is tightened against harvesting
+names.
+
+`sendMoney` and paying a money request return
+`422 RISK_ACKNOWLEDGEMENT_REQUIRED` with warning codes when:
+
+- it is the first payment to this recipient and ≥₦20,000;
+- the recipient's account is under 7 days old;
+- the recipient has an enforced open flag (code `RECIPIENT_UNUSUAL_ACTIVITY`,
+  never "reported").
+
+The client shows the warning and resends with `riskAcknowledged: true`; the
+acknowledgement is stored on the transaction. Creating a schedule goes through
+the same check; its runs do not.
+
+### Decisions made building the cooldown, user limits and bank cooling
+
+- **The cooldown start is stored.** `User.securityCooldownStartedAt` is set
+  when a trigger finds no active cooldown and left alone when one extends an
+  active cooldown. A schedule is exempt only if it was created before that
+  start; deriving the start from `securityCooldownUntil - 24h` would let a
+  later trigger move it past a schedule made during the cooldown.
+- **The new-account cap is a cumulative inflow cap.** For 24 hours from
+  `User.tier1ReachedAt`, the total received by the wallet may not exceed the
+  cooldown amount, whatever the balance is. Received means credited fundings
+  (net amount) and P2P transfers received, money-request payments included;
+  reversals, refunds, chargebacks and releases of held fundings are the
+  user's own money returning and do not count. It is checked under the user's
+  lock wherever the balance cap is: funding initiation (fundings in flight
+  count as projected inflow), funding completion (over the cap the funding is
+  held in suspense and refunded, as for a balance-cap breach), an incoming
+  transfer (the sender gets the generic recipient-can't-receive answer), and
+  money-request and schedule creation. The user's own errors carry
+  `NEW_ACCOUNT_INFLOW_LIMIT` with `remaining` and `windowEndsAt`, and
+  `GET /wallet/limits` shows the allowance while the window is open.
+- **The cooldown amount is one setting** (`SECURITY_COOLDOWN_LIMIT`), used for
+  the outflow cap and the new-account inflow cap; the bank-account cooling total is
+  `BANK_ACCOUNT_COOLING_LIMIT`. Durations stay 24 hours in code.
+- **User limits.** `kyc` owns `user_limits`; a raise is stored as pending and
+  read as effective once `pending_effective_at` has passed, so nothing needs a
+  job to apply it. A user limit breach reports `DAILY_LIMIT_EXCEEDED` with the
+  user's own limit, which scheduling already treats as transient. Lowering
+  also clears a pending raise.
+- **The limit endpoints live in `payments`** (`/wallet/limits/daily/...`):
+  `kyc` may import only `users`, and the flows need the PIN and step-up from
+  `auth`. `kyc` exposes lower, request-raise and cancel on `KycService`;
+  `payments` verifies, calls it and sends the alert. Only raising needs a
+  device signature (`limit.raise`); lowering and cancelling can only make the
+  account safer.
+- **Surname.** The legal name is stored first, middle, last, so the matcher
+  takes its last word as the surname. A holder name matches when it has that
+  surname and at least one other word of the legal name; initials do not
+  count, and the last word of the holder name may be a truncated prefix of at
+  least three letters.
+- **Bank cooling cap** is the total of pending and completed withdrawals to
+  that saved account, read under the user's lock from the withdrawal's stored
+  bank account snapshot.
+- **Scheduling.** `security_cooldown_limit` and `bank_account_cooling` are new
+  failure codes. Neither is permanent, so a run is retried within the Lagos
+  day like `daily_limit_exceeded`; clients see them as they are.
+
+### Decisions made building the self-lock
+
+- **The link is added when an alert is routed, not by its publisher.**
+  `notifications` signs the token as it fans a `security_alert` out, so every
+  publisher (bank account saved, limit raise, new device, email and phone
+  changes, PIN, session theft) carries it without knowing about it. It is in
+  the email and the push data, not in the in-app row, whose reader is signed
+  in and has the lock button. The email template prints the link in the
+  message text; a clickable anchor needs a template edit.
+- **Token format and config.** `base64url(userId).expiryUnixSeconds.hmac`, the
+  HMAC-SHA256 over a versioned domain string, the user id and the expiry.
+  `SELF_LOCK_TOKEN_KEY` must differ from the other keys and
+  `SELF_LOCK_LINK_URL` is the app page that posts the token to
+  `POST /auth/self-lock/token` (a link that locked on `GET` would be fired by
+  mail scanners). Both lock endpoints are rate-limited 5/min.
+- **Where it lives.** The lock has to revoke sessions and devices (`auth`)
+  and cancel a pending raise (`kyc`) in one transaction, and `auth` may not
+  import `kyc`. It therefore sits in `payments` beside the limit endpoints,
+  which were placed there for the same reason: `payments/internal/
+self-lock.service.ts`, serving `/auth/self-lock` and `/auth/self-lock/
+token`. `AuthService.revokeAllAccess(manager, userId)` revokes sessions and
+  trusted devices (revoking a device revokes its key); the transaction also
+  adds the restriction, cancels the raise, drops a pending email and phone
+  change and audits. The restriction's `sourceId` is the user id, so a second
+  lock is a no-op insert; it still revokes again but sends no second
+  confirmation. Unlock needs only `auth` and `users`, so it stays in
+  `AuthService`.
+- **Where refusals are enforced.** Starting a step-up for email, phone, TOTP,
+  PIN set/change/reset, bank account or limit raise is refused up front
+  (`ACCOUNT_SELF_LOCKED`). The committing step checks again under the user's lock,
+  which guards the race with a request already in flight: email
+  and phone confirm, TOTP confirm, PIN save, bank-account save and the limit
+  raise transaction. Changing the password and lowering a limit stay allowed.
+- **Revoked sessions still hold an access token** until it expires (15
+  minutes): `JwtAuthGuard` verifies the signature and does not read the
+  session. The restriction and the refusals above are what stop an attacker in
+  that window, not the revocation.
+- **Unlock needs `credentials.password_reset_at`**, set only by the emailed
+  reset flow, to be later than the lock's `createdAt`. A password change from
+  a session does not count. Then a normal login, a step-up challenge
+  (`unlock_account`) and the PIN, checked again inside the lifting
+  transaction. Lifting writes `restriction_lifted` with the owner as actor,
+  and an unlock sends a security alert (with the lock link) so an unlock the
+  owner did not make is visible.
+- **The lock voids what was issued before it.** Unused verification codes
+  (password reset, email and phone change) are marked used and open MFA
+  challenges fail, so a reset code or step-up from before the lock cannot be
+  completed after it. Unlock needs a reset requested after the lock.
+- **Email recovery sits in `auth`**, as `POST /internal/risk/users/:id/
+recover-email` guarded like `disputes`, until the `risk` module owns the
+  prefix. The email setter is `UsersService.recoverEmail`, which touches only
+  `users`; `auth` then runs the same `revokeAllAccess` as the lock, since a code already mailed to
+  the old address would otherwise outlive the recovery. The address is stored
+  as verified, a security cooldown starts, and recovery does not unlock.
+- **A TOTP method added before the lock is not removed by it.** The owner's
+  password reset and the PIN still stand between that method and the account.
+
+## Alternatives considered
+
+- **A counter reset by each security event.** An attacker resets it by
+  changing the email.
+- **Exempting nothing from the cooldown.** Changing a password would bounce
+  that day's rent.
+- **A flat 24–48h block on every new bank account.** Most accounts saved are
+  the user's own; name-matching spares them.
+- **Making raised limits instant after MFA.** An attacker with MFA raises and
+  drains in one sitting.
+- **A stored token table for lock links.** Locking twice is harmless, so a
+  signed token is enough.
+- **Self-service email recovery from a locked account.** That flow is itself
+  an account-takeover path.
+- **A separate quote/preview endpoint for warnings.** One more round trip on
+  every send; the 422-and-resend only costs it when a warning applies.
+
+## Consequences
+
+- `users` gains `securityCooldownUntil`; `kyc` gains user limits and a third
+  term in the effective-limit calculation; `BankAccount` gains
+  `fullyEligibleAt`.
+- New error codes: `SECURITY_COOLDOWN_LIMIT`, `BANK_ACCOUNT_COOLING`,
+  `RISK_ACKNOWLEDGEMENT_REQUIRED`.
+- New or extended notifications: bank account saved, limit increase pending,
+  account locked, device signed out.
+- The CBN's ₦20,000 figure is configuration, reconfirmed before launch.
+
+### Decisions made building warnings
+
+- **The lookup moved to `transfers`.** `kyc` may import only `users` and
+  `users` must not import `kyc`, so the verified name could not be added where
+  the lookup lived. `GET /recipients/lookup` and its DTOs now live in
+  `transfers`, which already imports both; `UsersService.lookupRecipient`
+  still resolves the user and returns the four identity fields, and the
+  controller adds `verifiedName` from `KycService.getVerifiedLegalName`. No
+  lint rule changed. The name is `null` when the recipient has no KYC record or
+  the record has no legal name, and no other surface (profile, feed, follows,
+  money requests, history) carries it.
+- **Lookup rate limit is 5 a minute per user**, down from 10. A sender paying
+  someone needs one or two lookups; harvesting names needs many. A hit now
+  costs one more query than a miss (the KYC read), which the lookup's
+  same-shape-on-hit-and-miss note did not anticipate; the per-user limit is
+  what bounds probing.
+- **Codes:** `FIRST_PAYMENT_LARGE_AMOUNT`, `RECIPIENT_NEW_ACCOUNT`,
+  `RECIPIENT_UNUSUAL_ACTIVITY`, returned in `error.details.warnings` of the
+  422, all that apply at once. "Under 7 days" is `now - createdAt < 7 days`,
+  so an account exactly 7 days old is not warned about.
+- **The threshold is config:** `FIRST_PAYMENT_WARNING_THRESHOLD` (default
+  2,000,000 kobo), `transfers.firstPaymentWarningThreshold`. A first payment is
+  one with no pending or completed P2P transfer from the sender's wallet to the
+  recipient's wallet; the amount is compared with `>=`.
+- **The flag read is `RiskService.hasEnforcedOpenFlag`**: an enforced flag in
+  `open` or `reviewing`, whatever the rule, so scam-report flags count. Shadow
+  and cleared flags do not.
+- **Ordering.** The check runs after the idempotency replay check and after PIN
+  verification, before anything is posted or saved, so the 422 leaves no
+  record and the client resends the same `reference` and device signature with
+  `riskAcknowledged: true` (the signing string does not cover it). A repeat of
+  a completed reference returns the original result with no warnings. PIN comes
+  first so the warnings are not an oracle on a recipient's account age and flag
+  status for someone without the PIN.
+- **Stored acknowledgement.** Only when warnings applied and were acknowledged:
+  `metadata.riskAcknowledgement = { codes, acknowledgedAt }` on the transaction
+  (through `extraMetadata`), and `scheduled_payments.risk_acknowledgement`
+  (jsonb) on a schedule. `riskAcknowledged: true` where nothing needed
+  acknowledging stores nothing.
+- **Schedules.** Only schedules to a user are checked, at creation, on the
+  per-run amount. Bank-account schedules have no recipient user and are
+  unchanged. Runs go through `executeScheduledTransfer`, which never checks.
+
+### Decisions made fixing the audit
+
+- **Which lock links still work.** A lock token carries its expiry, so its
+  issue time is the expiry minus the 7-day TTL and the token format is
+  unchanged. A link is refused if it was issued before the user's latest
+  unlock or email recovery. The source is the audit log: the latest
+  `restriction_lifted` event with reason `self_lock` (the only way a self-lock
+  is lifted is the owner's unlock) or `email_recovered` event for that user. No
+  new column or event was added. The token only has second precision, so the
+  check compares the end of the second it was issued in; a link issued in the
+  same second as an unlock is accepted, and the unlock alert's own link, built
+  moments after the unlock, works.
+- **Push tokens are deleted in `notifications`.** When it handles
+  `account_self_locked` it deletes all of the user's push tokens before
+  dispatching the confirmation. That event is published after the lock commits,
+  so a publish failure (already logged and not retried) would leave the tokens
+  in place. The owner's own device gets the confirmation by email, not push.
+- **Schedules are paused by `scheduling`.** `scheduling` is peripheral, so it
+  subscribes to `account_self_locked` on its existing event queue and pauses the
+  user's active schedules as a system pause (`paused_reason` and change reason
+  `account_locked`, actor `system`), cancelling runs waiting to start. Between
+  the lock and the event, a run that comes due is refused by the restriction
+  check in the normal way. Resuming uses the ordinary resume flow, with its PIN
+  and device signature.
+- **A self-lock cannot be lifted by a reviewer.** `self_lock` is in
+  `NOT_LIFTABLE` beside `dispute` and `sanctions`, so
+  `POST /internal/risk/restrictions/lift` refuses it. Only the owner's unlock,
+  which needs a password reset after the lock, lifts it.
+- **A reviewer cannot release a held withdrawal for a restricted user.**
+  `releaseHeldWithdrawal` checks the restriction state inside the release
+  transaction, under the user's lock, and answers 409 while any restriction
+  blocks outbound money. The withdrawal stays `under_review` and can still be
+  rejected.
+- **Raising a schedule's amount re-runs the recipient warnings.** For a
+  schedule to a user, an update that raises the amount runs the same check as
+  creation, on the new amount, after the PIN. It takes `riskAcknowledged` and
+  replaces the stored acknowledgement. A lower or unchanged amount is not
+  checked.
+- **A repeat fraud-flag hit can upgrade `enforced`.** `enforced` becomes
+  `fraud_flags.enforced OR EXCLUDED.enforced`, so a flag raised while a rule was
+  in shadow becomes enforced when a later hit arrives after the rule is switched
+  to enforce. It is never downgraded.
+- **The `scam_report` flag stays while a case is open.** A reviewer cannot clear
+  it while the user has any open scam case, the same condition under which a
+  resolved case leaves it open.
+- **Password reset consumes its code in the reset transaction.** The reset
+  takes the user's lock, re-reads the code row `FOR UPDATE`, marks it used and
+  sets the password in one transaction, so a lock's code voiding and a reset
+  cannot interleave. A restriction's `created_at` is now taken after the user's
+  lock is acquired, so a reset that committed first is never counted as after
+  the lock.
+- **Schedule targets.** A user target with a `bankAccountId`, or a bank
+  account target with a `userId`, is rejected by the request validation.
+- **Replaying a reversed withdrawal** says the withdrawal was already reversed,
+  because the reversal can have come from the provider or from a reviewer.
+- **Accepted: the warnings reveal something about the recipient.**
+  `RECIPIENT_UNUSUAL_ACTIVITY` and `RECIPIENT_NEW_ACCOUNT` tell any sender who
+  has the PIN that an account has an enforced fraud flag or is under 7 days old,
+  so a fraud ring could probe its own accounts. We accept this because any
+  warning about the recipient reveals something; the PIN gate and the send rate
+  limits bound it.
+- **`verifiedName` is withheld on email lookups.** `GET /recipients/lookup`
+  returns it as null when the identifier is an email address, so knowing an
+  email does not reveal the owner's BVN legal name. Username lookups still
+  return it. The rest of the response is unchanged.

@@ -84,6 +84,7 @@ export class DisputesService {
   // negative, and notifies the user.
   async recordChargeback(
     dto: RecordChargebackDto,
+    reviewerId: string,
   ): Promise<RecordChargebackResponseDto> {
     // Pre-check, not the sole guard — the unique constraint on
     // dispute_reference is the real race-free boundary (caught below), same
@@ -117,7 +118,13 @@ export class DisputesService {
     // against the same original can't both read a stale "remaining" figure
     // and both post (see that method's own doc comment).
     const { posted, dispute, accountFrozen } =
-      await this.postChargebackAtomically(dto, original, requested, currency);
+      await this.postChargebackAtomically(
+        dto,
+        original,
+        requested,
+        currency,
+        reviewerId,
+      );
 
     // Fetched after the money movement/freeze/dispute-row write have all
     // committed — a failure here must not look like the whole operation
@@ -160,9 +167,17 @@ export class DisputesService {
     original: FundingTransactionForChargeback,
     requested: Money,
     currency: string,
+    reviewerId: string,
   ): Promise<ChargebackPosting> {
     try {
       return await runInTransaction(this.dataSource, async (manager) => {
+        await this.usersService.lockUser(
+          manager,
+          await this.ledgerService.findWalletOwnerId(
+            manager,
+            original.recipientWalletId,
+          ),
+        );
         const posted = await this.ledgerService.postChargebackWithinTransaction(
           manager,
           {
@@ -176,9 +191,6 @@ export class DisputesService {
         // §4.2/ADR-0016: strictly negative, not <= 0 — a chargeback that
         // exactly zeroes the balance leaves nothing owed.
         const accountFrozen = posted.newWalletBalance.isNegative();
-        if (accountFrozen) {
-          await this.usersService.freeze(manager, posted.userId);
-        }
 
         const disputeRepo = manager.getRepository(Dispute);
         const dispute = await disputeRepo.save(
@@ -191,6 +203,16 @@ export class DisputesService {
             resolvedAt: null,
           }),
         );
+
+        if (accountFrozen) {
+          await this.usersService.addRestriction(manager, {
+            userId: posted.userId,
+            reason: 'dispute',
+            scope: 'outbound',
+            sourceId: dispute.id,
+            actor: { type: 'reviewer', id: reviewerId },
+          });
+        }
 
         return { posted, dispute, accountFrozen };
       });
@@ -226,18 +248,17 @@ export class DisputesService {
       return [];
     }
 
-    const [chargebacks, users] = await Promise.all([
+    const [chargebacks, restrictedUserIds] = await Promise.all([
       this.ledgerService.findChargebackTransactionsForWallets(
         wallets.map((wallet) => wallet.accountId),
       ),
-      this.usersService.findByIds(wallets.map((wallet) => wallet.userId)),
+      this.usersService.getOpenRestrictionUserIds(
+        wallets.map((wallet) => wallet.userId),
+      ),
     ]);
 
     const disputesByChargebackId = await this.findDisputesByChargebackId(
       chargebacks.map((chargeback) => chargeback.transactionId),
-    );
-    const isFrozenByUserId = new Map(
-      users.map((user) => [user.id, user.isFrozen]),
     );
     const chargebacksByWalletId = this.groupChargebacksByWalletId(chargebacks);
 
@@ -246,7 +267,7 @@ export class DisputesService {
         wallet,
         chargebacksByWalletId.get(wallet.accountId) ?? [],
         disputesByChargebackId,
-        isFrozenByUserId.get(wallet.userId) ?? false,
+        restrictedUserIds.has(wallet.userId),
       ),
     );
   }
@@ -312,9 +333,22 @@ export class DisputesService {
   // the disputes row instead of duplicated inside ledger.
   async resolveDispute(
     dto: ResolveDisputeDto,
+    reviewerId: string,
   ): Promise<ResolveDisputeResponseDto> {
     return runInTransaction(this.dataSource, async (manager) => {
       const disputeRepo = manager.getRepository(Dispute);
+      const unlocked = await disputeRepo.findOneBy({
+        disputeReference: dto.disputeReference,
+      });
+      if (unlocked) {
+        await this.usersService.lockUser(
+          manager,
+          await this.ledgerService.findChargebackOwnerId(
+            manager,
+            unlocked.chargebackTransactionId,
+          ),
+        );
+      }
       const dispute = await disputeRepo
         .createQueryBuilder('dispute')
         .where('dispute.disputeReference = :reference', {
@@ -342,7 +376,7 @@ export class DisputesService {
           dispute.amount.toString(),
         );
       }
-      return this.resolveInCliqpaysFavor(manager, dispute);
+      return this.resolveInCliqpaysFavor(manager, dispute, reviewerId);
     });
   }
 
@@ -378,6 +412,7 @@ export class DisputesService {
   private async resolveInCliqpaysFavor(
     manager: EntityManager,
     dispute: Dispute,
+    reviewerId: string,
   ): Promise<ResolveDisputeResponseDto> {
     const posted =
       await this.ledgerService.postChargebackResolutionWithinTransaction(
@@ -414,11 +449,21 @@ export class DisputesService {
     // still open — exactly the balance-threshold-vs-dispute-lifecycle
     // bypass ADR-0016 says freeze/unfreeze must never allow.
     const balanceNonNegative = !posted.newWalletBalance.isNegative();
+    const walletDisputes = await this.findDisputesForWallet(
+      manager,
+      posted.walletId,
+    );
     const accountUnfrozen =
-      balanceNonNegative &&
-      !(await this.hasOtherOpenDisputeForWallet(manager, posted.walletId));
+      balanceNonNegative && !walletDisputes.some((d) => d.status === 'open');
     if (accountUnfrozen) {
-      await this.usersService.unfreeze(manager, posted.userId);
+      for (const walletDispute of walletDisputes) {
+        await this.usersService.liftRestriction(manager, {
+          userId: posted.userId,
+          reason: 'dispute',
+          sourceId: walletDispute.id,
+          actor: { type: 'reviewer', id: reviewerId },
+        });
+      }
     }
 
     return toResolveDisputeResponse(resolved, accountUnfrozen);
@@ -470,25 +515,23 @@ export class DisputesService {
   // dispute being resolved to a terminal status before calling this — it
   // doesn't exclude any dispute id, so a still-`open` current dispute
   // would count against itself.
-  private async hasOtherOpenDisputeForWallet(
+  private async findDisputesForWallet(
     manager: EntityManager,
     walletId: string,
-  ): Promise<boolean> {
+  ): Promise<Dispute[]> {
     const chargebacks =
       await this.ledgerService.findChargebackTransactionsForWallets(
         [walletId],
         manager,
       );
     if (chargebacks.length === 0) {
-      return false;
+      return [];
     }
-    const openCount = await manager.getRepository(Dispute).count({
+    return manager.getRepository(Dispute).find({
       where: {
         chargebackTransactionId: In(chargebacks.map((c) => c.transactionId)),
-        status: 'open',
       },
     });
-    return openCount > 0;
   }
 
   private async publishAccountFrozenEvent(

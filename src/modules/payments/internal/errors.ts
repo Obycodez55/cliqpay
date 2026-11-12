@@ -1,3 +1,6 @@
+import { HttpStatus } from '@nestjs/common';
+import { DomainException } from '../../../common/exceptions/domain.exception';
+
 // Payments (core) can't reuse notifications' sentinel/retry-classification
 // helpers — they live in a peripheral module, off-limits per the module
 // boundary rules (docs/architecture.md §10). Small and module-local by
@@ -12,6 +15,16 @@ export function maybeThrowFakePaymentFailure(reference: string): void {
   if (reference.includes('fail')) {
     throw new Error(
       'FakeAdapter: simulated payment initiation failure (test sentinel)',
+    );
+  }
+}
+
+export class SelfLockTokenInvalidException extends DomainException {
+  readonly code = 'SELF_LOCK_TOKEN_INVALID';
+  constructor() {
+    super(
+      'This lock link is invalid or has expired. Open the app to lock your account',
+      HttpStatus.BAD_REQUEST,
     );
   }
 }

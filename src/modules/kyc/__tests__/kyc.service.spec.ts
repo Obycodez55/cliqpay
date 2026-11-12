@@ -6,6 +6,7 @@ import {
 } from '../../../shared/crypto/secrets.util';
 import { KycTier, UsersService } from '../../users/users.service';
 import { LivenessCaptureDto } from '../dto/liveness-capture.dto';
+import { UserLimitsService } from '../internal/user-limits.service';
 import { KycService } from '../kyc.service';
 import { KycVerification } from '../entities/kyc-verification.entity';
 import { KycVerificationAttempt } from '../entities/kyc-verification-attempt.entity';
@@ -70,6 +71,10 @@ function testConfig(): AppConfig {
   return {
     encryption: { key: TEST_ENCRYPTION_KEY },
     identifierHash: { key: TEST_IDENTIFIER_HASH_KEY },
+    securityControls: {
+      cooldownLimit: 2_000_000,
+      bankAccountCoolingLimit: 2_000_000,
+    },
   } as unknown as AppConfig;
 }
 
@@ -239,6 +244,7 @@ describe('KycService', () => {
       kycProvider,
       usersService as unknown as UsersService,
       testConfig(),
+      {} as UserLimitsService,
     );
   });
 

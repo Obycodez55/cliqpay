@@ -98,6 +98,10 @@ export default tseslint.config(
           pattern: 'src/modules/kyc/**',
         },
         {
+          type: 'risk-module',
+          pattern: 'src/modules/risk/**',
+        },
+        {
           type: 'wallet-module',
           pattern: 'src/modules/wallet/**',
         },
@@ -202,6 +206,48 @@ export default tseslint.config(
               },
               message:
                 '`kyc` may import only `users` (and shared) — see docs/adr/0017-kyc-module-boundary-and-limit-race-safety.md.',
+            },
+            {
+              from: { element: { type: 'risk-module' } },
+              disallow: { to: { element: { type: 'peripheral-module' } } },
+              message:
+                'Core modules (ledger, payments, auth, users, risk) must never import from peripheral modules (fraud, social, billsplit, scheduling, notifications) — see docs/architecture.md §10 and docs/adr/0032-risk-module-and-exit-point-holds.md.',
+            },
+            {
+              from: { element: { type: 'risk-module' } },
+              disallow: { to: { element: { type: 'withdrawals-module' } } },
+              message:
+                '`risk` must never import from `withdrawals` — `withdrawals` depends on `risk` (release and reject live with the payout code) — see docs/adr/0032-risk-module-and-exit-point-holds.md.',
+            },
+            {
+              from: { element: { type: 'risk-module' } },
+              disallow: { to: { element: { type: 'transfers-module' } } },
+              message:
+                '`risk` reacts to transfers through domain events, never by importing `transfers` — see docs/adr/0032-risk-module-and-exit-point-holds.md.',
+            },
+            {
+              from: { element: { type: 'ledger-module' } },
+              disallow: { to: { element: { type: 'risk-module' } } },
+              message:
+                '`ledger` must never import from `risk` — `risk` reads the books through LedgerService, not the reverse — see docs/adr/0032-risk-module-and-exit-point-holds.md.',
+            },
+            {
+              from: { element: { type: 'users-module' } },
+              disallow: { to: { element: { type: 'risk-module' } } },
+              message:
+                '`users` must never import from `risk` — see docs/adr/0032-risk-module-and-exit-point-holds.md.',
+            },
+            {
+              from: { element: { type: 'auth-module' } },
+              disallow: { to: { element: { type: 'risk-module' } } },
+              message:
+                '`auth` must never import from `risk` — it publishes domain events that `risk` subscribes to — see docs/adr/0032-risk-module-and-exit-point-holds.md.',
+            },
+            {
+              from: { element: { type: 'payments-module' } },
+              disallow: { to: { element: { type: 'risk-module' } } },
+              message:
+                '`payments` must never import from `risk` — see docs/adr/0032-risk-module-and-exit-point-holds.md.',
             },
             {
               from: { element: { type: 'ledger-module' } },
@@ -400,6 +446,10 @@ export default tseslint.config(
             },
             {
               target: { type: 'kyc-module' },
+              allow: '*.(service|module).ts',
+            },
+            {
+              target: { type: 'risk-module' },
               allow: '*.(service|module).ts',
             },
             {

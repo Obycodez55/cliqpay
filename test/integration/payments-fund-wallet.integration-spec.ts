@@ -9,6 +9,7 @@ import {
   seedUserWithWallet,
 } from './support/payments-test-context';
 import { dataOf } from './support/api-response';
+import { addTestRestriction } from './support/restrictions';
 
 jest.setTimeout(120_000);
 
@@ -72,7 +73,7 @@ describe('POST /wallet/fund', () => {
       phone: '+2348011110099',
       username: 'fund_frozen_user',
     });
-    await ctx.userRepo.update({ id: userId }, { isFrozen: true });
+    await addTestRestriction(ctx.dataSource, userId);
 
     await request(ctx.app.getHttpServer())
       .post('/wallet/fund')

@@ -16,9 +16,12 @@ import {
   InvalidRefreshTokenException,
   SessionRevokedException,
 } from '../internal/errors';
+import { DeviceBindingService } from '../device-binding.service';
 import { MfaService } from '../mfa.service';
 import { hashOpaqueToken } from '../internal/secrets.util';
 import { DeviceMetadata } from '../internal/device-metadata.util';
+
+const TEST_DEVICE_ID = 'test-device-0001';
 
 const TEST_DEVICE: DeviceMetadata = {
   ipAddress: '203.0.113.10',
@@ -84,6 +87,9 @@ function buildTrustedDevice(
     id: 'device-1',
     userId: 'user-1',
     tokenHash: 'device-token-hash',
+    deviceId: TEST_DEVICE_ID,
+    publicKey: null,
+    revokedAt: null,
     expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     createdAt: new Date(),
     lastUsedAt: new Date(),
@@ -99,6 +105,7 @@ function buildSession(overrides: Partial<Session> = {}): Session {
     previousTokenHash: null,
     status: 'active',
     trustedDeviceId: null,
+    deviceId: TEST_DEVICE_ID,
     expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
     lastUsedAt: new Date(),
     ...overrides,
@@ -143,7 +150,11 @@ describe('SessionService — login, refresh, logout', () => {
       unknown[]
     >;
     issueTrustedDevice: jest.Mock<
-      Promise<{ device: TrustedDevice; rawToken: string }>,
+      Promise<{
+        device: TrustedDevice;
+        rawToken: string;
+        replaced: TrustedDevice[];
+      }>,
       unknown[]
     >;
   };
@@ -203,6 +214,7 @@ describe('SessionService — login, refresh, logout', () => {
         Promise.resolve({
           device: buildTrustedDevice(),
           rawToken: 'raw-trusted-device-token',
+          replaced: [],
         }),
       ),
     };
@@ -213,6 +225,7 @@ describe('SessionService — login, refresh, logout', () => {
       jwtService as unknown as JwtService,
       eventBus as unknown as EventBusService,
       mfaService as unknown as MfaService,
+      { keyRequired: false } as unknown as DeviceBindingService,
     );
   });
 
@@ -229,7 +242,7 @@ describe('SessionService — login, refresh, logout', () => {
       usersService.findByEmail.mockResolvedValueOnce(null);
 
       await expect(
-        service.login(loginDto(), null, TEST_DEVICE),
+        service.login(loginDto(), null, TEST_DEVICE_ID, TEST_DEVICE),
       ).rejects.toBeInstanceOf(InvalidCredentialsException);
       expect(credentialRepo.save).not.toHaveBeenCalled();
     });
@@ -238,7 +251,7 @@ describe('SessionService — login, refresh, logout', () => {
       existingCredential.lockedUntil = new Date(Date.now() + 60_000);
 
       await expect(
-        service.login(loginDto(), null, TEST_DEVICE),
+        service.login(loginDto(), null, TEST_DEVICE_ID, TEST_DEVICE),
       ).rejects.toBeInstanceOf(AccountLockedException);
       expect(bcryptCompare).not.toHaveBeenCalled();
     });
@@ -248,7 +261,7 @@ describe('SessionService — login, refresh, logout', () => {
       bcryptCompare.mockResolvedValueOnce(false);
 
       await expect(
-        service.login(loginDto(), null, TEST_DEVICE),
+        service.login(loginDto(), null, TEST_DEVICE_ID, TEST_DEVICE),
       ).rejects.toBeInstanceOf(InvalidCredentialsException);
       expect(credentialRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ failedLoginAttempts: 3, lockedUntil: null }),
@@ -260,7 +273,7 @@ describe('SessionService — login, refresh, logout', () => {
       bcryptCompare.mockResolvedValueOnce(false);
 
       await expect(
-        service.login(loginDto(), null, TEST_DEVICE),
+        service.login(loginDto(), null, TEST_DEVICE_ID, TEST_DEVICE),
       ).rejects.toBeInstanceOf(InvalidCredentialsException);
       const saved = credentialRepo.save.mock.calls[0][0];
       expect(saved.failedLoginAttempts).toBe(5);
@@ -274,7 +287,7 @@ describe('SessionService — login, refresh, logout', () => {
       bcryptCompare.mockResolvedValueOnce(false);
 
       await expect(
-        service.login(loginDto(), null, TEST_DEVICE),
+        service.login(loginDto(), null, TEST_DEVICE_ID, TEST_DEVICE),
       ).rejects.toBeInstanceOf(InvalidCredentialsException);
       const saved = credentialRepo.save.mock.calls[0][0];
       expect(saved.failedLoginAttempts).toBe(1);
@@ -285,7 +298,12 @@ describe('SessionService — login, refresh, logout', () => {
       existingCredential.failedLoginAttempts = 3;
       bcryptCompare.mockResolvedValueOnce(true);
 
-      const result = await service.login(loginDto(), null, TEST_DEVICE);
+      const result = await service.login(
+        loginDto(),
+        null,
+        TEST_DEVICE_ID,
+        TEST_DEVICE,
+      );
 
       expect(result.mfaRequired).toBe(true);
       if (!result.mfaRequired) {
@@ -314,6 +332,7 @@ describe('SessionService — login, refresh, logout', () => {
       const result = await service.login(
         loginDto(),
         'raw-trusted-device-token',
+        TEST_DEVICE_ID,
         TEST_DEVICE,
       );
 
@@ -325,7 +344,7 @@ describe('SessionService — login, refresh, logout', () => {
       expect(result.expiresIn).toBe(15 * 60);
       expect(typeof result.refreshToken).toBe('string');
       expect(jwtService.signAsync).toHaveBeenCalledWith(
-        { sub: 'user-1', sid: 'session-1' },
+        { sub: 'user-1', sid: 'session-1', did: TEST_DEVICE_ID },
         { expiresIn: 15 * 60 },
       );
 
@@ -365,7 +384,10 @@ describe('SessionService — login, refresh, logout', () => {
         ),
       );
 
-      const result = await service.refresh(refreshDto(oldToken));
+      const result = await service.refresh(
+        refreshDto(oldToken),
+        TEST_DEVICE_ID,
+      );
 
       expect(sessionRepo.save).toHaveBeenCalledTimes(1);
       const saved = sessionRepo.save.mock.calls[0][0];
@@ -392,7 +414,7 @@ describe('SessionService — login, refresh, logout', () => {
       );
 
       await expect(
-        service.refresh(refreshDto(staleToken)),
+        service.refresh(refreshDto(staleToken), TEST_DEVICE_ID),
       ).rejects.toBeInstanceOf(SessionRevokedException);
       expect(sessionRepo.save).toHaveBeenCalledWith(
         expect.objectContaining({ status: 'revoked' }),
@@ -411,7 +433,7 @@ describe('SessionService — login, refresh, logout', () => {
       sessionRepo.findOneBy.mockResolvedValue(null);
 
       await expect(
-        service.refresh(refreshDto('never-issued-token')),
+        service.refresh(refreshDto('never-issued-token'), TEST_DEVICE_ID),
       ).rejects.toBeInstanceOf(InvalidRefreshTokenException);
       expect(sessionRepo.save).not.toHaveBeenCalled();
     });

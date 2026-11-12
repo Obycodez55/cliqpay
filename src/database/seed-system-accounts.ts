@@ -22,9 +22,20 @@ export const INITIAL_SYSTEM_ACCOUNTS: SystemAccountSeed[] = [
   { type: 'equity', role: 'fee_income', provider: null },
 ];
 
-const SYSTEM_ACCOUNTS: SystemAccountSeed[] = [
+export const ACCOUNTS_THROUGH_SUSPENSE: SystemAccountSeed[] = [
   ...INITIAL_SYSTEM_ACCOUNTS,
   { type: 'liability', role: 'suspense', provider: 'kora' },
+];
+
+export const FRAUD_HOLD_ACCOUNT: SystemAccountSeed = {
+  type: 'liability',
+  role: 'fraud_hold',
+  provider: null,
+};
+
+const SYSTEM_ACCOUNTS: SystemAccountSeed[] = [
+  ...ACCOUNTS_THROUGH_SUSPENSE,
+  FRAUD_HOLD_ACCOUNT,
 ];
 
 /**

@@ -17,6 +17,9 @@ import {
   ApiTags,
   getSchemaPath,
 } from '@nestjs/swagger';
+import { ApiRiskAcknowledgementRequired } from '../../common/docs/risk-acknowledgement.docs';
+import { RequireDeviceSignature } from '../../common/guards/device-signature.guard';
+import { signingPart } from '../../common/device/signed-action';
 import {
   AuthenticatedRequest,
   JwtAuthGuard,
@@ -116,6 +119,21 @@ export class MoneyRequestsController {
   }
 
   @Post(':id/pay')
+  @RequireDeviceSignature({
+    action: 'money_request.pay',
+    signs:
+      'reference = body.reference, amount = "" (the server fixes it), target = the money request id in the path',
+    resolve: (req) => {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      return {
+        action: 'money_request.pay',
+        reference: signingPart(body.reference),
+        amount: '',
+        target: signingPart(req.params.id),
+      };
+    },
+  })
+  @ApiRiskAcknowledgementRequired()
   @ApiOperation({ summary: 'Pay a money request you received' })
   async pay(
     @Req() req: AuthenticatedRequest,

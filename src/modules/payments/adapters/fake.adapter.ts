@@ -30,6 +30,7 @@ export class FakeAdapter implements PaymentProviderAdapter {
   readonly refundsInitiated: InitiateRefundParams[] = [];
   private readonly verifyChargeResults = new Map<string, VerifyChargeResult>();
   private readonly verifyPayoutResults = new Map<string, VerifyPayoutResult>();
+  private readonly verifyErrors = new Map<string, Error>();
   private readonly verifyRefundResults = new Map<string, VerifyRefundResult>();
   private readonly initiateRefundResults = new Map<
     string,
@@ -73,8 +74,20 @@ export class FakeAdapter implements PaymentProviderAdapter {
     this.verifyChargeResults.set(reference, result);
   }
 
+  setVerifyError(reference: string, error: Error | null): void {
+    if (error) {
+      this.verifyErrors.set(reference, error);
+    } else {
+      this.verifyErrors.delete(reference);
+    }
+  }
+
   // eslint-disable-next-line @typescript-eslint/require-await
   async verifyCharge(reference: string): Promise<VerifyChargeResult> {
+    const error = this.verifyErrors.get(reference);
+    if (error) {
+      throw error;
+    }
     return this.verifyChargeResults.get(reference) ?? { status: 'pending' };
   }
 
@@ -153,6 +166,10 @@ export class FakeAdapter implements PaymentProviderAdapter {
 
   // eslint-disable-next-line @typescript-eslint/require-await
   async verifyPayout(reference: string): Promise<VerifyPayoutResult> {
+    const error = this.verifyErrors.get(reference);
+    if (error) {
+      throw error;
+    }
     return this.verifyPayoutResults.get(reference) ?? { status: 'pending' };
   }
 

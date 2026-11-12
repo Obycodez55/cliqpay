@@ -4,9 +4,12 @@ import { AuthModule } from '../auth/auth.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { KycModule } from '../kyc/kyc.module';
 import { LedgerModule } from '../ledger/ledger.module';
+import { RiskModule } from '../risk/risk.module';
 import { UsersModule } from '../users/users.module';
+import { AuditModule } from '../../shared/audit/audit.module';
 import { EventBusModule } from '../../shared/events/event-bus.module';
 import { BankAccount } from './entities/bank-account.entity';
+import { WithdrawalReviewController } from './withdrawal-review.controller';
 import { WithdrawalsController } from './withdrawals.controller';
 import { WithdrawalsService } from './withdrawals.service';
 
@@ -26,8 +29,10 @@ import { WithdrawalsService } from './withdrawals.service';
     KycModule,
     UsersModule,
     EventBusModule,
+    AuditModule,
+    RiskModule,
   ],
-  controllers: [WithdrawalsController],
+  controllers: [WithdrawalsController, WithdrawalReviewController],
   providers: [WithdrawalsService],
   exports: [WithdrawalsService],
 })

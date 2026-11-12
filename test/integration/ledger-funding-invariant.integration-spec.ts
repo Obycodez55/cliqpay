@@ -1,5 +1,6 @@
 import fc from 'fast-check';
 import { randomUUID } from 'crypto';
+import { IsNull } from 'typeorm';
 import { Money } from '../../src/shared/primitives/money';
 import {
   PaymentsTestContext,
@@ -322,6 +323,7 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
       providerFeeMinor: fc.integer({ min: 0, max: 5_000 }),
       platformFeeMinor: fc.integer({ min: 0, max: 5_000 }),
       afterWithdrawal: fc.constantFrom('keep', 'reverse', 'complete'),
+      held: fc.constantFrom('no', 'keep', 'reject', 'release'),
       chargebackMinor: fc.integer({ min: 1, max: 1_000_000 }),
       resolve: fc.boolean(),
     });
@@ -365,17 +367,38 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
                 accountNumber: '******7890',
                 accountName: 'Ada Lovelace',
               },
+              status: op.held === 'no' ? 'pending' : 'under_review',
             });
             await assertInvariantHolds(ctx.accountRepo);
             await assertCacheMatchesLedger(ctx, walletId);
 
-            if (op.afterWithdrawal === 'reverse') {
+            if (op.held === 'reject') {
+              await ctx.dataSource.transaction((manager) =>
+                ctx.ledgerService.reverseWithdrawalWithinTransaction(manager, {
+                  reference: withdrawalReference,
+                  reason: 'rejected_on_review',
+                  fromStatus: 'under_review',
+                }),
+              );
+              await assertInvariantHolds(ctx.accountRepo);
+              await assertCacheMatchesLedger(ctx, walletId);
+            } else if (op.held === 'release') {
+              await ctx.dataSource.transaction((manager) =>
+                ctx.ledgerService.releaseWithdrawalHold(
+                  manager,
+                  withdrawalReference,
+                ),
+              );
+            }
+
+            const settleable = op.held === 'no' || op.held === 'release';
+            if (settleable && op.afterWithdrawal === 'reverse') {
               await ctx.ledgerService.reverseWithdrawal({
                 reference: withdrawalReference,
                 reason: 'payout failed',
               });
               await assertInvariantHolds(ctx.accountRepo);
-            } else if (op.afterWithdrawal === 'complete') {
+            } else if (settleable && op.afterWithdrawal === 'complete') {
               await ctx.ledgerService.completeWithdrawal({
                 reference: withdrawalReference,
                 providerReportedAmount: Money.of(op.withdrawMinor, 'NGN'),
@@ -409,6 +432,101 @@ describe('Ledger §4.3 invariant — random funding sequences', () => {
               );
               await assertInvariantHolds(ctx.accountRepo);
             }
+          }
+        },
+      ),
+      { numRuns },
+    );
+  });
+
+  it('holds after fraud holds, releases and recoveries, with fraud_hold equal to the money still held', async () => {
+    const opArb = fc.record({
+      balanceMinor: fc.integer({ min: 0, max: 5_000_000 }),
+      reportedMinor: fc.integer({ min: 1, max: 6_000_000 }),
+      outcome: fc.constantFrom('keep', 'release', 'recover'),
+    });
+
+    await fc.assert(
+      fc.asyncProperty(
+        fc.array(opArb, { minLength: 1, maxLength: 4 }),
+        async (ops) => {
+          const fraudHoldAccount = () =>
+            ctx.accountRepo.findOneByOrFail({
+              role: 'fraud_hold',
+              provider: IsNull(),
+              currency: 'NGN',
+            });
+          const before = (await fraudHoldAccount()).balance;
+          let stillHeld = 0n;
+
+          for (const op of ops) {
+            const recipient = await seedUserWithWallet(ctx, nextIdentity());
+            const reporter = await seedUserWithWallet(ctx, nextIdentity());
+            if (op.balanceMinor > 0) {
+              const reference = `cliqpay-invariant-hold-fund-${randomUUID()}`;
+              await ctx.ledgerService.createPendingFundingTransaction({
+                reference,
+                provider: 'kora',
+                providerReference: reference,
+                amount: Money.of(op.balanceMinor, 'NGN'),
+                recipientWalletId: recipient.walletId,
+                metadata: { checkoutUrl: null, grossAmount: null },
+              });
+              await ctx.ledgerService.postFunding({
+                reference,
+                netAmount: Money.of(op.balanceMinor, 'NGN'),
+                providerFee: Money.zero('NGN'),
+                providerStatus: 'success',
+              });
+            }
+
+            const caseReference = `SCM-prop-${randomUUID()}`;
+            const held = await ctx.dataSource.transaction((manager) =>
+              ctx.ledgerService.postFraudHoldWithinTransaction(manager, {
+                caseReference,
+                recipientUserId: recipient.userId,
+                amount: Money.of(op.reportedMinor, 'NGN'),
+              }),
+            );
+            const heldMinor = BigInt(
+              Math.min(op.balanceMinor, op.reportedMinor),
+            );
+            expect(held?.amount.amount ?? 0n).toBe(heldMinor);
+            stillHeld += heldMinor;
+            await assertInvariantHolds(ctx.accountRepo);
+            await assertCacheMatchesLedger(ctx, recipient.walletId);
+            await assertCacheMatchesLedger(ctx, (await fraudHoldAccount()).id);
+
+            if (op.outcome !== 'keep' && held) {
+              await ctx.dataSource.transaction((manager) =>
+                op.outcome === 'release'
+                  ? ctx.ledgerService.postFraudHoldReleaseWithinTransaction(
+                      manager,
+                      {
+                        caseReference,
+                        recipientUserId: recipient.userId,
+                        amount: held.amount,
+                      },
+                    )
+                  : ctx.ledgerService.postScamRecoveryWithinTransaction(
+                      manager,
+                      {
+                        caseReference,
+                        reporterUserId: reporter.userId,
+                        amount: held.amount,
+                      },
+                    ),
+              );
+              stillHeld -= heldMinor;
+              await assertInvariantHolds(ctx.accountRepo);
+              await assertCacheMatchesLedger(ctx, recipient.walletId);
+              await assertCacheMatchesLedger(ctx, reporter.walletId);
+              await assertCacheMatchesLedger(
+                ctx,
+                (await fraudHoldAccount()).id,
+              );
+            }
+            expect((await fraudHoldAccount()).balance - before).toBe(stillHeld);
           }
         },
       ),

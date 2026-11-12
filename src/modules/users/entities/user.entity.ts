@@ -50,9 +50,6 @@ export class User {
   @Column({ type: 'timestamptz', nullable: true })
   phoneVerifiedAt: Date | null;
 
-  @Column({ type: 'boolean', default: false })
-  isFrozen: boolean;
-
   // Set by change-phone (issue #10) between its verification-code send and
   // confirm — `phone` itself never changes until confirm succeeds, mirroring
   // pendingEmail (issue #9).
@@ -61,6 +58,19 @@ export class User {
 
   @Column({ type: 'varchar', default: 'tier0' })
   kycTier: KycTier;
+
+  // Set when the account first leaves Tier 0; the new-account inflow cap
+  // counts from here.
+  @Column({ type: 'timestamptz', nullable: true })
+  tier1ReachedAt: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  securityCooldownUntil: Date | null;
+
+  // When the current cooldown began; a re-trigger extends the end but leaves
+  // this, so a schedule is exempt only if it predates the whole cooldown.
+  @Column({ type: 'timestamptz', nullable: true })
+  securityCooldownStartedAt: Date | null;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt: Date;

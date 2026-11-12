@@ -86,8 +86,8 @@ describe('rotate-encryption-key', () => {
     await dataSource.query(
       `INSERT INTO bank_accounts
          (id, user_id, provider, bank_code, bank_name, account_name,
-          account_number_ciphertext, account_number_hash)
-       VALUES ($1, $2, 'kora', '033', 'UBA', 'Ada Lovelace', $3, $4)`,
+          account_number_ciphertext, account_number_hash, fully_eligible_at)
+       VALUES ($1, $2, 'kora', '033', 'UBA', 'Ada Lovelace', $3, $4, now())`,
       [
         bank,
         randomUUID(),

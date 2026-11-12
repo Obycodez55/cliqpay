@@ -12,6 +12,7 @@ import {
 import { dataOf, errorOf } from './support/api-response';
 import { waitFor } from './support/social-blocks-test-helpers';
 import { ScheduledPaymentChange } from '../../src/modules/scheduling/entities/scheduled-payment-change.entity';
+import { addTestRestriction } from './support/restrictions';
 
 jest.setTimeout(180_000);
 
@@ -220,10 +221,7 @@ describe('Scheduled payments to bank accounts: create, view and edit', () => {
       expect(errorOf(email).code).toBe('SENDER_EMAIL_NOT_VERIFIED');
 
       const frozen = await seedSender();
-      await ctx.userRepo.update(
-        { id: frozen.sender.userId },
-        { isFrozen: true },
-      );
+      await addTestRestriction(ctx.dataSource, frozen.sender.userId);
       const frozenRes = await h
         .createBankSchedule(frozen.sender.userId, frozen.bank.id)
         .expect(403);

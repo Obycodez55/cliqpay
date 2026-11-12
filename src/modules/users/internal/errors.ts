@@ -68,6 +68,23 @@ export class NoPendingPhoneChangeException extends DomainException {
   }
 }
 
+export class UserNotFoundException extends DomainException {
+  readonly code = 'USER_NOT_FOUND';
+  constructor() {
+    super('User not found', HttpStatus.NOT_FOUND);
+  }
+}
+
+export class AccountSelfLockedException extends DomainException {
+  readonly code = 'ACCOUNT_SELF_LOCKED';
+  constructor() {
+    super(
+      'This account is locked. Reset your password and unlock it to change security settings',
+      HttpStatus.FORBIDDEN,
+    );
+  }
+}
+
 const CONSTRAINT_EXCEPTIONS: Record<string, () => DomainException> = {
   UQ_users_email: () => new EmailAlreadyRegisteredException(),
   UQ_users_username: () => new UsernameAlreadyTakenException(),

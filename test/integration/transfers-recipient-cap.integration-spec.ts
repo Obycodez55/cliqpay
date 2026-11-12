@@ -76,6 +76,7 @@ describe('Recipient balance cap on incoming P2P transfers', () => {
         reference: ref,
         pin: '1234',
         visibility: 'private',
+        riskAcknowledged: true,
       });
   }
 

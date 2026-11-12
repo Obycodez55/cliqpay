@@ -99,8 +99,8 @@ describe('rekey-identifier-hashes', () => {
     await dataSource.query(
       `INSERT INTO bank_accounts
          (id, user_id, provider, bank_code, bank_name, account_name,
-          account_number_ciphertext, account_number_hash)
-       VALUES ($1, $2, 'kora', '033', 'UBA', 'Ada Lovelace', $3, $4)`,
+          account_number_ciphertext, account_number_hash, fully_eligible_at)
+       VALUES ($1, $2, 'kora', '033', 'UBA', 'Ada Lovelace', $3, $4, now())`,
       [id, userId, encryptSecret(ACCOUNT, encKey), hmacHex(ACCOUNT, encKey)],
     );
     return id;
@@ -172,8 +172,8 @@ describe('rekey-identifier-hashes', () => {
       dataSource.query(
         `INSERT INTO bank_accounts
            (user_id, provider, bank_code, bank_name, account_name,
-            account_number_ciphertext, account_number_hash)
-         VALUES ($1, 'kora', '033', 'UBA', 'Ada', 'x', $2)`,
+            account_number_ciphertext, account_number_hash, fully_eligible_at)
+         VALUES ($1, 'kora', '033', 'UBA', 'Ada', 'x', $2, now())`,
         [accountUser, hmacHex(ACCOUNT, newKey)],
       ),
     ).rejects.toMatchObject({ code: '23505' });

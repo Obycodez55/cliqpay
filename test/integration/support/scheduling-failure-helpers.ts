@@ -35,7 +35,10 @@ export function createFailureHelpers(getCtx: () => TransfersTestContext) {
     const recipient = await h.seedUser('recipient');
     const schedule = dataOf<ScheduleBody>(
       await h
-        .createSchedule(sender.userId, recipient.userId, options.body)
+        .createSchedule(sender.userId, recipient.userId, {
+          riskAcknowledged: true,
+          ...options.body,
+        })
         .expect(201),
     );
     return { sender, recipient, schedule };

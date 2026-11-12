@@ -39,6 +39,16 @@ export interface SecurityAlertPayload {
   // in-app channel's dedupe_key is derived from this (see templates.ts),
   // since this payload carries no other stable event identifier.
   occurredAt: string;
+  // Added when the alert is routed, never by the publisher: a signed link
+  // that can only lock the account. Not on in-app rows, which belong to a
+  // signed-in user who has the lock button.
+  lockUrl?: string;
+}
+
+export interface AccountSelfLockedPayload {
+  userId: string;
+  email: string;
+  occurredAt: string;
 }
 
 export interface FundingCompletedPayload {
@@ -280,6 +290,44 @@ export interface RefundAttentionRequiredPayload {
   occurredAt: string;
 }
 
+export interface RiskReviewOverduePayload {
+  email: string;
+  overdueFlags: number;
+  overdueWithdrawals: number;
+  oldestHours: number;
+  flagIds: string[];
+  withdrawalReferences: string[];
+  occurredAt: string;
+}
+
+export interface ScamFundsHeldPayload {
+  userId: string;
+  email: string;
+  amount: string;
+  currency: string;
+  held: boolean;
+  caseReference: string;
+}
+
+export interface ScamCaseResolvedPayload {
+  userId: string;
+  email: string;
+  caseReference: string;
+  party: 'reporter' | 'recipient';
+  outcome: 'upheld' | 'rejected' | 'withdrawn';
+  amount: string;
+  currency: string;
+  reason: string | null;
+}
+
+export interface ScamCasesDuePayload {
+  email: string;
+  dueSoon: number;
+  overdue: number;
+  caseReferences: string[];
+  occurredAt: string;
+}
+
 export interface NewFollowerPayload {
   userId: string;
   followerUserId: string;
@@ -309,6 +357,7 @@ export interface NotificationPayloadMap {
   password_reset_otp: PasswordResetOtpPayload;
   mfa_challenge_otp: MfaChallengeOtpPayload;
   security_alert: SecurityAlertPayload;
+  account_self_locked: AccountSelfLockedPayload;
   funding_completed: FundingCompletedPayload;
   funding_held: FundingHeldPayload;
   funding_refunded: FundingRefundedPayload;
@@ -331,6 +380,10 @@ export interface NotificationPayloadMap {
   account_frozen: AccountFrozenPayload;
   reconciliation_mismatch: ReconciliationMismatchPayload;
   refund_attention_required: RefundAttentionRequiredPayload;
+  risk_review_overdue: RiskReviewOverduePayload;
+  scam_funds_held: ScamFundsHeldPayload;
+  scam_case_resolved: ScamCaseResolvedPayload;
+  scam_cases_due: ScamCasesDuePayload;
   new_follower: NewFollowerPayload;
   post_reaction: PostReactionPayload;
   post_comment: PostCommentPayload;
@@ -371,6 +424,7 @@ export const NOTIFICATION_CATALOG = {
   password_reset_otp: { channels: ['email'] },
   mfa_challenge_otp: { channels: ['email'] },
   security_alert: { channels: ['email', 'push', 'in_app'] },
+  account_self_locked: { channels: ['email', 'push'] },
   funding_completed: { channels: ['email', 'in_app'] },
   funding_held: { channels: ['email', 'in_app'] },
   funding_refunded: { channels: ['email', 'in_app'] },
@@ -406,6 +460,10 @@ export const NOTIFICATION_CATALOG = {
   chargeback_received: { channels: ['email'] },
   account_frozen: { channels: ['email'] },
   reconciliation_mismatch: { channels: ['email'] },
+  risk_review_overdue: { channels: ['email'] },
+  scam_funds_held: { channels: ['email', 'push', 'in_app'] },
+  scam_case_resolved: { channels: ['email', 'push', 'in_app'] },
+  scam_cases_due: { channels: ['email'] },
   refund_attention_required: { channels: ['email'] },
   new_follower: { channels: ['push', 'in_app'] },
   post_reaction: { channels: ['in_app'] },

@@ -12,6 +12,7 @@ import {
   seedUser,
 } from './support/funding-completion';
 import { assertInvariantHolds } from './support/ledger-invariant';
+import { addTestRestriction } from './support/restrictions';
 import { Money } from '../../src/shared/primitives/money';
 
 jest.setTimeout(180_000);
@@ -74,6 +75,43 @@ describe('Balance cap when a funding completes', () => {
       amount: 1_000_000n,
     });
     await assertInvariantHolds(ctx.accountRepo);
+  });
+
+  it('holds a funding for an all-restricted user without crediting or starting a refund', async () => {
+    const { userId, walletId } = await seedUser(ctx, 'tier3');
+    await addTestRestriction(ctx.dataSource, userId, {
+      reason: 'sanctions',
+      scope: 'all',
+    });
+    const reference = await seedPendingFunding(ctx, walletId, 1_000_000n);
+    const suspenseBefore = await suspenseBalance();
+    const refundsBefore = ctx.fakeAdapter.refundsInitiated.length;
+
+    await deliverChargeSuccess(ctx, reference, 1_000_000n);
+
+    expect(await statusOf(reference)).toBe('held');
+    expect(await balanceOf(ctx, walletId)).toBe(0n);
+    expect(await suspenseBalance()).toBe(suspenseBefore + 1_000_000n);
+    const funding = await ctx.transactionRepo.findOneByOrFail({ reference });
+    expect(
+      await ctx.transactionRepo.countBy({
+        type: 'funding_refund',
+        reversesTransactionId: funding.id,
+      }),
+    ).toBe(0);
+    expect(ctx.fakeAdapter.refundsInitiated).toHaveLength(refundsBefore);
+    await assertInvariantHolds(ctx.accountRepo);
+  });
+
+  it('credits an outbound-only restricted user normally', async () => {
+    const { userId, walletId } = await seedUser(ctx, 'tier3');
+    await addTestRestriction(ctx.dataSource, userId);
+    const reference = await seedPendingFunding(ctx, walletId, 1_000_000n);
+
+    await deliverChargeSuccess(ctx, reference, 1_000_000n);
+
+    expect(await statusOf(reference)).toBe('completed');
+    expect(await balanceOf(ctx, walletId)).toBe(1_000_000n);
   });
 
   it('holds a funding for a user whose tier has a zero cap', async () => {

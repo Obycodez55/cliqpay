@@ -5,6 +5,14 @@ import { DeviceMetadata } from '../../../src/modules/auth/internal/device-metada
 import { EmailMessage } from '../../../src/modules/notifications/channels/email/email-sender.interface';
 import { SmsMessage } from '../../../src/modules/notifications/channels/sms/sms-sender.interface';
 import { AuthTestContext } from './auth-test-context';
+import { TEST_DEVICE_ID } from './device-defaults';
+import { createTestDeviceKey, TestDeviceKey } from './device-keys';
+
+export { TEST_DEVICE_ID };
+
+// One key for the default test device, shared so specs that log in more than
+// once on it present the same key.
+export const TEST_DEVICE_KEY = createTestDeviceKey();
 
 export const TEST_DEVICE: DeviceMetadata = {
   ipAddress: '203.0.113.10',
@@ -76,13 +84,29 @@ export interface AuthTestHelpers {
   loginAndVerify: (
     email: string,
     password: string,
+    deviceKey?: TestDeviceKey,
   ) => Promise<{ tokens: TokenPairResponseDto; trustedDeviceToken: string }>;
+  signedNonce: (
+    purpose: 'login' | 'refresh',
+    deviceKey?: TestDeviceKey,
+  ) => Promise<{ nonce: string; signature: string }>;
+  loginTrusted: (
+    email: string,
+    password: string,
+    trustedDeviceToken: string,
+    deviceKey?: TestDeviceKey,
+  ) => ReturnType<AuthTestContext['sessionService']['login']>;
+  refreshSigned: (
+    refreshToken: string,
+    deviceKey?: TestDeviceKey,
+  ) => Promise<TokenPairResponseDto>;
 }
 
 export function createAuthTestHelpers(ctx: AuthTestContext): AuthTestHelpers {
   const {
     authService,
     sessionService,
+    deviceBindingService,
     emailAdapter,
     smsAdapter,
     verificationCodeRepo,
@@ -154,10 +178,12 @@ export function createAuthTestHelpers(ctx: AuthTestContext): AuthTestHelpers {
   async function loginAndVerify(
     email: string,
     password: string,
+    deviceKey: TestDeviceKey = TEST_DEVICE_KEY,
   ): Promise<{ tokens: TokenPairResponseDto; trustedDeviceToken: string }> {
     const result = await sessionService.login(
       { email, password },
       null,
+      deviceKey.deviceId,
       TEST_DEVICE,
     );
     if (!result.mfaRequired) {
@@ -169,8 +195,48 @@ export function createAuthTestHelpers(ctx: AuthTestContext): AuthTestHelpers {
       latestEmailWithSubject(SIGN_IN_CODE_SUBJECT).text,
     );
     return sessionService.verifyMfaChallenge(
-      { challengeId: result.challengeId, code },
+      {
+        challengeId: result.challengeId,
+        code,
+        devicePublicKey: deviceKey.publicKeyRawBase64,
+      },
+      deviceKey.deviceId,
       TEST_DEVICE,
+    );
+  }
+
+  async function signedNonce(
+    purpose: 'login' | 'refresh',
+    deviceKey: TestDeviceKey = TEST_DEVICE_KEY,
+  ): Promise<{ nonce: string; signature: string }> {
+    const { nonce } = await deviceBindingService.issueChallenge(
+      deviceKey.deviceId,
+      purpose,
+    );
+    return { nonce, signature: deviceKey.signChallenge(purpose, nonce) };
+  }
+
+  async function loginTrusted(
+    email: string,
+    password: string,
+    trustedDeviceToken: string,
+    deviceKey: TestDeviceKey = TEST_DEVICE_KEY,
+  ) {
+    return sessionService.login(
+      { email, password, ...(await signedNonce('login', deviceKey)) },
+      trustedDeviceToken,
+      deviceKey.deviceId,
+      TEST_DEVICE,
+    );
+  }
+
+  async function refreshSigned(
+    refreshToken: string,
+    deviceKey: TestDeviceKey = TEST_DEVICE_KEY,
+  ): Promise<TokenPairResponseDto> {
+    return sessionService.refresh(
+      { refreshToken, ...(await signedNonce('refresh', deviceKey)) },
+      deviceKey.deviceId,
     );
   }
 
@@ -182,5 +248,8 @@ export function createAuthTestHelpers(ctx: AuthTestContext): AuthTestHelpers {
     latestEmailWithSubject,
     agePastResendCooldown,
     loginAndVerify,
+    signedNonce,
+    loginTrusted,
+    refreshSigned,
   };
 }

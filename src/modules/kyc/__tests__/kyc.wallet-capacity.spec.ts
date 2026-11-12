@@ -2,6 +2,8 @@ import { DataSource, EntityManager } from 'typeorm';
 import { AppConfig } from '../../../config';
 import { Money } from '../../../shared/primitives/money';
 import { KycTier, UsersService } from '../../users/users.service';
+import { UserLimit } from '../entities/user-limit.entity';
+import { UserLimitsService } from '../internal/user-limits.service';
 import { KycService } from '../kyc.service';
 import { TierLimit } from '../entities/tier-limit.entity';
 import { TierLimitNotConfiguredException } from '../internal/errors';
@@ -36,7 +38,8 @@ describe('KycService.getWalletCapacity', () => {
       'NGN',
       {
         readDebitedSince,
-        readBalanceAndPending: () => Promise.resolve({ balance, pending }),
+        readBalanceAndPending: () =>
+          Promise.resolve({ balance, pending, received: NGN(0) }),
       },
     );
 
@@ -52,24 +55,40 @@ describe('KycService.getWalletCapacity', () => {
     );
     manager = {
       query: jest.fn(),
-      getRepository: jest.fn(() => ({
-        findOneBy: jest.fn(() =>
-          Promise.resolve(
-            tierLimitMissing ? null : { tier, ...TIER_LIMITS[tier] },
-          ),
-        ),
-      })),
+      getRepository: jest.fn((entity: unknown) =>
+        entity === UserLimit
+          ? { findOneBy: jest.fn(() => Promise.resolve(null)) }
+          : {
+              findOneBy: jest.fn(() =>
+                Promise.resolve(
+                  tierLimitMissing ? null : { tier, ...TIER_LIMITS[tier] },
+                ),
+              ),
+            },
+      ),
     };
     service = new KycService(
       {} as DataSource,
       {} as KycProvider,
       {
+        getSecurityControls: jest.fn(() =>
+          Promise.resolve({
+            securityCooldownUntil: null,
+            securityCooldownStartedAt: null,
+            tier1ReachedAt: null,
+          }),
+        ),
         getKycTier: jest.fn(() => Promise.resolve(tier)),
       } as unknown as UsersService,
       {
         encryption: { key: 'a'.repeat(64) },
         identifierHash: { key: 'c'.repeat(64) },
+        securityControls: {
+          cooldownLimit: 2_000_000,
+          bankAccountCoolingLimit: 2_000_000,
+        },
       } as AppConfig,
+      {} as UserLimitsService,
     );
   });
 

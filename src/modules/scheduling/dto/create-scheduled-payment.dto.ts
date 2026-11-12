@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -54,6 +55,21 @@ function IsWithinUnitLimit() {
     });
 }
 
+function IsAbsentForType(type: ScheduleTargetType) {
+  return (target: object, propertyName: string) =>
+    registerDecorator({
+      target: target.constructor,
+      propertyName,
+      validator: {
+        validate: (value: unknown, args: ValidationArguments) =>
+          value === undefined ||
+          (args.object as ScheduleTargetDto).type !== type,
+        defaultMessage: (args: ValidationArguments) =>
+          `${args.property} cannot be set on a ${type} target`,
+      },
+    });
+}
+
 export class ScheduleIntervalDto {
   @IsIn(INTERVAL_UNITS)
   @ApiProperty({ enum: INTERVAL_UNITS })
@@ -74,16 +90,24 @@ export class ScheduleTargetDto {
   @ApiProperty({ enum: SCHEDULE_TARGET_TYPES })
   type: ScheduleTargetType;
 
-  @ValidateIf((target: ScheduleTargetDto) => target.type !== 'bank_account')
+  @ValidateIf(
+    (target: ScheduleTargetDto, value: unknown) =>
+      target.type !== 'bank_account' || value !== undefined,
+  )
   @IsUUID()
+  @IsAbsentForType('bank_account')
   @ApiProperty({
     required: false,
     description: "The recipient's user id. Required for a `user` target.",
   })
   userId?: string;
 
-  @ValidateIf((target: ScheduleTargetDto) => target.type !== 'user')
+  @ValidateIf(
+    (target: ScheduleTargetDto, value: unknown) =>
+      target.type !== 'user' || value !== undefined,
+  )
   @IsUUID()
+  @IsAbsentForType('user')
   @ApiProperty({
     required: false,
     description:
@@ -179,6 +203,15 @@ export class CreateScheduledPaymentDto {
       'Whether the transfer made on the run date may appear in the activity feed. Required for a `user` target, with no default; forbidden for a `bank_account` target.',
   })
   visibility?: ScheduleVisibility;
+
+  @IsOptional()
+  @IsBoolean()
+  @ApiProperty({
+    required: false,
+    description:
+      'Send true to proceed after a 422 RISK_ACKNOWLEDGEMENT_REQUIRED response (user targets only). The runs are not checked again.',
+  })
+  riskAcknowledged?: boolean;
 
   @Matches(/^\d{4}$/, { message: 'pin must be exactly 4 digits' })
   @ApiProperty({

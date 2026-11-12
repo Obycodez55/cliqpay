@@ -1,8 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource, EntityManager, In } from 'typeorm';
+import { DataSource, EntityManager, In, IsNull } from 'typeorm';
 import { KycTier, User } from './entities/user.entity';
 import {
+  AccountRestriction,
+  RestrictionReason,
+  RestrictionScope,
+} from './entities/account-restriction.entity';
+import { AuditActor, AuditService } from '../../shared/audit/audit.service';
+import {
+  AccountSelfLockedException,
+  UserNotFoundException,
   NoPendingEmailChangeException,
   NoPendingPhoneChangeException,
   UsernameChangeCooldownException,
@@ -14,14 +22,37 @@ import {
   toProfileResponse,
 } from './dto/profile-response.dto';
 import {
-  RecipientLookupResponseDto,
-  toRecipientLookupResponse,
-} from './dto/recipient-lookup-response.dto';
+  IdentitySummaryDto,
+  toIdentitySummary,
+} from '../../common/dto/identity-summary.dto';
 
 export type { KycTier };
 export { KYC_TIERS } from './entities/user.entity';
+export type { RestrictionReason, RestrictionScope };
+export { RESTRICTION_REASONS } from './entities/account-restriction.entity';
+
+export interface RestrictionState {
+  blocksOutbound: boolean;
+  blocksInbound: boolean;
+}
 
 const USERNAME_CHANGE_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+export const SECURITY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+export type SecurityCooldownTrigger =
+  | 'device_trusted'
+  | 'password_reset'
+  | 'password_changed'
+  | 'email_changed'
+  | 'phone_changed'
+  | 'mfa_method_added'
+  | 'pin_reset';
+
+export interface SecurityControls {
+  securityCooldownUntil: Date | null;
+  securityCooldownStartedAt: Date | null;
+  tier1ReachedAt: Date | null;
+}
 
 export interface CreateUserData {
   email: string;
@@ -39,7 +70,10 @@ export interface CreateUserData {
  */
 @Injectable()
 export class UsersService {
-  constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
+  constructor(
+    @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly auditService: AuditService,
+  ) {}
 
   /**
    * Takes the caller's own EntityManager — auth.register() creates the
@@ -84,11 +118,11 @@ export class UsersService {
   // could show up as a timing difference (see issue #21).
   async lookupRecipient(
     identifier: string,
-  ): Promise<RecipientLookupResponseDto | null> {
+  ): Promise<IdentitySummaryDto | null> {
     const user = identifier.includes('@')
       ? await this.findByEmail(identifier)
       : await this.findByUsername(identifier);
-    return user ? toRecipientLookupResponse(user) : null;
+    return user ? toIdentitySummary(user) : null;
   }
 
   async findById(userId: string): Promise<User> {
@@ -132,8 +166,11 @@ export class UsersService {
   // verification code has been consumed. Insert-and-catch on the unique
   // violation, same race-free pattern as changeUsername — no pre-check
   // findByEmail.
-  async confirmPendingEmail(userId: string): Promise<User> {
-    const repo = this.dataSource.getRepository(User);
+  async confirmPendingEmail(
+    userId: string,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<User> {
+    const repo = manager.getRepository(User);
     const user = await repo.findOneByOrFail({ id: userId });
     if (!user.pendingEmail) {
       throw new NoPendingEmailChangeException();
@@ -161,8 +198,11 @@ export class UsersService {
   // Called by AuthService.confirmPhoneChange once the new number's
   // verification code has been consumed. Insert-and-catch on the unique
   // violation, same race-free pattern as confirmPendingEmail.
-  async confirmPendingPhone(userId: string): Promise<User> {
-    const repo = this.dataSource.getRepository(User);
+  async confirmPendingPhone(
+    userId: string,
+    manager: EntityManager = this.dataSource.manager,
+  ): Promise<User> {
+    const repo = manager.getRepository(User);
     const user = await repo.findOneByOrFail({ id: userId });
     if (!user.pendingPhone) {
       throw new NoPendingPhoneChangeException();
@@ -179,31 +219,199 @@ export class UsersService {
     return user;
   }
 
-  // Called by `disputes` when a chargeback leaves a wallet strictly
-  // negative (ADR-0016) — freezing is a dispute-lifecycle event, never
-  // triggered automatically from a balance crossing zero. Takes the
-  // caller's own EntityManager, not an injected repository — the freeze
-  // must commit atomically with the chargeback posting and the `disputes`
-  // row it accompanies (DisputesService.recordChargeback), so there's no
-  // standalone-transaction variant to fall back to, same as
-  // LedgerService.createUserWallet.
-  async freeze(manager: EntityManager, userId: string): Promise<void> {
-    await manager
-      .getRepository(User)
-      .update({ id: userId }, { isFrozen: true });
+  // Takes the same per-user advisory lock the KYC limit checks take, so a
+  // restriction and a money movement for one user are serialised.
+  async addRestriction(
+    manager: EntityManager,
+    params: {
+      userId: string;
+      reason: RestrictionReason;
+      scope: RestrictionScope;
+      sourceId: string;
+      note?: string;
+      actor: AuditActor;
+    },
+  ): Promise<boolean> {
+    await this.lockUser(manager, params.userId);
+    const repo = manager.getRepository(AccountRestriction);
+    const open = await repo.existsBy({
+      userId: params.userId,
+      reason: params.reason,
+      sourceId: params.sourceId,
+      liftedAt: IsNull(),
+    });
+    if (open) {
+      return false;
+    }
+    await repo.insert({
+      userId: params.userId,
+      reason: params.reason,
+      scope: params.scope,
+      sourceId: params.sourceId,
+      note: params.note ?? null,
+      createdAt: new Date(),
+    });
+    await this.auditService.record(manager, {
+      actor: params.actor,
+      action: 'restriction_added',
+      subject: { type: 'user', id: params.userId },
+      metadata: {
+        reason: params.reason,
+        scope: params.scope,
+        sourceId: params.sourceId,
+      },
+    });
+    return true;
   }
 
-  // The other half of freeze() — called only by
-  // `disputes.resolveDispute`'s `resolved` branch, once the resulting
-  // balance is non-negative (issue #36, ADR-0016). Never called from a
-  // balance-restoring top-up elsewhere: the freeze represents an unresolved
-  // dispute, not an arithmetic state, so it lifts only through the
-  // dispute-resolution path. Same EntityManager-only shape as freeze() for
-  // the same atomicity reason.
-  async unfreeze(manager: EntityManager, userId: string): Promise<void> {
+  async liftRestriction(
+    manager: EntityManager,
+    params: {
+      userId: string;
+      reason: RestrictionReason;
+      sourceId: string;
+      actor: AuditActor;
+    },
+  ): Promise<boolean> {
+    await this.lockUser(manager, params.userId);
+    const result = await manager.getRepository(AccountRestriction).update(
+      {
+        userId: params.userId,
+        reason: params.reason,
+        sourceId: params.sourceId,
+        liftedAt: IsNull(),
+      },
+      { liftedAt: new Date(), liftedBy: params.actor.id ?? params.actor.type },
+    );
+    if (!result.affected) {
+      return false;
+    }
+    await this.auditService.record(manager, {
+      actor: params.actor,
+      action: 'restriction_lifted',
+      subject: { type: 'user', id: params.userId },
+      metadata: { reason: params.reason, sourceId: params.sourceId },
+    });
+    return true;
+  }
+
+  // Callers must already hold the user's advisory lock for the answer to be
+  // stable for the rest of their transaction.
+  async getRestrictionState(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<RestrictionState> {
+    const open = await manager
+      .getRepository(AccountRestriction)
+      .find({ where: { userId, liftedAt: IsNull() }, select: { scope: true } });
+    return {
+      blocksOutbound: open.length > 0,
+      blocksInbound: open.some((row) => row.scope === 'all'),
+    };
+  }
+
+  // With a manager it takes the user's lock first, so the answer holds for the
+  // rest of the caller's transaction; without one it is a plain read.
+  async assertNotSelfLocked(
+    userId: string,
+    manager?: EntityManager,
+  ): Promise<void> {
+    if (manager) {
+      await this.lockUser(manager, userId);
+    }
+    const locked = await (manager ?? this.dataSource.manager)
+      .getRepository(AccountRestriction)
+      .existsBy({
+        userId,
+        reason: 'self_lock',
+        liftedAt: IsNull(),
+      });
+    if (locked) {
+      throw new AccountSelfLockedException();
+    }
+  }
+
+  async getOpenSelfLock(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<{ createdAt: Date } | null> {
+    const row = await manager.getRepository(AccountRestriction).findOne({
+      where: { userId, reason: 'self_lock', liftedAt: IsNull() },
+      select: { createdAt: true },
+    });
+    return row ? { createdAt: row.createdAt } : null;
+  }
+
+  async clearPendingContactChanges(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<void> {
     await manager
       .getRepository(User)
-      .update({ id: userId }, { isFrozen: false });
+      .update({ id: userId }, { pendingEmail: null, pendingPhone: null });
+  }
+
+  // For a reviewer who has verified out of band that the owner controls the
+  // new address, so the address is marked verified and any pending change
+  // is dropped.
+  async recoverEmail(
+    manager: EntityManager,
+    params: { userId: string; newEmail: string; reviewerId: string },
+  ): Promise<void> {
+    await this.lockUser(manager, params.userId);
+    const repo = manager.getRepository(User);
+    const user = await repo.findOneBy({ id: params.userId });
+    if (!user) {
+      throw new UserNotFoundException();
+    }
+    try {
+      await repo.update(
+        { id: params.userId },
+        {
+          email: params.newEmail,
+          emailVerifiedAt: new Date(),
+          pendingEmail: null,
+        },
+      );
+    } catch (error) {
+      mapUsersUniqueViolation(error);
+    }
+    const actor: AuditActor = { type: 'reviewer', id: params.reviewerId };
+    await this.auditService.record(manager, {
+      actor,
+      action: 'email_recovered',
+      subject: { type: 'user', id: params.userId },
+      metadata: { previousEmail: user.email, newEmail: params.newEmail },
+    });
+    await this.startSecurityCooldown(
+      manager,
+      params.userId,
+      'email_changed',
+      actor,
+    );
+  }
+
+  async getOpenRestrictionUserIds(
+    userIds: string[],
+    reason?: RestrictionReason,
+  ): Promise<Set<string>> {
+    if (userIds.length === 0) {
+      return new Set();
+    }
+    const rows = await this.dataSource.getRepository(AccountRestriction).find({
+      where: {
+        userId: In(userIds),
+        liftedAt: IsNull(),
+        ...(reason && { reason }),
+      },
+      select: { userId: true },
+    });
+    return new Set(rows.map((row) => row.userId));
+  }
+
+  // Money paths take this before any wallet-row lock.
+  async lockUser(manager: EntityManager, userId: string): Promise<void> {
+    await manager.query('SELECT pg_advisory_xact_lock(hashtext($1))', [userId]);
   }
 
   async getKycTier(manager: EntityManager, userId: string): Promise<KycTier> {
@@ -218,7 +426,64 @@ export class UsersService {
     userId: string,
     tier: KycTier,
   ): Promise<void> {
-    await manager.getRepository(User).update({ id: userId }, { kycTier: tier });
+    const repo = manager.getRepository(User);
+    await repo.update({ id: userId }, { kycTier: tier });
+    if (tier !== 'tier0') {
+      await repo.update(
+        { id: userId, tier1ReachedAt: IsNull() },
+        { tier1ReachedAt: new Date() },
+      );
+    }
+  }
+
+  async getSecurityControls(
+    manager: EntityManager,
+    userId: string,
+  ): Promise<SecurityControls> {
+    const user = await manager
+      .getRepository(User)
+      .findOneByOrFail({ id: userId });
+    return {
+      securityCooldownUntil: user.securityCooldownUntil,
+      securityCooldownStartedAt: user.securityCooldownStartedAt,
+      tier1ReachedAt: user.tier1ReachedAt,
+    };
+  }
+
+  // Re-triggering extends the end and keeps the start, so a rolling-window
+  // check can never be reset by repeating a security change.
+  async startSecurityCooldown(
+    manager: EntityManager,
+    userId: string,
+    trigger: SecurityCooldownTrigger,
+    actor: AuditActor,
+  ): Promise<void> {
+    await this.lockUser(manager, userId);
+    const repo = manager.getRepository(User);
+    const user = await repo.findOneByOrFail({ id: userId });
+    const now = new Date();
+    const proposed = new Date(now.getTime() + SECURITY_COOLDOWN_MS);
+    const active =
+      user.securityCooldownUntil !== null && user.securityCooldownUntil > now;
+    const until =
+      active && user.securityCooldownUntil! > proposed
+        ? user.securityCooldownUntil!
+        : proposed;
+    await repo.update(
+      { id: userId },
+      {
+        securityCooldownUntil: until,
+        securityCooldownStartedAt: active
+          ? user.securityCooldownStartedAt
+          : now,
+      },
+    );
+    await this.auditService.record(manager, {
+      actor,
+      action: 'security_cooldown_started',
+      subject: { type: 'user', id: userId },
+      metadata: { trigger, until: until.toISOString() },
+    });
   }
 
   async getProfile(userId: string): Promise<ProfileResponseDto> {

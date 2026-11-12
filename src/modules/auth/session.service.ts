@@ -1,10 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { InjectDataSource } from '@nestjs/typeorm';
 import * as bcrypt from 'bcrypt';
 import { DataSource, EntityManager } from 'typeorm';
+import { DeviceMismatchException } from '../../common/device/device-id.util';
 import { runInTransaction } from '../../database/transaction.util';
 import {
+  DEVICE_REGISTERED_EVENT,
+  DeviceRegisteredEventPayload,
   SECURITY_ALERT_EVENT,
   SecurityAlertEventPayload,
 } from '../../shared/events/domain-events';
@@ -27,6 +30,8 @@ import {
   InvalidRefreshTokenException,
   SessionRevokedException,
 } from './internal/errors';
+import { DeviceBindingService } from './device-binding.service';
+import { TrustedDevice } from './entities/trusted-device.entity';
 import { MfaService } from './mfa.service';
 import { generateOpaqueToken, hashOpaqueToken } from './internal/secrets.util';
 import { DeviceMetadata } from './internal/device-metadata.util';
@@ -41,22 +46,26 @@ const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 // the login lockout; AuthController and MfaController are its only callers.
 @Injectable()
 export class SessionService {
+  private readonly logger = new Logger(SessionService.name);
+
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly usersService: UsersService,
     private readonly jwtService: JwtService,
     private readonly eventBus: EventBusService,
     private readonly mfaService: MfaService,
+    private readonly deviceBinding: DeviceBindingService,
   ) {}
 
-  // `trustedDeviceToken` is the raw value from the cookie the controller
-  // read, or null if none was presented — see docs/architecture.md §3.8.
+  // `trustedDeviceToken` is the raw value of the X-Trusted-Device-Token
+  // header, or null if none was presented — see docs/architecture.md §3.8.
   // `device` is required, not defaulted — Session.device is NOT NULL, so
   // every caller has to supply a real value rather than the service
   // silently making one up (see ADR-0003).
   async login(
     dto: LoginDto,
     trustedDeviceToken: string | null,
+    deviceId: string,
     device: DeviceMetadata,
   ): Promise<LoginResponseDto> {
     const user = await this.usersService.findByEmail(dto.email);
@@ -108,10 +117,15 @@ export class SessionService {
         )
       : null;
 
-    if (!trustedDevice) {
+    if (
+      !trustedDevice ||
+      (this.deviceBinding.keyRequired && !trustedDevice.publicKey)
+    ) {
       const challenge = await this.mfaService.createChallengeForLogin(user);
       return { mfaRequired: true, ...challenge };
     }
+
+    await this.assertTrustedDeviceProof(trustedDevice, deviceId, dto);
 
     const { session, refreshToken } = await runInTransaction(
       this.dataSource,
@@ -121,13 +135,18 @@ export class SessionService {
           manager,
           user.id,
           trustedDevice.id,
+          deviceId,
           now,
           device,
         );
       },
     );
 
-    const accessToken = await this.signAccessToken(user.id, session.id);
+    const accessToken = await this.signAccessToken(
+      user.id,
+      session.id,
+      deviceId,
+    );
     return {
       mfaRequired: false,
       ...toTokenPairResponse(
@@ -139,34 +158,72 @@ export class SessionService {
   }
 
   // Verifies an MfaChallenge from an untrusted-device login and, on success,
-  // completes the login: issues a session plus a brand-new TrustedDevice
-  // linked to it (docs/architecture.md §3.8 — a verified challenge earns
-  // trust for next time, not just this login).
+  // completes the login: registers the device key, issues a session plus a
+  // brand-new TrustedDevice linked to it (docs/architecture.md §3.8 — a
+  // verified challenge earns trust for next time, not just this login), and
+  // retires whichever device was trusted before.
   async verifyMfaChallenge(
     dto: VerifyMfaChallengeDto,
+    deviceId: string,
     device: DeviceMetadata,
   ): Promise<{ tokens: TokenPairResponseDto; trustedDeviceToken: string }> {
+    const publicKey = this.deviceBinding.normalizePublicKey(
+      dto.devicePublicKey,
+    );
     const { userId } = await this.mfaService.verifyChallenge(
       dto.challengeId,
       dto.code,
     );
+    const registered = await this.deviceBinding.attest({
+      deviceId,
+      publicKey,
+      attestation: dto.attestation,
+    });
 
     const now = new Date();
-    const { session, refreshToken, trustedDeviceToken } =
+    const { session, refreshToken, trustedDeviceToken, replaced } =
       await runInTransaction(this.dataSource, async (manager) => {
-        const { device: trustedDevice, rawToken } =
-          await this.mfaService.issueTrustedDevice(manager, userId, device);
+        const {
+          device: trustedDevice,
+          rawToken,
+          replaced,
+        } = await this.mfaService.issueTrustedDevice(
+          manager,
+          userId,
+          deviceId,
+          device,
+          registered,
+        );
         const { session, refreshToken } = await this.createSession(
           manager,
           userId,
           trustedDevice.id,
+          deviceId,
           now,
           device,
         );
-        return { session, refreshToken, trustedDeviceToken: rawToken };
+        return {
+          session,
+          refreshToken,
+          trustedDeviceToken: rawToken,
+          replaced,
+        };
       });
 
-    const accessToken = await this.signAccessToken(userId, session.id);
+    await this.publishDeviceRegistered(userId, deviceId, registered);
+
+    if (replaced.some((old) => old.deviceId !== deviceId)) {
+      await this.publishAlert(
+        userId,
+        'Your account is now signed in on a new device, so this device was signed out. If this wasn’t you, please change your password.',
+      );
+    }
+
+    const accessToken = await this.signAccessToken(
+      userId,
+      session.id,
+      deviceId,
+    );
     return {
       tokens: toTokenPairResponse(
         accessToken,
@@ -177,10 +234,94 @@ export class SessionService {
     };
   }
 
+  // A trusted-device token presented by another device, or a signature that
+  // does not verify against the registered key, means the token left its
+  // device: the trust and its sessions are revoked.
+  private async assertTrustedDeviceProof(
+    trustedDevice: TrustedDevice,
+    deviceId: string,
+    dto: LoginDto,
+  ): Promise<void> {
+    if (trustedDevice.deviceId !== deviceId) {
+      await this.revokeTrustedDevice(trustedDevice, 'device_mismatch');
+      throw new DeviceMismatchException();
+    }
+    if (!this.deviceBinding.keyRequired) {
+      return;
+    }
+    const valid = await this.deviceBinding.verifySignedChallenge({
+      purpose: 'login',
+      deviceId,
+      publicKey: trustedDevice.publicKey!,
+      nonce: dto.nonce,
+      signature: dto.signature,
+    });
+    if (!valid) {
+      await this.revokeTrustedDevice(trustedDevice, 'bad_signature');
+      throw new DeviceMismatchException();
+    }
+  }
+
+  private async revokeTrustedDevice(
+    trustedDevice: TrustedDevice,
+    reason: 'device_mismatch' | 'bad_signature',
+  ): Promise<void> {
+    await runInTransaction(this.dataSource, (manager) =>
+      this.mfaService.revokeTrustedDevice(manager, trustedDevice, reason),
+    );
+    await this.publishAlert(
+      trustedDevice.userId,
+      'We detected a sign-in attempt that did not come from your trusted device and signed that device out for your protection. If this wasn’t you, please change your password.',
+    );
+  }
+
+  private async publishDeviceRegistered(
+    userId: string,
+    deviceId: string,
+    registered: {
+      attestationResult: DeviceRegisteredEventPayload['attestationResult'];
+    },
+  ): Promise<void> {
+    try {
+      await this.eventBus.publish<string, DeviceRegisteredEventPayload>({
+        name: DEVICE_REGISTERED_EVENT,
+        payload: {
+          userId,
+          deviceId,
+          attestationResult: registered.attestationResult,
+        },
+        occurredAt: new Date(),
+      });
+    } catch (error) {
+      this.logger.error(
+        `publishDeviceRegistered: device trusted for user "${userId}", but publishing the event failed (${(error as Error).message}) — this will not be retried`,
+      );
+    }
+  }
+
+  // Published after the revoke has committed, per EventBusService's own
+  // rule — auth (core) can't call NotificationService (peripheral)
+  // directly, so this goes through the shared event bus.
+  private async publishAlert(userId: string, message: string): Promise<void> {
+    const user = await this.usersService.findById(userId);
+    const occurredAt = new Date();
+    await this.eventBus.publish<string, SecurityAlertEventPayload>({
+      name: SECURITY_ALERT_EVENT,
+      payload: {
+        userId,
+        email: user.email,
+        message,
+        occurredAt: occurredAt.toISOString(),
+      },
+      occurredAt,
+    });
+  }
+
   private async createSession(
     manager: EntityManager,
     userId: string,
     trustedDeviceId: string | null,
+    deviceId: string,
     now: Date,
     device: DeviceMetadata,
   ): Promise<{ session: Session; refreshToken: string }> {
@@ -192,6 +333,7 @@ export class SessionService {
       previousTokenHash: null,
       status: 'active',
       trustedDeviceId,
+      deviceId,
       device,
       expiresAt: new Date(now.getTime() + REFRESH_TOKEN_TTL_MS),
       lastUsedAt: now,
@@ -200,7 +342,10 @@ export class SessionService {
     return { session, refreshToken };
   }
 
-  async refresh(dto: RefreshDto): Promise<TokenPairResponseDto> {
+  async refresh(
+    dto: RefreshDto,
+    deviceId: string,
+  ): Promise<TokenPairResponseDto> {
     const hash = hashOpaqueToken(dto.refreshToken);
     const sessionRepo = this.dataSource.getRepository(Session);
 
@@ -215,29 +360,10 @@ export class SessionService {
         where: { previousTokenHash: hash },
       });
       if (previousMatch) {
-        previousMatch.status = 'revoked';
-        await sessionRepo.save(previousMatch);
-
-        const user = await this.usersService.findById(previousMatch.userId);
-
-        // Published after the revoke above has committed, per
-        // EventBusService's own rule — auth (core) can't call
-        // NotificationService (peripheral) directly, so this goes through
-        // the shared event bus; notifications' existing fire-and-forget
-        // processor picks it up by job name.
-        const alertOccurredAt = new Date();
-        await this.eventBus.publish<string, SecurityAlertEventPayload>({
-          name: SECURITY_ALERT_EVENT,
-          payload: {
-            userId: previousMatch.userId,
-            email: user.email,
-            message:
-              'We detected an already-used refresh token being replayed and revoked the affected session for your protection. If this wasn’t you, please change your password.',
-            occurredAt: alertOccurredAt.toISOString(),
-          },
-          occurredAt: alertOccurredAt,
-        });
-
+        await this.revokeSession(
+          previousMatch,
+          'We detected an already-used refresh token being replayed and revoked the affected session for your protection. If this wasn’t you, please change your password.',
+        );
         throw new SessionRevokedException();
       }
       throw new InvalidRefreshTokenException();
@@ -247,6 +373,8 @@ export class SessionService {
     if (currentMatch.status !== 'active' || currentMatch.expiresAt <= now) {
       throw new InvalidRefreshTokenException();
     }
+
+    await this.assertSessionDeviceProof(currentMatch, deviceId, dto);
 
     const newRefreshToken = generateOpaqueToken();
     currentMatch.previousTokenHash = currentMatch.currentTokenHash;
@@ -258,12 +386,59 @@ export class SessionService {
     const accessToken = await this.signAccessToken(
       currentMatch.userId,
       currentMatch.id,
+      deviceId,
     );
     return toTokenPairResponse(
       accessToken,
       newRefreshToken,
       ACCESS_TOKEN_TTL_SECONDS,
     );
+  }
+
+  // A refresh from another device, or one whose signature does not verify
+  // against the session's device key, is handled like refresh-token reuse.
+  private async assertSessionDeviceProof(
+    session: Session,
+    deviceId: string,
+    dto: RefreshDto,
+  ): Promise<void> {
+    const mismatchMessage =
+      'A request to renew your session came from a device other than the one it was issued to, so we revoked that session for your protection. If this wasn’t you, please change your password.';
+    if (session.deviceId !== deviceId) {
+      await this.revokeSession(session, mismatchMessage);
+      throw new DeviceMismatchException();
+    }
+    if (!this.deviceBinding.keyRequired) {
+      return;
+    }
+    const trustedDevice = session.trustedDeviceId
+      ? await this.dataSource
+          .getRepository(TrustedDevice)
+          .findOneBy({ id: session.trustedDeviceId })
+      : null;
+    if (!trustedDevice?.publicKey || trustedDevice.revokedAt) {
+      throw new InvalidRefreshTokenException();
+    }
+    const valid = await this.deviceBinding.verifySignedChallenge({
+      purpose: 'refresh',
+      deviceId,
+      publicKey: trustedDevice.publicKey,
+      nonce: dto.nonce,
+      signature: dto.signature,
+    });
+    if (!valid) {
+      await this.revokeSession(session, mismatchMessage);
+      throw new DeviceMismatchException();
+    }
+  }
+
+  private async revokeSession(
+    session: Session,
+    alertMessage: string,
+  ): Promise<void> {
+    session.status = 'revoked';
+    await this.dataSource.getRepository(Session).save(session);
+    await this.publishAlert(session.userId, alertMessage);
   }
 
   async logout(dto: LogoutDto): Promise<void> {
@@ -282,9 +457,13 @@ export class SessionService {
     await sessionRepo.save(session);
   }
 
-  private signAccessToken(userId: string, sessionId: string): Promise<string> {
+  private signAccessToken(
+    userId: string,
+    sessionId: string,
+    deviceId: string,
+  ): Promise<string> {
     return this.jwtService.signAsync(
-      { sub: userId, sid: sessionId },
+      { sub: userId, sid: sessionId, did: deviceId },
       { expiresIn: ACCESS_TOKEN_TTL_SECONDS },
     );
   }

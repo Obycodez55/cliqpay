@@ -54,10 +54,19 @@ describe('DisputesService', () => {
       | 'postChargebackResolutionWithinTransaction'
       | 'findChargebackTransactionIdsForOriginal'
       | 'setTransactionStatusWithinTransaction'
+      | 'findWalletOwnerId'
+      | 'findChargebackOwnerId'
     >
   >;
   let usersService: jest.Mocked<
-    Pick<UsersService, 'freeze' | 'unfreeze' | 'findById' | 'findByIds'>
+    Pick<
+      UsersService,
+      | 'lockUser'
+      | 'addRestriction'
+      | 'liftRestriction'
+      | 'findById'
+      | 'getOpenRestrictionUserIds'
+    >
   >;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
 
@@ -189,12 +198,15 @@ describe('DisputesService', () => {
       setTransactionStatusWithinTransaction: jest
         .fn()
         .mockResolvedValue(undefined),
+      findWalletOwnerId: jest.fn().mockResolvedValue('user-1'),
+      findChargebackOwnerId: jest.fn().mockResolvedValue('user-1'),
     };
     usersService = {
-      freeze: jest.fn().mockResolvedValue(undefined),
-      unfreeze: jest.fn().mockResolvedValue(undefined),
+      lockUser: jest.fn().mockResolvedValue(undefined),
+      addRestriction: jest.fn().mockResolvedValue(true),
+      liftRestriction: jest.fn().mockResolvedValue(true),
       findById: jest.fn().mockResolvedValue({ email: 'user@example.com' }),
-      findByIds: jest.fn().mockResolvedValue([]),
+      getOpenRestrictionUserIds: jest.fn().mockResolvedValue(new Set()),
     };
     eventBus = {
       publish: jest.fn().mockResolvedValue(undefined),
@@ -222,9 +234,9 @@ describe('DisputesService', () => {
     it('rejects a repeat dispute_reference before doing any posting work', async () => {
       disputeRepo.findOneBy.mockResolvedValue({ id: 'existing' } as Dispute);
 
-      await expect(service.recordChargeback(dto())).rejects.toThrow(
-        DuplicateDisputeReferenceException,
-      );
+      await expect(
+        service.recordChargeback(dto(), 'reviewer-1'),
+      ).rejects.toThrow(DuplicateDisputeReferenceException);
       expect(
         ledgerService.postChargebackWithinTransaction,
       ).not.toHaveBeenCalled();
@@ -239,9 +251,9 @@ describe('DisputesService', () => {
         violation,
       );
 
-      await expect(service.recordChargeback(dto())).rejects.toThrow(
-        DuplicateDisputeReferenceException,
-      );
+      await expect(
+        service.recordChargeback(dto(), 'reviewer-1'),
+      ).rejects.toThrow(DuplicateDisputeReferenceException);
     });
   });
 
@@ -249,9 +261,9 @@ describe('DisputesService', () => {
     it('rejects when no funding transaction matches the reference', async () => {
       ledgerService.findFundingTransactionForChargeback.mockResolvedValue(null);
 
-      await expect(service.recordChargeback(dto())).rejects.toThrow(
-        OriginalTransactionNotFoundException,
-      );
+      await expect(
+        service.recordChargeback(dto(), 'reviewer-1'),
+      ).rejects.toThrow(OriginalTransactionNotFoundException);
     });
 
     it.each(['pending', 'failed', 'reversed', 'held', 'refunded'] as const)(
@@ -262,9 +274,9 @@ describe('DisputesService', () => {
           status,
         });
 
-        await expect(service.recordChargeback(dto())).rejects.toThrow(
-          OriginalTransactionNotDisputableException,
-        );
+        await expect(
+          service.recordChargeback(dto(), 'reviewer-1'),
+        ).rejects.toThrow(OriginalTransactionNotDisputableException);
       },
     );
 
@@ -274,7 +286,7 @@ describe('DisputesService', () => {
         status: 'disputed',
       });
 
-      await service.recordChargeback(dto());
+      await service.recordChargeback(dto(), 'reviewer-1');
 
       expect(ledgerService.postChargebackWithinTransaction).toHaveBeenCalled();
     });
@@ -293,13 +305,21 @@ describe('DisputesService', () => {
         postedResult(Money.of(-1n, 'NGN')),
       );
 
-      await service.recordChargeback(dto());
+      await service.recordChargeback(dto(), 'reviewer-1');
 
       expect(dataSource.transaction).toHaveBeenCalledTimes(1);
       expect(
         ledgerService.postChargebackWithinTransaction,
       ).toHaveBeenCalledWith(fakeManager, expect.anything());
-      expect(usersService.freeze).toHaveBeenCalledWith(fakeManager, 'user-1');
+      expect(usersService.addRestriction).toHaveBeenCalledWith(
+        fakeManager,
+        expect.objectContaining({
+          userId: 'user-1',
+          reason: 'dispute',
+          scope: 'outbound',
+          actor: { type: 'reviewer', id: 'reviewer-1' },
+        }),
+      );
     });
 
     it('lets a failure inside the transaction propagate without writing a dispute row', async () => {
@@ -307,9 +327,9 @@ describe('DisputesService', () => {
         new Error('posting failed'),
       );
 
-      await expect(service.recordChargeback(dto())).rejects.toThrow(
-        'posting failed',
-      );
+      await expect(
+        service.recordChargeback(dto(), 'reviewer-1'),
+      ).rejects.toThrow('posting failed');
       expect(disputeRepo.save).not.toHaveBeenCalled();
     });
   });
@@ -320,9 +340,12 @@ describe('DisputesService', () => {
         postedResult(Money.of(-1n, 'NGN')),
       );
 
-      const result = await service.recordChargeback(dto());
+      const result = await service.recordChargeback(dto(), 'reviewer-1');
 
-      expect(usersService.freeze).toHaveBeenCalledWith(fakeManager, 'user-1');
+      expect(usersService.addRestriction).toHaveBeenCalledWith(
+        fakeManager,
+        expect.objectContaining({ userId: 'user-1' }),
+      );
       expect(result.accountFrozen).toBe(true);
     });
 
@@ -331,9 +354,9 @@ describe('DisputesService', () => {
         postedResult(Money.zero('NGN')),
       );
 
-      const result = await service.recordChargeback(dto());
+      const result = await service.recordChargeback(dto(), 'reviewer-1');
 
-      expect(usersService.freeze).not.toHaveBeenCalled();
+      expect(usersService.addRestriction).not.toHaveBeenCalled();
       expect(result.accountFrozen).toBe(false);
     });
 
@@ -342,9 +365,9 @@ describe('DisputesService', () => {
         postedResult(Money.of(100_000n, 'NGN')),
       );
 
-      const result = await service.recordChargeback(dto());
+      const result = await service.recordChargeback(dto(), 'reviewer-1');
 
-      expect(usersService.freeze).not.toHaveBeenCalled();
+      expect(usersService.addRestriction).not.toHaveBeenCalled();
       expect(result.accountFrozen).toBe(false);
     });
   });
@@ -355,7 +378,7 @@ describe('DisputesService', () => {
         postedResult(Money.of(100_000n, 'NGN')),
       );
 
-      await service.recordChargeback(dto());
+      await service.recordChargeback(dto(), 'reviewer-1');
 
       expect(eventBus.publish).toHaveBeenCalledWith(
         expect.objectContaining({ name: 'chargeback_received' }),
@@ -368,7 +391,7 @@ describe('DisputesService', () => {
         postedResult(Money.of(-1n, 'NGN')),
       );
 
-      await service.recordChargeback(dto());
+      await service.recordChargeback(dto(), 'reviewer-1');
 
       expect(eventBus.publish).toHaveBeenCalledWith(
         expect.objectContaining({ name: 'account_frozen' }),
@@ -379,7 +402,7 @@ describe('DisputesService', () => {
     it('does not publish, but still returns the result, when fetching the email fails', async () => {
       usersService.findById.mockRejectedValue(new Error('db blip'));
 
-      const result = await service.recordChargeback(dto());
+      const result = await service.recordChargeback(dto(), 'reviewer-1');
 
       expect(eventBus.publish).not.toHaveBeenCalled();
       expect(result.disputeReference).toBe('dispute-ref-1');
@@ -388,7 +411,7 @@ describe('DisputesService', () => {
 
   describe('dispute row', () => {
     it('creates the dispute row as open, priced at the requested amount', async () => {
-      await service.recordChargeback(dto({ amount: 200_000 }));
+      await service.recordChargeback(dto({ amount: 200_000 }), 'reviewer-1');
 
       expect(disputeRepo.create).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -413,7 +436,7 @@ describe('DisputesService', () => {
       expect(
         ledgerService.findChargebackTransactionsForWallets,
       ).not.toHaveBeenCalled();
-      expect(usersService.findByIds).not.toHaveBeenCalled();
+      expect(usersService.getOpenRestrictionUserIds).not.toHaveBeenCalled();
     });
 
     it('composes a negative-balance wallet with its chargeback, dispute row, and frozen status', async () => {
@@ -445,16 +468,18 @@ describe('DisputesService', () => {
           updatedAt: new Date('2026-09-18T00:00:00Z'),
         },
       ]);
-      usersService.findByIds.mockResolvedValue([
-        { id: 'user-1', isFrozen: true } as never,
-      ]);
+      usersService.getOpenRestrictionUserIds.mockResolvedValue(
+        new Set(['user-1']),
+      );
 
       const result = await service.getCollections();
 
       expect(
         ledgerService.findChargebackTransactionsForWallets,
       ).toHaveBeenCalledWith(['wallet-1']);
-      expect(usersService.findByIds).toHaveBeenCalledWith(['user-1']);
+      expect(usersService.getOpenRestrictionUserIds).toHaveBeenCalledWith([
+        'user-1',
+      ]);
       expect(result).toEqual([
         {
           userId: 'user-1',
@@ -506,9 +531,9 @@ describe('DisputesService', () => {
           status: 'open',
         } as Dispute,
       ]);
-      usersService.findByIds.mockResolvedValue([
-        { id: 'user-1', isFrozen: true } as never,
-      ]);
+      usersService.getOpenRestrictionUserIds.mockResolvedValue(
+        new Set(['user-1']),
+      );
 
       const result = await service.getCollections();
 
@@ -519,7 +544,7 @@ describe('DisputesService', () => {
       ]);
     });
 
-    it('treats a user not returned by findByIds as not frozen rather than throwing', async () => {
+    it('reports a wallet whose user has no open restriction as not frozen', async () => {
       ledgerService.findNegativeBalanceWallets.mockResolvedValue([
         {
           accountId: 'wallet-1',
@@ -527,7 +552,6 @@ describe('DisputesService', () => {
           balance: Money.of(-10_000n, 'NGN'),
         },
       ]);
-      usersService.findByIds.mockResolvedValue([]);
 
       const result = await service.getCollections();
 
@@ -551,9 +575,6 @@ describe('DisputesService', () => {
         },
       ]);
       disputeRepo.find.mockResolvedValue([]);
-      usersService.findByIds.mockResolvedValue([
-        { id: 'user-1', isFrozen: false } as never,
-      ]);
 
       await expect(service.getCollections()).rejects.toThrow(
         /no dispute row found/,
@@ -634,9 +655,9 @@ describe('DisputesService', () => {
       it('rejects an unknown dispute_reference', async () => {
         currentDispute = null;
 
-        await expect(service.resolveDispute(resolveDto())).rejects.toThrow(
-          DisputeNotFoundException,
-        );
+        await expect(
+          service.resolveDispute(resolveDto(), 'reviewer-1'),
+        ).rejects.toThrow(DisputeNotFoundException);
       });
 
       it.each(['resolved', 'upheld'] as const)(
@@ -644,9 +665,9 @@ describe('DisputesService', () => {
         async (status) => {
           currentDispute!.status = status;
 
-          await expect(service.resolveDispute(resolveDto())).rejects.toThrow(
-            DisputeAlreadyResolvedException,
-          );
+          await expect(
+            service.resolveDispute(resolveDto(), 'reviewer-1'),
+          ).rejects.toThrow(DisputeAlreadyResolvedException);
         },
       );
 
@@ -654,6 +675,7 @@ describe('DisputesService', () => {
         await expect(
           service.resolveDispute(
             resolveDto({ outcome: 'resolved', amount: 100_000 }),
+            'reviewer-1',
           ),
         ).rejects.toThrow(DisputeResolutionAmountMismatchException);
         expect(
@@ -666,6 +688,7 @@ describe('DisputesService', () => {
       it('flips the dispute to upheld and touches neither the ledger reversal nor the freeze', async () => {
         const result = await service.resolveDispute(
           resolveDto({ outcome: 'upheld' }),
+          'reviewer-1',
         );
 
         expect(
@@ -674,7 +697,7 @@ describe('DisputesService', () => {
         expect(
           ledgerService.postChargebackResolutionWithinTransaction,
         ).not.toHaveBeenCalled();
-        expect(usersService.unfreeze).not.toHaveBeenCalled();
+        expect(usersService.liftRestriction).not.toHaveBeenCalled();
         expect(result.status).toBe('upheld');
         expect(result.accountUnfrozen).toBe(false);
       });
@@ -684,7 +707,10 @@ describe('DisputesService', () => {
       // ledger — with only this one dispute (now upheld) against it, the
       // original genuinely is reversed.
       it("recomputes the original transaction's status to reversed", async () => {
-        await service.resolveDispute(resolveDto({ outcome: 'upheld' }));
+        await service.resolveDispute(
+          resolveDto({ outcome: 'upheld' }),
+          'reviewer-1',
+        );
 
         expect(
           ledgerService.findChargebackTransactionIdsForOriginal,
@@ -713,7 +739,10 @@ describe('DisputesService', () => {
           ['txn-chargeback', 'txn-chargeback-2'],
         );
 
-        await service.resolveDispute(resolveDto({ outcome: 'upheld' }));
+        await service.resolveDispute(
+          resolveDto({ outcome: 'upheld' }),
+          'reviewer-1',
+        );
 
         expect(
           ledgerService.setTransactionStatusWithinTransaction,
@@ -729,6 +758,7 @@ describe('DisputesService', () => {
 
         const result = await service.resolveDispute(
           resolveDto({ outcome: 'resolved', amount: 200_000 }),
+          'reviewer-1',
         );
 
         expect(
@@ -737,9 +767,13 @@ describe('DisputesService', () => {
           chargebackTransactionId: 'txn-chargeback',
           amount: Money.of(200_000n, 'NGN'),
         });
-        expect(usersService.unfreeze).toHaveBeenCalledWith(
+        expect(usersService.liftRestriction).toHaveBeenCalledWith(
           fakeManager,
-          'user-1',
+          expect.objectContaining({
+            userId: 'user-1',
+            reason: 'dispute',
+            actor: { type: 'reviewer', id: 'reviewer-1' },
+          }),
         );
         expect(result.status).toBe('resolved');
         expect(result.accountUnfrozen).toBe(true);
@@ -752,9 +786,10 @@ describe('DisputesService', () => {
 
         const result = await service.resolveDispute(
           resolveDto({ outcome: 'resolved', amount: 200_000 }),
+          'reviewer-1',
         );
 
-        expect(usersService.unfreeze).toHaveBeenCalled();
+        expect(usersService.liftRestriction).toHaveBeenCalled();
         expect(result.accountUnfrozen).toBe(true);
       });
 
@@ -765,9 +800,10 @@ describe('DisputesService', () => {
 
         const result = await service.resolveDispute(
           resolveDto({ outcome: 'resolved', amount: 200_000 }),
+          'reviewer-1',
         );
 
-        expect(usersService.unfreeze).not.toHaveBeenCalled();
+        expect(usersService.liftRestriction).not.toHaveBeenCalled();
         expect(result.accountUnfrozen).toBe(false);
       });
 
@@ -781,6 +817,7 @@ describe('DisputesService', () => {
 
         await service.resolveDispute(
           resolveDto({ outcome: 'resolved', amount: 200_000 }),
+          'reviewer-1',
         );
 
         expect(
@@ -816,13 +853,17 @@ describe('DisputesService', () => {
         // The second dispute (against a different original transaction,
         // same wallet) is still open — disputeRepo.count reflects that,
         // same as a real `WHERE status = 'open'` query would.
-        disputeRepo.count.mockResolvedValue(1);
+        disputeRepo.find.mockResolvedValue([
+          currentDispute as Dispute,
+          { id: 'dispute-2', status: 'open' } as Dispute,
+        ]);
 
         const result = await service.resolveDispute(
           resolveDto({ outcome: 'resolved', amount: 200_000 }),
+          'reviewer-1',
         );
 
-        expect(usersService.unfreeze).not.toHaveBeenCalled();
+        expect(usersService.liftRestriction).not.toHaveBeenCalled();
         expect(result.accountUnfrozen).toBe(false);
       });
     });
@@ -836,6 +877,7 @@ describe('DisputesService', () => {
         await expect(
           service.resolveDispute(
             resolveDto({ outcome: 'resolved', amount: 200_000 }),
+            'reviewer-1',
           ),
         ).rejects.toThrow('posting failed');
         expect(disputeRepo.update).not.toHaveBeenCalled();
@@ -847,7 +889,10 @@ describe('DisputesService', () => {
         );
 
         await expect(
-          service.resolveDispute(resolveDto({ outcome: 'upheld' })),
+          service.resolveDispute(
+            resolveDto({ outcome: 'upheld' }),
+            'reviewer-1',
+          ),
         ).rejects.toThrow('lock failed');
         expect(disputeRepo.update).not.toHaveBeenCalled();
       });

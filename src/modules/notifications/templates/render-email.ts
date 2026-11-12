@@ -37,6 +37,9 @@ const bodies = {
   account_frozen: compile('account-frozen.hbs'),
   reconciliation_mismatch: compile('reconciliation-mismatch.hbs'),
   refund_attention_required: compile('refund-attention-required.hbs'),
+  risk_review_overdue: compile('risk-review-overdue.hbs'),
+  scam_notice: compile('scam-notice.hbs'),
+  scam_cases_due: compile('scam-cases-due.hbs'),
 };
 
 // The plain-text part is a low-fidelity fallback almost no mail client

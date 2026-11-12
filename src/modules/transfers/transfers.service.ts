@@ -14,13 +14,14 @@ import {
   PostTransferResult,
 } from '../ledger/ledger.service';
 import { UsersService } from '../users/users.service';
-import { KycService } from '../kyc/kyc.service';
+import { KycService, LimitCheckOptions } from '../kyc/kyc.service';
 import {
   PostOrigin,
   PostVisibility,
   SocialService,
 } from '../social/social.service';
 import { AuthService } from '../auth/auth.service';
+import { RiskService } from '../risk/risk.service';
 import { Money } from '../../shared/primitives/money';
 import { runInTransaction } from '../../database/transaction.util';
 import {
@@ -52,6 +53,7 @@ import {
   MoneyRequestAmountTooSmallException,
   MoneyRequestPairCapExceededException,
   PayerNotFoundException,
+  RiskAcknowledgementRequiredException,
   RecipientUnableToReceiveException,
   RecipientWalletNotFoundException,
   SelfMoneyRequestException,
@@ -62,6 +64,7 @@ import {
   UnsupportedTransferCurrencyException,
 } from './internal/errors';
 import { isUniqueViolation } from '../../database/postgres-errors.util';
+import { recipientRiskWarnings } from './internal/recipient-risk';
 
 const NGN = 'NGN'; // Transfers are NGN-only for now — see docs/architecture.md §6 Phase 3.
 
@@ -128,6 +131,7 @@ export interface ExecuteTransferParams {
   reference: string;
   pin: string;
   details: TransferPostDetails;
+  riskAcknowledged?: boolean;
 }
 
 export interface ExecuteScheduledTransferParams {
@@ -137,6 +141,7 @@ export interface ExecuteScheduledTransferParams {
   details: TransferPostDetails;
   scheduleId: string;
   runNumber: number;
+  scheduleCreatedAt: Date;
 }
 
 export interface ExecuteScheduledTransferOutcome {
@@ -153,7 +158,8 @@ export type ScheduledRejectionCode =
   | 'recipient_unavailable'
   | 'sender_frozen'
   | 'sender_unverified'
-  | 'amount_below_minimum';
+  | 'amount_below_minimum'
+  | 'security_cooldown_limit';
 
 // A business refusal of a scheduled run, as opposed to an infrastructure
 // fault: every other error escapes executeScheduledTransfer untouched.
@@ -199,6 +205,7 @@ export class TransfersService {
     private readonly kycService: KycService,
     private readonly socialService: SocialService,
     private readonly authService: AuthService,
+    private readonly riskService: RiskService,
     private readonly eventBus: EventBusService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
@@ -213,6 +220,7 @@ export class TransfersService {
       reference: dto.reference,
       pin: dto.pin,
       details: { note: dto.note ?? null, visibility: dto.visibility },
+      riskAcknowledged: dto.riskAcknowledged,
     });
 
     if (!outcome.replayed) {
@@ -354,23 +362,61 @@ export class TransfersService {
     pin: string,
     details: TransferPostDetails,
     manager?: EntityManager,
+    riskAcknowledged?: boolean,
   ): Promise<FinalizeTransferOutcome> {
-    this.assertSenderNotFrozen(prepared);
     await this.authService.verifyTransactionPin(senderId, pin);
+    const acknowledgement = await this.requireRiskAcknowledgement(
+      senderId,
+      prepared.recipientUserId,
+      prepared.amount,
+      riskAcknowledged,
+    );
     return this.postPreparedTransfer(
       senderId,
       prepared,
       reference,
       details,
-      undefined,
+      acknowledgement ? { riskAcknowledgement: acknowledgement } : undefined,
       manager,
     );
   }
 
-  private assertSenderNotFrozen(prepared: PreparedTransfer): void {
-    if (prepared.sender.isFrozen) {
-      throw new SenderAccountFrozenException();
+  // Nothing is written before this passes, so the client can resend the same
+  // reference and signature with riskAcknowledged once the user has seen the
+  // warnings. Returns what to store on the payment, or null when nothing
+  // needed acknowledging.
+  async requireRiskAcknowledgement(
+    senderId: string,
+    recipientUserId: string,
+    amount: Money,
+    acknowledged: boolean | undefined,
+  ): Promise<{ codes: string[]; acknowledgedAt: string } | null> {
+    const [recipient, isFirstPayment, recipientHasEnforcedFlag] =
+      await Promise.all([
+        this.usersService.findById(recipientUserId),
+        this.ledgerService
+          .hasP2pTransferBetween(senderId, recipientUserId)
+          .then((exists) => !exists),
+        this.riskService.hasEnforcedOpenFlag(recipientUserId),
+      ]);
+    const now = new Date();
+    const codes = recipientRiskWarnings({
+      amountMinor: amount.amount,
+      firstPaymentThresholdMinor: BigInt(
+        this.config.transfers.firstPaymentWarningThreshold,
+      ),
+      isFirstPayment,
+      recipientCreatedAt: recipient.createdAt,
+      recipientHasEnforcedFlag,
+      now,
+    });
+    if (codes.length === 0) {
+      return null;
     }
+    if (!acknowledged) {
+      throw new RiskAcknowledgementRequiredException(codes);
+    }
+    return { codes, acknowledgedAt: now.toISOString() };
   }
 
   private async postPreparedTransfer(
@@ -380,6 +426,7 @@ export class TransfersService {
     details: TransferPostDetails,
     extraMetadata?: Record<string, unknown>,
     manager?: EntityManager,
+    limitOptions?: LimitCheckOptions,
   ): Promise<FinalizeTransferOutcome> {
     const fee = Money.of(this.config.transfers.platformFee, NGN);
     const postParams = {
@@ -410,13 +457,25 @@ export class TransfersService {
         {
           readDebitedSince: (m, since) =>
             this.ledgerService.getDebitedSince(m, senderId, since),
-          readRecipientBalanceAndPending: (m) =>
+          readRecipientBalanceAndPending: (m, since) =>
             this.ledgerService.getBalanceAndPendingFunding(
               m,
               prepared.recipientUserId,
+              since,
             ),
         },
+        limitOptions,
       );
+      const [senderState, recipientState] = await Promise.all([
+        this.usersService.getRestrictionState(tx, senderId),
+        this.usersService.getRestrictionState(tx, prepared.recipientUserId),
+      ]);
+      if (senderState.blocksOutbound) {
+        throw new SenderAccountFrozenException();
+      }
+      if (recipientState.blocksInbound) {
+        throw new RecipientUnableToReceiveException();
+      }
       const result = await this.ledgerService.postTransferWithinTransaction(
         tx,
         postParams,
@@ -522,6 +581,7 @@ export class TransfersService {
       params.pin,
       params.details,
       manager,
+      params.riskAcknowledged,
     );
     return { result, replayed, sender: prepared.sender };
   }
@@ -536,7 +596,7 @@ export class TransfersService {
     senderId: string,
     params: ExecuteScheduledTransferParams,
   ): Promise<ExecuteScheduledTransferOutcome> {
-    const { scheduleId, runNumber } = params;
+    const { scheduleId, runNumber, scheduleCreatedAt } = params;
     try {
       const prepared = await this.prepareTransfer(
         senderId,
@@ -557,13 +617,14 @@ export class TransfersService {
         };
       }
 
-      this.assertSenderNotFrozen(prepared);
       const { result, replayed } = await this.postPreparedTransfer(
         senderId,
         prepared,
         params.reference,
         params.details,
         { scheduleId, runNumber },
+        undefined,
+        { scheduleCreatedAt },
       );
       if (!replayed) {
         await this.publishTransferEvents(
@@ -621,8 +682,12 @@ export class TransfersService {
       (sum, share) => sum.add(share.amount),
       Money.zero(NGN),
     );
-    await this.kycService.checkCanReceive(manager, requesterId, total, (m) =>
-      this.ledgerService.getBalanceAndPendingFunding(m, requesterId),
+    await this.kycService.checkCanReceive(
+      manager,
+      requesterId,
+      total,
+      (m, since) =>
+        this.ledgerService.getBalanceAndPendingFunding(m, requesterId, since),
     );
 
     const payers = await this.usersService.findByIds(
@@ -930,6 +995,7 @@ const REJECTION_BY_ERROR_CODE: Record<string, ScheduledRejectionCode> = {
   DAILY_LIMIT_EXCEEDED: 'daily_limit_exceeded',
   KYC_VERIFICATION_REQUIRED: 'sender_unverified',
   TRANSFER_AMOUNT_TOO_SMALL: 'amount_below_minimum',
+  SECURITY_COOLDOWN_LIMIT: 'security_cooldown_limit',
   SENDER_ACCOUNT_FROZEN: 'sender_frozen',
   RECIPIENT_WALLET_NOT_FOUND: 'recipient_unavailable',
 };

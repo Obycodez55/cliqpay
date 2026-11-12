@@ -2,13 +2,14 @@ import { AppConfig } from '../../../config';
 import { WithdrawalsService } from '../withdrawals.service';
 import { LedgerService } from '../../ledger/ledger.service';
 import { DataSource } from 'typeorm';
+import { RiskService } from '../../risk/risk.service';
 import { KycService } from '../../kyc/kyc.service';
 import { UsersService } from '../../users/users.service';
 import { AuthService } from '../../auth/auth.service';
 import { PaymentsService } from '../../payments/payments.service';
+import { AuditService } from '../../../shared/audit/audit.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { BankAccount } from '../entities/bank-account.entity';
-import { InitiatorAccountFrozenException } from '../internal/errors';
 
 const TEST_ENCRYPTION_KEY = 'a'.repeat(64);
 
@@ -29,7 +30,6 @@ function user(overrides: Partial<User> = {}): User {
   return {
     id: 'withdrawer-1',
     email: 'withdrawer@example.com',
-    isFrozen: false,
     ...overrides,
   } as User;
 }
@@ -102,26 +102,14 @@ describe('WithdrawalsService.initiateWithdrawal', () => {
       ledgerService as unknown as LedgerService,
       usersService as unknown as UsersService,
       {} as KycService,
+      {} as RiskService,
       eventBus as unknown as EventBusService,
+      {} as AuditService,
       testConfig,
     );
   });
 
-  it('rejects a frozen initiator at the PIN-check call site, without verifying the PIN or posting', async () => {
-    usersService.findById.mockResolvedValue(user({ isFrozen: true }));
-
-    await expect(
-      service.initiateWithdrawal('withdrawer-1', dto),
-    ).rejects.toThrow(InitiatorAccountFrozenException);
-
-    expect(authService.verifyTransactionPin).not.toHaveBeenCalled();
-    expect(
-      ledgerService.postWithdrawalWithinTransaction,
-    ).not.toHaveBeenCalled();
-  });
-
-  it('proceeds past the frozen check to PIN verification for a non-frozen initiator', async () => {
-    usersService.findById.mockResolvedValue(user({ isFrozen: false }));
+  it('proceeds to PIN verification', async () => {
     authService.verifyTransactionPin.mockRejectedValue(
       new Error('pin-check-reached'),
     );

@@ -20,6 +20,7 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { TransfersModule } from './modules/transfers/transfers.module';
 import { WithdrawalsModule } from './modules/withdrawals/withdrawals.module';
 import { DisputesModule } from './modules/disputes/disputes.module';
+import { RiskModule } from './modules/risk/risk.module';
 import { KycModule } from './modules/kyc/kyc.module';
 import { SocialModule } from './modules/social/social.module';
 import { BillSplitModule } from './modules/billsplit/billsplit.module';
@@ -48,6 +49,7 @@ import { SchedulingModule } from './modules/scheduling/scheduling.module';
     TransfersModule,
     WithdrawalsModule,
     DisputesModule,
+    RiskModule,
     KycModule,
     SocialModule,
     BillSplitModule,

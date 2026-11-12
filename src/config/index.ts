@@ -12,6 +12,9 @@ const envSchema = z
       .default('development'),
     PORT: z.coerce.number().int().positive().default(3000),
     CORS_ALLOWED_ORIGINS: z.string().default(''),
+    // Hop count ("1") or comma-separated proxy IPs/CIDRs. Unset trusts no
+    // proxy, so req.ip is the socket address.
+    TRUST_PROXY: z.string().optional(),
 
     DATABASE_URL: z.string().url(),
 
@@ -52,6 +55,18 @@ const envSchema = z
         'IDENTIFIER_HASH_KEY must be a 64-character hex string (32 bytes)',
       ),
 
+    // HMAC key for the "This wasn't me" lock token in security alerts. It
+    // can only lock an account, but a forged token would let anyone lock
+    // anyone, so it is kept apart from every other key.
+    SELF_LOCK_TOKEN_KEY: z
+      .string()
+      .regex(
+        /^[0-9a-fA-F]{64}$/,
+        'SELF_LOCK_TOKEN_KEY must be a 64-character hex string (32 bytes)',
+      ),
+    // Where the app handles the lock link; the token is appended as `?token=`.
+    SELF_LOCK_LINK_URL: z.url(),
+
     EMAIL_PROVIDER: z.enum(['brevo', 'fake']).default('fake'),
     SMS_PROVIDER: z.enum(['termii', 'fake']).default('fake'),
     PUSH_PROVIDER: z.enum(['fcm', 'fake']).default('fake'),
@@ -85,6 +100,13 @@ const envSchema = z
 
     TRANSFER_PLATFORM_FEE: z.coerce.number().int().nonnegative().default(0),
     TRANSFER_MIN_AMOUNT: z.coerce.number().int().nonnegative().default(10_000),
+    // Minor units. A first payment to a recipient at or above this needs the
+    // sender's acknowledgement of a warning.
+    FIRST_PAYMENT_WARNING_THRESHOLD: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(2_000_000),
 
     // Money requests (ADR-0012) — expiry is derived at read time, never
     // swept, so this only controls what gets stamped on `expires_at` at
@@ -142,6 +164,22 @@ const envSchema = z
       .nonnegative()
       .default(3_000),
 
+    // Minor units. Caps outflows for 24h after a security change, and the
+    // total an account may receive in the 24h after it first reaches Tier 1.
+    SECURITY_COOLDOWN_LIMIT: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(2_000_000),
+    // Minor units. Total that may be withdrawn to a bank account whose
+    // holder name does not match the user's verified name, until it is
+    // 24h old.
+    BANK_ACCOUNT_COOLING_LIMIT: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(2_000_000),
+
     // Shared secret for the `X-Internal-Secret` header on internal/ops
     // endpoints (disputes' chargeback-recording endpoint is the first
     // caller — see docs/adr/0016-disputes-module-boundary.md). Required
@@ -152,6 +190,26 @@ const envSchema = z
     KYC_PROVIDER: z.enum(['prembly', 'fake']).default('fake'),
     KYC_RETENTION_DAYS: z.coerce.number().int().min(2).default(30),
     PREMBLY_SECRET_KEY: z.string().optional(),
+
+    // false skips only the login/refresh/money-action signature checks;
+    // X-Device-Id is still required. Refused under production.
+    DEVICE_KEY_REQUIRED: z
+      .enum(['true', 'false'])
+      .default('true')
+      .transform((value) => value === 'true'),
+    DEVICE_ATTESTATION_MODE: z
+      .enum(['off', 'shadow', 'enforce'])
+      .default('shadow'),
+    DEVICE_ATTESTATION_PROVIDER: z.enum(['platform', 'fake']).default('fake'),
+    APPLE_TEAM_ID: z.string().optional(),
+    APPLE_BUNDLE_ID: z.string().optional(),
+    // PEM of Apple's App Attestation Root CA, from Apple's developer documentation.
+    APPLE_APP_ATTEST_ROOT_CA: z.string().optional(),
+    GOOGLE_PLAY_PACKAGE_NAME: z.string().optional(),
+    // Base64 AES-256 key and base64 X.509 EC public key from the Play Console
+    // app-integrity settings (the "manage and download your response encryption keys" flow).
+    GOOGLE_PLAY_INTEGRITY_DECRYPTION_KEY: z.string().optional(),
+    GOOGLE_PLAY_INTEGRITY_VERIFICATION_KEY: z.string().optional(),
   })
   .superRefine((env, ctx) => {
     // A provider's own credentials are only required when it's the one actually selected
@@ -193,6 +251,24 @@ const envSchema = z
       { path: 'PREMBLY_SECRET_KEY', value: env.PREMBLY_SECRET_KEY },
     ]);
 
+    for (const other of [
+      'ENCRYPTION_KEY',
+      'TRANSACTION_PIN_PEPPER',
+      'IDENTIFIER_HASH_KEY',
+      'JWT_SECRET',
+    ] as const) {
+      if (
+        env.SELF_LOCK_TOKEN_KEY &&
+        env.SELF_LOCK_TOKEN_KEY.toLowerCase() === env[other].toLowerCase()
+      ) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['SELF_LOCK_TOKEN_KEY'],
+          message: `SELF_LOCK_TOKEN_KEY must differ from ${other}`,
+        });
+      }
+    }
+
     for (const other of ['ENCRYPTION_KEY', 'TRANSACTION_PIN_PEPPER'] as const) {
       if (
         env.IDENTIFIER_HASH_KEY &&
@@ -218,6 +294,52 @@ const envSchema = z
       });
     }
 
+    requireWhen(
+      env.DEVICE_ATTESTATION_PROVIDER === 'platform' &&
+        env.DEVICE_ATTESTATION_MODE !== 'off',
+      [
+        { path: 'APPLE_TEAM_ID', value: env.APPLE_TEAM_ID },
+        { path: 'APPLE_BUNDLE_ID', value: env.APPLE_BUNDLE_ID },
+        {
+          path: 'APPLE_APP_ATTEST_ROOT_CA',
+          value: env.APPLE_APP_ATTEST_ROOT_CA,
+        },
+        {
+          path: 'GOOGLE_PLAY_PACKAGE_NAME',
+          value: env.GOOGLE_PLAY_PACKAGE_NAME,
+        },
+        {
+          path: 'GOOGLE_PLAY_INTEGRITY_DECRYPTION_KEY',
+          value: env.GOOGLE_PLAY_INTEGRITY_DECRYPTION_KEY,
+        },
+        {
+          path: 'GOOGLE_PLAY_INTEGRITY_VERIFICATION_KEY',
+          value: env.GOOGLE_PLAY_INTEGRITY_VERIFICATION_KEY,
+        },
+      ],
+    );
+
+    if (env.NODE_ENV === 'production' && !env.DEVICE_KEY_REQUIRED) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['DEVICE_KEY_REQUIRED'],
+        message: 'DEVICE_KEY_REQUIRED must not be "false" in production',
+      });
+    }
+
+    if (
+      env.NODE_ENV === 'production' &&
+      env.DEVICE_ATTESTATION_PROVIDER === 'fake' &&
+      env.DEVICE_ATTESTATION_MODE !== 'off'
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['DEVICE_ATTESTATION_PROVIDER'],
+        message:
+          'DEVICE_ATTESTATION_PROVIDER must not be "fake" in production unless DEVICE_ATTESTATION_MODE is "off"',
+      });
+    }
+
     if (env.NODE_ENV === 'production' && env.KYC_PROVIDER === 'fake') {
       ctx.addIssue({
         code: 'custom',
@@ -229,6 +351,20 @@ const envSchema = z
 
 type Env = z.infer<typeof envSchema>;
 
+function parseTrustProxy(raw: string | undefined): number | string[] | false {
+  const value = raw?.trim();
+  if (!value) {
+    return false;
+  }
+  if (/^\d+$/.test(value)) {
+    return Number(value);
+  }
+  return value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
 function buildConfig(env: Env) {
   return {
     app: {
@@ -237,6 +373,7 @@ function buildConfig(env: Env) {
       corsAllowedOrigins: env.CORS_ALLOWED_ORIGINS.split(',')
         .map((origin) => origin.trim())
         .filter(Boolean),
+      trustProxy: parseTrustProxy(env.TRUST_PROXY),
     },
     database: {
       url: env.DATABASE_URL,
@@ -262,6 +399,10 @@ function buildConfig(env: Env) {
     },
     identifierHash: {
       key: env.IDENTIFIER_HASH_KEY,
+    },
+    selfLock: {
+      tokenKey: env.SELF_LOCK_TOKEN_KEY,
+      linkUrl: env.SELF_LOCK_LINK_URL,
     },
     notifications: {
       emailProvider: env.EMAIL_PROVIDER,
@@ -297,6 +438,7 @@ function buildConfig(env: Env) {
     transfers: {
       platformFee: env.TRANSFER_PLATFORM_FEE,
       minAmount: env.TRANSFER_MIN_AMOUNT,
+      firstPaymentWarningThreshold: env.FIRST_PAYMENT_WARNING_THRESHOLD,
     },
     moneyRequests: {
       expiryDays: env.MONEY_REQUEST_EXPIRY_DAYS,
@@ -317,6 +459,10 @@ function buildConfig(env: Env) {
       platformFee: env.WITHDRAWAL_PLATFORM_FEE,
       providerFee: env.WITHDRAWAL_PROVIDER_FEE,
     },
+    securityControls: {
+      cooldownLimit: env.SECURITY_COOLDOWN_LIMIT,
+      bankAccountCoolingLimit: env.BANK_ACCOUNT_COOLING_LIMIT,
+    },
     internal: {
       apiSecret: env.INTERNAL_API_SECRET,
     },
@@ -325,6 +471,24 @@ function buildConfig(env: Env) {
       retentionDays: env.KYC_RETENTION_DAYS,
       prembly: {
         secretKey: env.PREMBLY_SECRET_KEY,
+      },
+    },
+    device: {
+      keyRequired: env.DEVICE_KEY_REQUIRED,
+      attestation: {
+        mode: env.DEVICE_ATTESTATION_MODE,
+        provider: env.DEVICE_ATTESTATION_PROVIDER,
+        allowDevelopmentApple: env.NODE_ENV !== 'production',
+        apple: {
+          teamId: env.APPLE_TEAM_ID,
+          bundleId: env.APPLE_BUNDLE_ID,
+          rootCaPem: env.APPLE_APP_ATTEST_ROOT_CA,
+        },
+        google: {
+          packageName: env.GOOGLE_PLAY_PACKAGE_NAME,
+          decryptionKey: env.GOOGLE_PLAY_INTEGRITY_DECRYPTION_KEY,
+          verificationKey: env.GOOGLE_PLAY_INTEGRITY_VERIFICATION_KEY,
+        },
       },
     },
   };

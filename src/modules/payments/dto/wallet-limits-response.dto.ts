@@ -29,6 +29,72 @@ export class WalletLimitsResponseDto {
   remainingToday: MoneyResponse;
 
   @ApiProperty({
+    type: MoneyDto,
+    nullable: true,
+    description:
+      'The limit the customer set for themselves, if it applies now; never above the tier limit.',
+  })
+  userLimit: MoneyResponse | null;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'A raise of the customer limit that takes effect at `effectiveAt`.',
+    example: {
+      amount: { amount: '10000000', currency: 'NGN' },
+      effectiveAt: '2026-11-11T10:00:00.000Z',
+    },
+  })
+  pendingIncrease: { amount: MoneyResponse; effectiveAt: string } | null;
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'Present while a recent security change caps outflows: transfers and withdrawals over the rolling last 24 hours may not exceed `limit` until `endsAt`.',
+    example: {
+      endsAt: '2026-11-11T10:00:00.000Z',
+      limit: { amount: '2000000', currency: 'NGN' },
+      remaining: { amount: '1500000', currency: 'NGN' },
+    },
+  })
+  cooldown: {
+    endsAt: string;
+    limit: MoneyResponse;
+    remaining: MoneyResponse;
+  } | null;
+
+  @ApiProperty({
+    type: MoneyDto,
+    description:
+      'What can be sent or withdrawn right now: the smallest of the tier, the customer limit and the cooldown allowance.',
+  })
+  effectiveRemaining: MoneyResponse;
+
+  @ApiProperty({
+    enum: ['tier', 'user', 'cooldown'],
+    description: 'Which limit `effectiveRemaining` comes from.',
+  })
+  limitedBy: 'tier' | 'user' | 'cooldown';
+
+  @ApiProperty({
+    nullable: true,
+    description:
+      'Present for the first 24 hours after reaching Tier 1: the total the wallet may receive (credited fundings and transfers received) is capped at `limit` until `endsAt`. `remaining` also counts top-ups still in progress.',
+    example: {
+      endsAt: '2026-11-11T10:00:00.000Z',
+      limit: { amount: '2000000', currency: 'NGN' },
+      received: { amount: '1500000', currency: 'NGN' },
+      remaining: { amount: '500000', currency: 'NGN' },
+    },
+  })
+  newAccountInflow: {
+    endsAt: string;
+    limit: MoneyResponse;
+    received: MoneyResponse;
+    remaining: MoneyResponse;
+  } | null;
+
+  @ApiProperty({
     example: '2026-10-23T23:00:00.000Z',
     description:
       'When the daily allowance resets: the next Africa/Lagos midnight.',

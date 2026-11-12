@@ -1,6 +1,7 @@
 import { createHmac } from 'crypto';
 import * as request from 'supertest';
 import { JwtService } from '@nestjs/jwt';
+import { Money } from '../../src/shared/primitives/money';
 import {
   WithdrawalsTestContext,
   createWithdrawalsTestContext,
@@ -122,6 +123,23 @@ describe('POST /wallet/webhook/kora (payout events)', () => {
       .expect(201);
   }
 
+  function providerReports(
+    reference: string,
+    result:
+      | { status: 'success'; amountMinor: bigint }
+      | { status: 'failed'; reason?: string }
+      | { status: 'pending' },
+  ): void {
+    ctx.fakeAdapter.setVerifyPayoutResult(
+      reference,
+      result.status === 'success'
+        ? { status: 'success', amount: Money.of(result.amountMinor, 'NGN') }
+        : result.status === 'failed'
+          ? { status: 'failed', reason: result.reason ?? 'Payout failed' }
+          : { status: 'pending' },
+    );
+  }
+
   function postPayoutWebhook(body: string, signature: string) {
     return request(ctx.app.getHttpServer())
       .post('/wallet/webhook/kora')
@@ -141,6 +159,7 @@ describe('POST /wallet/webhook/kora (payout events)', () => {
       id: sender.walletId,
     });
 
+    providerReports(reference, { status: 'success', amountMinor: 500_000n });
     const { body, signature } = signedPayoutWebhookBody({
       reference,
       status: 'success',
@@ -197,6 +216,10 @@ describe('POST /wallet/webhook/kora (payout events)', () => {
     });
     expect(pending.status).toBe('pending');
 
+    providerReports(unknownReference, {
+      status: 'success',
+      amountMinor: 400_000n,
+    });
     const { body, signature } = signedPayoutWebhookBody({
       reference: unknownReference,
       status: 'success',
@@ -219,6 +242,10 @@ describe('POST /wallet/webhook/kora (payout events)', () => {
       id: sender.walletId,
     });
 
+    providerReports(reference, {
+      status: 'failed',
+      reason: 'Beneficiary account closed',
+    });
     const { body, signature } = signedPayoutWebhookBody({
       reference,
       status: 'failed',
@@ -262,6 +289,7 @@ describe('POST /wallet/webhook/kora (payout events)', () => {
     const reference = `cliqpay-wd-wh-dup-success-${sender.userId}`;
     await initiateAcceptedWithdrawal(sender, reference);
 
+    providerReports(reference, { status: 'success', amountMinor: 500_000n });
     const { body, signature } = signedPayoutWebhookBody({
       reference,
       status: 'success',
@@ -285,6 +313,7 @@ describe('POST /wallet/webhook/kora (payout events)', () => {
     const reference = `cliqpay-wd-wh-dup-failed-${sender.userId}`;
     await initiateAcceptedWithdrawal(sender, reference);
 
+    providerReports(reference, { status: 'failed' });
     const { body, signature } = signedPayoutWebhookBody({
       reference,
       status: 'failed',
@@ -318,32 +347,26 @@ describe('POST /wallet/webhook/kora (payout events)', () => {
     expect(transaction.status).toBe('pending');
   });
 
-  it('rejects a malformed payload with 400, not an uncaught 500', async () => {
-    const malformed = JSON.stringify({
-      event: 'transfer.success',
-      data: { reference: 'cliqpay-wd-wh-malformed-1', status: 'success' }, // amount missing
-    });
+  it('rejects a payload without a reference with 400, not an uncaught 500', async () => {
+    const data = { status: 'success', amount: '5000.00' };
+    const malformed = JSON.stringify({ event: 'transfer.success', data });
     const signature = createHmac('sha256', FAKE_SECRET_KEY)
-      .update(
-        JSON.stringify({
-          reference: 'cliqpay-wd-wh-malformed-1',
-          status: 'success',
-        }),
-      )
+      .update(JSON.stringify(data))
       .digest('hex');
 
     await postPayoutWebhook(malformed, signature).expect(400);
   });
 
-  it('leaves the transaction pending on a mismatched provider-reported amount, rather than completing on an unverified figure', async () => {
+  it('leaves the transaction pending when the verified amount does not match the request', async () => {
     const sender = await seedFundedSenderWithBankAccount();
     const reference = `cliqpay-wd-wh-mismatch-${sender.userId}`;
     await initiateAcceptedWithdrawal(sender, reference);
 
+    providerReports(reference, { status: 'success', amountMinor: 100n });
     const { body, signature } = signedPayoutWebhookBody({
       reference,
       status: 'success',
-      amount: '1.00', // does not match the requested 5000.00
+      amount: '5000.00',
     });
     await postPayoutWebhook(body, signature).expect(200);
 
@@ -351,5 +374,71 @@ describe('POST /wallet/webhook/kora (payout events)', () => {
       reference,
     });
     expect(transaction.status).toBe('pending');
+  });
+
+  it('does not complete a withdrawal on a validly signed success webhook the provider contradicts by reporting the payout failed', async () => {
+    const sender = await seedFundedSenderWithBankAccount();
+    const reference = `cliqpay-wd-wh-forged-success-${sender.userId}`;
+    await initiateAcceptedWithdrawal(sender, reference);
+
+    providerReports(reference, { status: 'failed', reason: 'Declined' });
+    const { body, signature } = signedPayoutWebhookBody({
+      reference,
+      status: 'success',
+      amount: '5000.00',
+    });
+    await postPayoutWebhook(body, signature).expect(200);
+
+    const transaction = await ctx.transactionRepo.findOneByOrFail({
+      reference,
+    });
+    expect(transaction.status).toBe('reversed');
+    expect(
+      await ctx.transactionRepo.findOneBy({
+        reference: `${reference}-reversal`,
+      }),
+    ).not.toBeNull();
+  });
+
+  it('does not reverse a withdrawal on a validly signed failure webhook when the provider reports it still pending', async () => {
+    const sender = await seedFundedSenderWithBankAccount();
+    const reference = `cliqpay-wd-wh-forged-failure-${sender.userId}`;
+    await initiateAcceptedWithdrawal(sender, reference);
+    const entriesBefore = await ctx.ledgerEntryRepo.count();
+
+    providerReports(reference, { status: 'pending' });
+    const { body, signature } = signedPayoutWebhookBody({
+      reference,
+      status: 'failed',
+      amount: '5000.00',
+    });
+    await postPayoutWebhook(body, signature).expect(200);
+
+    const transaction = await ctx.transactionRepo.findOneByOrFail({
+      reference,
+    });
+    expect(transaction.status).toBe('pending');
+    expect(await ctx.ledgerEntryRepo.count()).toBe(entriesBefore);
+  });
+
+  it('leaves the transaction pending and returns 200 when the provider cannot be reached', async () => {
+    const sender = await seedFundedSenderWithBankAccount();
+    const reference = `cliqpay-wd-wh-timeout-${sender.userId}`;
+    await initiateAcceptedWithdrawal(sender, reference);
+    const entriesBefore = await ctx.ledgerEntryRepo.count();
+
+    ctx.fakeAdapter.setVerifyError(reference, new Error('request timed out'));
+    const { body, signature } = signedPayoutWebhookBody({
+      reference,
+      status: 'success',
+      amount: '5000.00',
+    });
+    await postPayoutWebhook(body, signature).expect(200);
+
+    const transaction = await ctx.transactionRepo.findOneByOrFail({
+      reference,
+    });
+    expect(transaction.status).toBe('pending');
+    expect(await ctx.ledgerEntryRepo.count()).toBe(entriesBefore);
   });
 });

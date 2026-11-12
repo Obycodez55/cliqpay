@@ -13,13 +13,13 @@ import {
 import { UsersService } from '../../users/users.service';
 import { KycService } from '../../kyc/kyc.service';
 import { AuthService } from '../../auth/auth.service';
+import { RiskService } from '../../risk/risk.service';
 import { SocialService } from '../../social/social.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { Money } from '../../../shared/primitives/money';
 import {
   RecipientWalletNotFoundException,
   SelfTransferException,
-  SenderAccountFrozenException,
   SenderEmailNotVerifiedException,
   TransferAmountTooSmallException,
   UnsupportedTransferCurrencyException,
@@ -30,7 +30,11 @@ import {
 } from '../../../shared/events/domain-events';
 
 const testConfig = {
-  transfers: { minAmount: 10_000, platformFee: 0 },
+  transfers: {
+    minAmount: 10_000,
+    platformFee: 0,
+    firstPaymentWarningThreshold: 2_000_000,
+  },
 } as AppConfig;
 
 type User = Awaited<ReturnType<UsersService['findById']>>;
@@ -42,7 +46,7 @@ function user(overrides: Partial<User> = {}): User {
     email: 'sender@example.com',
     username: 'sender_username',
     emailVerifiedAt: new Date('2026-01-01T00:00:00Z'),
-    isFrozen: false,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
     ...overrides,
   } as User;
 }
@@ -73,9 +77,12 @@ describe('TransfersService.sendMoney', () => {
       | 'postTransferWithinTransaction'
       | 'getDebitedSince'
       | 'getBalanceAndPendingFunding'
+      | 'hasP2pTransferBetween'
     >
   >;
-  let usersService: jest.Mocked<Pick<UsersService, 'findById'>>;
+  let usersService: jest.Mocked<
+    Pick<UsersService, 'findById' | 'getRestrictionState'>
+  >;
   let kycService: jest.Mocked<Pick<KycService, 'checkTransferLimits'>>;
   let authService: jest.Mocked<Pick<AuthService, 'verifyTransactionPin'>>;
   let socialService: jest.Mocked<
@@ -84,6 +91,7 @@ describe('TransfersService.sendMoney', () => {
       'recordTransferPost' | 'getRequestedVisibility' | 'lockPairAndCheckBlock'
     >
   >;
+  let riskService: jest.Mocked<Pick<RiskService, 'hasEnforcedOpenFlag'>>;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let service: TransfersService;
 
@@ -112,8 +120,14 @@ describe('TransfersService.sendMoney', () => {
       postTransferWithinTransaction: jest.fn(),
       getDebitedSince: jest.fn(),
       getBalanceAndPendingFunding: jest.fn(),
+      hasP2pTransferBetween: jest.fn().mockResolvedValue(true),
     };
-    usersService = { findById: jest.fn() };
+    usersService = {
+      findById: jest.fn(),
+      getRestrictionState: jest
+        .fn()
+        .mockResolvedValue({ blocksOutbound: false, blocksInbound: false }),
+    };
     kycService = { checkTransferLimits: jest.fn() };
     authService = { verifyTransactionPin: jest.fn() };
     socialService = {
@@ -121,6 +135,7 @@ describe('TransfersService.sendMoney', () => {
       getRequestedVisibility: jest.fn(),
       lockPairAndCheckBlock: jest.fn().mockResolvedValue(false),
     };
+    riskService = { hasEnforcedOpenFlag: jest.fn().mockResolvedValue(false) };
     eventBus = { publish: jest.fn() };
     service = new TransfersService(
       dataSource,
@@ -129,6 +144,7 @@ describe('TransfersService.sendMoney', () => {
       kycService as unknown as KycService,
       socialService as unknown as SocialService,
       authService as unknown as AuthService,
+      riskService as unknown as RiskService,
       eventBus as unknown as EventBusService,
       testConfig,
     );
@@ -170,16 +186,6 @@ describe('TransfersService.sendMoney', () => {
     await expect(service.sendMoney('sender-1', dto)).rejects.toThrow(
       SenderEmailNotVerifiedException,
     );
-  });
-
-  it('rejects a frozen sender at the PIN-check call site, without verifying the PIN', async () => {
-    usersService.findById.mockResolvedValue(user({ isFrozen: true }));
-
-    await expect(service.sendMoney('sender-1', dto)).rejects.toThrow(
-      SenderAccountFrozenException,
-    );
-    expect(authService.verifyTransactionPin).not.toHaveBeenCalled();
-    expect(ledgerService.postTransferWithinTransaction).not.toHaveBeenCalled();
   });
 
   it('maps a missing recipient wallet to a domain exception', async () => {
@@ -301,6 +307,7 @@ describe('TransfersService.sendMoney', () => {
       transfers: {
         minAmount: 10_000,
         platformFee: 5_000,
+        firstPaymentWarningThreshold: 2_000_000,
       },
     } as AppConfig;
     service = new TransfersService(
@@ -310,6 +317,7 @@ describe('TransfersService.sendMoney', () => {
       kycService as unknown as KycService,
       socialService as unknown as SocialService,
       authService as unknown as AuthService,
+      riskService as unknown as RiskService,
       eventBus as unknown as EventBusService,
       feeConfig,
     );
@@ -376,6 +384,7 @@ describe('TransfersService.sendMoney', () => {
         readDebitedSince: expect.any(Function) as unknown,
         readRecipientBalanceAndPending: expect.any(Function) as unknown,
       }),
+      undefined,
     );
     expect(ledgerService.postTransferWithinTransaction).toHaveBeenCalledWith(
       fakeManager,
@@ -403,11 +412,12 @@ describe('TransfersService.sendMoney', () => {
 
     const { readRecipientBalanceAndPending } =
       kycService.checkTransferLimits.mock.calls[0][4];
-    await readRecipientBalanceAndPending(fakeManager);
+    await readRecipientBalanceAndPending(fakeManager, null);
 
     expect(ledgerService.getBalanceAndPendingFunding).toHaveBeenCalledWith(
       fakeManager,
       'recipient-1',
+      null,
     );
   });
 

@@ -21,6 +21,14 @@ export interface SecurityAlertEventPayload {
   occurredAt: string; // ISO-8601 — see notifications' SecurityAlertPayload
 }
 
+export const ACCOUNT_SELF_LOCKED_EVENT = 'account_self_locked';
+
+export interface AccountSelfLockedEventPayload {
+  userId: string;
+  email: string;
+  occurredAt: string;
+}
+
 export const MFA_CHALLENGE_OTP_EVENT = 'mfa_challenge_otp';
 
 export type StepUpAction =
@@ -31,7 +39,9 @@ export type StepUpAction =
   | 'change_email'
   | 'change_phone'
   | 'enroll_totp'
-  | 'save_bank_account';
+  | 'save_bank_account'
+  | 'raise_daily_limit'
+  | 'unlock_account';
 
 export type MfaChallengeAction = 'sign_in' | StepUpAction;
 
@@ -355,6 +365,60 @@ export interface RefundAttentionRequiredEventPayload {
   heldSince: string | null; // ISO timestamp
   attempts: number | null;
   lastFailure: string | null;
+  occurredAt: string; // ISO timestamp
+}
+
+export const DEVICE_REGISTERED_EVENT = 'device_registered';
+
+export interface DeviceRegisteredEventPayload {
+  userId: string;
+  deviceId: string;
+  attestationResult: 'passed' | 'failed' | 'unavailable';
+}
+
+export const RISK_REVIEW_OVERDUE_EVENT = 'risk_review_overdue';
+
+export interface RiskReviewOverdueEventPayload {
+  email: string;
+  overdueFlags: number;
+  overdueWithdrawals: number;
+  oldestHours: number;
+  flagIds: string[];
+  withdrawalReferences: string[];
+  occurredAt: string; // ISO timestamp
+}
+
+export const SCAM_FUNDS_HELD_EVENT = 'scam_funds_held';
+
+export interface ScamFundsHeldEventPayload {
+  userId: string; // the recipient whose balance is on hold
+  email: string;
+  amount: string; // decimal display string, the amount actually held
+  currency: string;
+  held: boolean; // false when the recipient had nothing to hold
+  caseReference: string;
+}
+
+export const SCAM_CASE_RESOLVED_EVENT = 'scam_case_resolved';
+
+export interface ScamCaseResolvedEventPayload {
+  userId: string;
+  email: string;
+  caseReference: string;
+  party: 'reporter' | 'recipient';
+  outcome: 'upheld' | 'rejected' | 'withdrawn';
+  amount: string; // decimal display string: what moved for this party, if any
+  currency: string;
+  reason: string | null;
+}
+
+export const SCAM_CASES_DUE_EVENT = 'scam_cases_due';
+
+export interface ScamCasesDueEventPayload {
+  email: string;
+  dueSoon: number;
+  overdue: number;
+  caseReferences: string[];
   occurredAt: string; // ISO timestamp
 }
 

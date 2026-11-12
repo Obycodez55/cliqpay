@@ -10,6 +10,7 @@ import {
 import {
   ApiBearerAuth,
   ApiExtraModels,
+  ApiHeader,
   ApiOperation,
   ApiResponse,
   ApiTags,
@@ -42,13 +43,31 @@ import { ConfirmChangeEmailDto } from './dto/confirm-change-email.dto';
 import { ChangePhoneDto } from './dto/change-phone.dto';
 import { ConfirmChangePhoneDto } from './dto/confirm-change-phone.dto';
 import { StepUpChallengeResponseDto } from './dto/step-up-challenge-response.dto';
-import { readTrustedDeviceCookie } from './internal/cookie.util';
-import { extractDeviceMetadata } from './internal/device-metadata.util';
+import { readDeviceId } from '../../common/device/device-id.util';
+import { signingPart } from '../../common/device/signed-action';
+import { RequireDeviceSignature } from '../../common/guards/device-signature.guard';
+import {
+  extractDeviceMetadata,
+  readTrustedDeviceToken,
+} from './internal/device-metadata.util';
+import {
+  DeviceChallengeDto,
+  DeviceChallengeResponseDto,
+} from './dto/device-challenge.dto';
+import { DeviceBindingService } from './device-binding.service';
 import {
   AuthenticatedRequest,
   JwtAuthGuard,
 } from '../../common/guards/jwt-auth.guard';
 import { SessionService } from './session.service';
+import { UnlockAccountDto } from './dto/unlock-account.dto';
+
+const DEVICE_ID_API_HEADER = {
+  name: 'X-Device-Id',
+  required: true,
+  description:
+    'Stable app-install id (8-128 characters: letters, digits, dot, underscore, hyphen). Bound to the session; required on every authenticated request.',
+};
 import { TransactionPinService } from './transaction-pin.service';
 
 @ApiTags('Authentication')
@@ -58,6 +77,7 @@ export class AuthController {
     private readonly authService: AuthService,
     private readonly sessionService: SessionService,
     private readonly transactionPinService: TransactionPinService,
+    private readonly deviceBinding: DeviceBindingService,
   ) {}
 
   @Post('register')
@@ -68,10 +88,28 @@ export class AuthController {
     return this.authService.register(dto);
   }
 
-  // No cookie is set here even on the mfaRequired:false (trusted-device
-  // skip) path — the client already holds a valid one, nothing to reissue.
-  // A fresh cookie is only ever minted on a successful MFA verify (see
+  // No trusted-device token is issued here even on the mfaRequired:false
+  // (trusted-device skip) path — the client already holds a valid one. A
+  // fresh one is only ever minted on a successful MFA verify (see
   // MfaController) — see docs/architecture.md §3.8.
+  @Post('device-challenge')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  @ApiHeader(DEVICE_ID_API_HEADER)
+  @ApiOperation({
+    summary: 'Issue a single-use nonce for a signed login or refresh',
+    description:
+      'The nonce lives 2 minutes and is bound to the X-Device-Id header and the purpose. ' +
+      'Sign `<purpose>\\n<nonce>\\n<deviceId>` (UTF-8, LF-separated, the nonce as the 43-character string received) ' +
+      'with the device key: ECDSA P-256 over SHA-256, ASN.1 DER signature, base64.',
+  })
+  deviceChallenge(
+    @Body() dto: DeviceChallengeDto,
+    @Req() req: Request,
+  ): Promise<DeviceChallengeResponseDto> {
+    return this.deviceBinding.issueChallenge(readDeviceId(req), dto.purpose);
+  }
+
   @Post('login')
   @HttpCode(HttpStatus.OK)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
@@ -88,19 +126,31 @@ export class AuthController {
       ],
     },
   })
+  @ApiHeader(DEVICE_ID_API_HEADER)
+  @ApiHeader({
+    name: 'X-Trusted-Device-Token',
+    required: false,
+    description:
+      'The token returned in the X-Trusted-Device-Token response header of `POST /mfa/verify`; skips MFA when valid for this device.',
+  })
   login(@Body() dto: LoginDto, @Req() req: Request): Promise<LoginResponseDto> {
     return this.sessionService.login(
       dto,
-      readTrustedDeviceCookie(req),
+      readTrustedDeviceToken(req),
+      readDeviceId(req),
       extractDeviceMetadata(req),
     );
   }
 
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
+  @ApiHeader(DEVICE_ID_API_HEADER)
   @ApiOperation({ summary: 'Exchange a refresh token for a new token pair' })
-  refresh(@Body() dto: RefreshDto): Promise<TokenPairResponseDto> {
-    return this.sessionService.refresh(dto);
+  refresh(
+    @Body() dto: RefreshDto,
+    @Req() req: Request,
+  ): Promise<TokenPairResponseDto> {
+    return this.sessionService.refresh(dto, readDeviceId(req));
   }
 
   @Post('logout')
@@ -176,6 +226,35 @@ export class AuthController {
       dto.newPassword,
       dto.revokeOtherSessions,
     );
+  }
+
+  @Post('unlock/step-up')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Start a step-up challenge for unlocking' })
+  initiateUnlockStepUp(
+    @Req() req: AuthenticatedRequest,
+  ): Promise<StepUpChallengeResponseDto> {
+    return this.authService.initiateUnlockStepUp(req.user.userId);
+  }
+
+  @Post('unlock')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  @ApiBearerAuth()
+  @ApiOperation({
+    summary: 'Unlock a self-locked account',
+    description:
+      'Needs a password reset completed after the lock, a normal login, a step-up challenge and the transaction PIN.',
+  })
+  unlock(
+    @Req() req: AuthenticatedRequest,
+    @Body() dto: UnlockAccountDto,
+  ): Promise<void> {
+    return this.authService.unlock(req.user.userId, dto);
   }
 
   // Step 1 of 2 (see docs/adr/0006, issue #11) — fires unconditionally,
@@ -371,6 +450,19 @@ export class AuthController {
   // Step 2 of 2 — requires the current PIN; a wrong current PIN here counts
   // toward the PIN lockout (see docs/adr/0009-transaction-pin.md).
   @Post('transaction-pin/change')
+  @RequireDeviceSignature({
+    action: 'pin.change',
+    signs:
+      'reference = body.challengeId, amount = "", target = the caller\'s user id',
+    resolve: (req) => ({
+      action: 'pin.change',
+      reference: signingPart(
+        (req.body as Record<string, unknown>)?.challengeId,
+      ),
+      amount: '',
+      target: signingPart((req as AuthenticatedRequest).user?.userId),
+    }),
+  })
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
@@ -409,6 +501,19 @@ export class AuthController {
   // Step 2 of 2 — no current PIN required, since this is the recovery path;
   // clears the PIN lockout state as part of setting the new PIN.
   @Post('transaction-pin/reset')
+  @RequireDeviceSignature({
+    action: 'pin.reset',
+    signs:
+      'reference = body.challengeId, amount = "", target = the caller\'s user id',
+    resolve: (req) => ({
+      action: 'pin.reset',
+      reference: signingPart(
+        (req.body as Record<string, unknown>)?.challengeId,
+      ),
+      amount: '',
+      target: signingPart((req as AuthenticatedRequest).user?.userId),
+    }),
+  })
   @HttpCode(HttpStatus.NO_CONTENT)
   @UseGuards(JwtAuthGuard)
   @Throttle({ default: { limit: 10, ttl: 60_000 } })

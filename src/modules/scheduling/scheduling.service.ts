@@ -23,6 +23,7 @@ import {
 } from '../../shared/events/domain-events';
 import { EventBusService } from '../../shared/events/event-bus.service';
 import { AuthService } from '../auth/auth.service';
+import { LedgerService } from '../ledger/ledger.service';
 import { KycService } from '../kyc/kyc.service';
 import { SocialService } from '../social/social.service';
 import { TransfersService } from '../transfers/transfers.service';
@@ -97,6 +98,7 @@ export class SchedulingService {
     private readonly withdrawalsService: WithdrawalsService,
     private readonly usersService: UsersService,
     private readonly kycService: KycService,
+    private readonly ledgerService: LedgerService,
     private readonly socialService: SocialService,
     private readonly authService: AuthService,
     private readonly eventBus: EventBusService,
@@ -127,6 +129,7 @@ export class SchedulingService {
     const bank = dto.target.type === 'bank_account';
     let senderEmail: string;
     let amountMinor: bigint;
+    let riskAcknowledgement: ScheduledPayment['riskAcknowledgement'] = null;
     if (bank) {
       const sender = await this.assertBankPaymentAllowed(
         userId,
@@ -141,15 +144,22 @@ export class SchedulingService {
         dto.target.userId!,
         dto.amount,
       );
-      if (prepared.sender.isFrozen) {
-        throw new ScheduleSenderFrozenException();
-      }
+      await this.assertSenderNotRestricted(userId);
       await this.assertWithinDailyLimit(userId, prepared.amount);
       await this.assertRecipientCanReceive(userId, prepared);
       senderEmail = prepared.sender.email;
       amountMinor = prepared.amount.amount;
     }
     await this.authService.verifyTransactionPin(userId, dto.pin);
+    if (!bank) {
+      riskAcknowledgement =
+        await this.transfersService.requireRiskAcknowledgement(
+          userId,
+          dto.target.userId!,
+          Money.of(amountMinor, NGN),
+          dto.riskAcknowledged,
+        );
+    }
 
     const { windowStart, windowMinutes } = this.config.scheduledPayments;
     const runOffsetMinutes = Math.floor(Math.random() * windowMinutes);
@@ -171,6 +181,7 @@ export class SchedulingService {
             currency: NGN,
             note: dto.note ?? null,
             visibility: bank ? null : dto.visibility!,
+            riskAcknowledgement,
             startDate: dto.startDate,
             anchorRunNumber: 1,
             intervalUnit: dto.interval?.unit ?? null,
@@ -352,6 +363,40 @@ export class SchedulingService {
     return this.respond(schedule);
   }
 
+  // Resuming goes through the normal resume flow, with its PIN and device
+  // signature, so whoever reached the account can't restart them silently.
+  async pauseAllForAccountLock(userId: string): Promise<number> {
+    return runInTransaction(this.dataSource, async (manager) => {
+      const active = await manager
+        .getRepository(ScheduledPayment)
+        .createQueryBuilder('schedule')
+        .where('schedule.userId = :userId', { userId })
+        .andWhere(`schedule.status = 'active'`)
+        .orderBy('schedule.id')
+        .setLock('pessimistic_write')
+        .getMany();
+      for (const schedule of active) {
+        schedule.status = 'paused';
+        schedule.pausedReason = 'account_locked';
+        schedule.nextRunAt = null;
+        await manager.getRepository(ScheduledPayment).save(schedule);
+        await manager
+          .getRepository(ScheduledPaymentRun)
+          .update(
+            { scheduledPaymentId: schedule.id, status: 'pending' },
+            { status: 'cancelled', nextAttemptAt: null },
+          );
+        await manager.getRepository(ScheduledPaymentChange).save({
+          scheduledPaymentId: schedule.id,
+          kind: 'paused',
+          actor: 'system',
+          reason: 'account_locked',
+        });
+      }
+      return active.length;
+    });
+  }
+
   async resume(
     userId: string,
     scheduleId: string,
@@ -437,6 +482,22 @@ export class SchedulingService {
     if (pinNeeded) {
       await this.authService.verifyTransactionPin(userId, dto.pin!);
     }
+    const raisedAmount =
+      current.targetType === 'user' &&
+      preview.changes.amount !== undefined &&
+      BigInt(dto.amount!) > current.amount;
+    let riskAcknowledgement:
+      | ScheduledPayment['riskAcknowledgement']
+      | undefined;
+    if (raisedAmount) {
+      riskAcknowledgement =
+        await this.transfersService.requireRiskAcknowledgement(
+          userId,
+          current.recipientUserId!,
+          Money.of(BigInt(dto.amount!), NGN),
+          dto.riskAcknowledged,
+        );
+    }
 
     const result = await runInTransaction(this.dataSource, async (manager) => {
       const locked = await this.lockOwned(manager, userId, scheduleId);
@@ -448,6 +509,9 @@ export class SchedulingService {
         return { schedule: locked, plan, changeId: null };
       }
       Object.assign(locked, plan.values);
+      if (riskAcknowledgement !== undefined && plan.changes.amount) {
+        locked.riskAcknowledgement = riskAcknowledgement;
+      }
       const change = await manager.getRepository(ScheduledPaymentChange).save({
         scheduledPaymentId: locked.id,
         kind: 'updated',
@@ -629,11 +693,19 @@ export class SchedulingService {
       schedule.recipientUserId!,
       amount,
     );
-    if (prepared.sender.isFrozen) {
-      throw new ScheduleSenderFrozenException();
-    }
+    await this.assertSenderNotRestricted(userId);
     await this.assertWithinDailyLimit(userId, prepared.amount);
     await this.assertRecipientCanReceive(userId, prepared);
+  }
+
+  private async assertSenderNotRestricted(userId: string): Promise<void> {
+    const state = await this.usersService.getRestrictionState(
+      this.dataSource.manager,
+      userId,
+    );
+    if (state.blocksOutbound) {
+      throw new ScheduleSenderFrozenException();
+    }
   }
 
   // The run checks all of this again.
@@ -667,9 +739,7 @@ export class SchedulingService {
     if (!sender.emailVerifiedAt) {
       throw new ScheduleSenderEmailNotVerifiedException();
     }
-    if (sender.isFrozen) {
-      throw new ScheduleSenderFrozenException();
-    }
+    await this.assertSenderNotRestricted(userId);
     await this.assertWithinDailyLimit(userId, Money.of(amount, NGN));
     return sender;
   }
@@ -704,19 +774,24 @@ export class SchedulingService {
     ) {
       throw new ScheduleRecipientUnableToReceiveException();
     }
+    const recipientState = await this.usersService.getRestrictionState(
+      this.dataSource.manager,
+      prepared.recipientUserId,
+    );
+    if (recipientState.blocksInbound) {
+      throw new ScheduleRecipientUnableToReceiveException();
+    }
     try {
       await this.kycService.checkCanReceive(
         this.dataSource.manager,
         prepared.recipientUserId,
         prepared.amount,
-        () =>
-          Promise.resolve({
-            balance: Money.of(
-              prepared.recipientWallet.balance,
-              prepared.recipientWallet.currency,
-            ),
-            pending: Money.zero(NGN),
-          }),
+        (m, since) =>
+          this.ledgerService.getBalanceAndPendingFunding(
+            m,
+            prepared.recipientUserId,
+            since,
+          ),
       );
     } catch (error) {
       const code = (error as { code?: string } | null)?.code;
