@@ -129,6 +129,7 @@ export class SchedulingService {
     const bank = dto.target.type === 'bank_account';
     let senderEmail: string;
     let amountMinor: bigint;
+    let riskAcknowledgement: ScheduledPayment['riskAcknowledgement'] = null;
     if (bank) {
       const sender = await this.assertBankPaymentAllowed(
         userId,
@@ -150,6 +151,15 @@ export class SchedulingService {
       amountMinor = prepared.amount.amount;
     }
     await this.authService.verifyTransactionPin(userId, dto.pin);
+    if (!bank) {
+      riskAcknowledgement =
+        await this.transfersService.requireRiskAcknowledgement(
+          userId,
+          dto.target.userId!,
+          Money.of(amountMinor, NGN),
+          dto.riskAcknowledged,
+        );
+    }
 
     const { windowStart, windowMinutes } = this.config.scheduledPayments;
     const runOffsetMinutes = Math.floor(Math.random() * windowMinutes);
@@ -171,6 +181,7 @@ export class SchedulingService {
             currency: NGN,
             note: dto.note ?? null,
             visibility: bank ? null : dto.visibility!,
+            riskAcknowledgement,
             startDate: dto.startDate,
             anchorRunNumber: 1,
             intervalUnit: dto.interval?.unit ?? null,

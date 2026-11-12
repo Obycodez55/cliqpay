@@ -116,6 +116,7 @@ export async function sendP2p(
     reference: `p2p-${randomUUID()}`,
     pin: '1234',
     visibility: 'private',
+    riskAcknowledged: true,
   });
 }
 

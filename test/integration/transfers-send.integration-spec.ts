@@ -97,7 +97,7 @@ describe('POST /transfers — zero platform fee (launch default)', () => {
     return request(ctx.app.getHttpServer())
       .post('/transfers')
       .set('Authorization', `Bearer ${token}`)
-      .send({ visibility: 'private', ...body });
+      .send({ visibility: 'private', riskAcknowledged: true, ...body });
   }
 
   describe('sender limit error codes', () => {

@@ -100,6 +100,7 @@ export async function createTransfersTestContext(
     transfers: {
       platformFee,
       minAmount: 10_000,
+      firstPaymentWarningThreshold: 2_000_000,
     },
   });
 

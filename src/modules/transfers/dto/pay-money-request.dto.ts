@@ -1,5 +1,11 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsOptional, Matches, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsIn,
+  IsOptional,
+  Matches,
+  MaxLength,
+} from 'class-validator';
 import { POST_VISIBILITIES, PostVisibility } from '../../social/social.service';
 import { IsNotReservedReference } from '../../../common/validation/reference';
 
@@ -33,4 +39,13 @@ export class PayMoneyRequestDto {
   @Matches(/^\d{4}$/, { message: 'pin must be exactly 4 digits' })
   @ApiProperty({ description: '4-digit transaction PIN' })
   pin: string;
+
+  @IsOptional()
+  @IsBoolean()
+  @ApiProperty({
+    required: false,
+    description:
+      'Send true to proceed after a 422 RISK_ACKNOWLEDGEMENT_REQUIRED response. The reference and signature stay the same.',
+  })
+  riskAcknowledged?: boolean;
 }

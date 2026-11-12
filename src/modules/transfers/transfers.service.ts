@@ -21,6 +21,7 @@ import {
   SocialService,
 } from '../social/social.service';
 import { AuthService } from '../auth/auth.service';
+import { RiskService } from '../risk/risk.service';
 import { Money } from '../../shared/primitives/money';
 import { runInTransaction } from '../../database/transaction.util';
 import {
@@ -52,6 +53,7 @@ import {
   MoneyRequestAmountTooSmallException,
   MoneyRequestPairCapExceededException,
   PayerNotFoundException,
+  RiskAcknowledgementRequiredException,
   RecipientUnableToReceiveException,
   RecipientWalletNotFoundException,
   SelfMoneyRequestException,
@@ -62,6 +64,7 @@ import {
   UnsupportedTransferCurrencyException,
 } from './internal/errors';
 import { isUniqueViolation } from '../../database/postgres-errors.util';
+import { recipientRiskWarnings } from './internal/recipient-risk';
 
 const NGN = 'NGN'; // Transfers are NGN-only for now — see docs/architecture.md §6 Phase 3.
 
@@ -128,6 +131,7 @@ export interface ExecuteTransferParams {
   reference: string;
   pin: string;
   details: TransferPostDetails;
+  riskAcknowledged?: boolean;
 }
 
 export interface ExecuteScheduledTransferParams {
@@ -201,6 +205,7 @@ export class TransfersService {
     private readonly kycService: KycService,
     private readonly socialService: SocialService,
     private readonly authService: AuthService,
+    private readonly riskService: RiskService,
     private readonly eventBus: EventBusService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
@@ -215,6 +220,7 @@ export class TransfersService {
       reference: dto.reference,
       pin: dto.pin,
       details: { note: dto.note ?? null, visibility: dto.visibility },
+      riskAcknowledged: dto.riskAcknowledged,
     });
 
     if (!outcome.replayed) {
@@ -356,16 +362,61 @@ export class TransfersService {
     pin: string,
     details: TransferPostDetails,
     manager?: EntityManager,
+    riskAcknowledged?: boolean,
   ): Promise<FinalizeTransferOutcome> {
     await this.authService.verifyTransactionPin(senderId, pin);
+    const acknowledgement = await this.requireRiskAcknowledgement(
+      senderId,
+      prepared.recipientUserId,
+      prepared.amount,
+      riskAcknowledged,
+    );
     return this.postPreparedTransfer(
       senderId,
       prepared,
       reference,
       details,
-      undefined,
+      acknowledgement ? { riskAcknowledgement: acknowledgement } : undefined,
       manager,
     );
+  }
+
+  // Nothing is written before this passes, so the client can resend the same
+  // reference and signature with riskAcknowledged once the user has seen the
+  // warnings. Returns what to store on the payment, or null when nothing
+  // needed acknowledging.
+  async requireRiskAcknowledgement(
+    senderId: string,
+    recipientUserId: string,
+    amount: Money,
+    acknowledged: boolean | undefined,
+  ): Promise<{ codes: string[]; acknowledgedAt: string } | null> {
+    const [recipient, isFirstPayment, recipientHasEnforcedFlag] =
+      await Promise.all([
+        this.usersService.findById(recipientUserId),
+        this.ledgerService
+          .hasP2pTransferBetween(senderId, recipientUserId)
+          .then((exists) => !exists),
+        this.riskService.hasEnforcedOpenFlag(recipientUserId),
+      ]);
+    const now = new Date();
+    const codes = recipientRiskWarnings({
+      amountMinor: amount.amount,
+      firstPaymentThresholdMinor: BigInt(
+        this.config.transfers.firstPaymentWarningThreshold,
+      ),
+      isFirstPayment,
+      recipientCreatedAt: recipient.createdAt,
+      recipientHasEnforcedFlag,
+      now,
+    });
+    if (codes.length === 0) {
+      return null;
+    }
+    if (!acknowledged) {
+      throw new RiskAcknowledgementRequiredException(codes);
+    }
+    return { codes, acknowledgedAt: now.toISOString() };
   }
 
   private async postPreparedTransfer(
@@ -530,6 +581,7 @@ export class TransfersService {
       params.pin,
       params.details,
       manager,
+      params.riskAcknowledged,
     );
     return { result, replayed, sender: prepared.sender };
   }

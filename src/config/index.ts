@@ -100,6 +100,13 @@ const envSchema = z
 
     TRANSFER_PLATFORM_FEE: z.coerce.number().int().nonnegative().default(0),
     TRANSFER_MIN_AMOUNT: z.coerce.number().int().nonnegative().default(10_000),
+    // Minor units. A first payment to a recipient at or above this needs the
+    // sender's acknowledgement of a warning.
+    FIRST_PAYMENT_WARNING_THRESHOLD: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(2_000_000),
 
     // Money requests (ADR-0012) — expiry is derived at read time, never
     // swept, so this only controls what gets stamped on `expires_at` at
@@ -431,6 +438,7 @@ function buildConfig(env: Env) {
     transfers: {
       platformFee: env.TRANSFER_PLATFORM_FEE,
       minAmount: env.TRANSFER_MIN_AMOUNT,
+      firstPaymentWarningThreshold: env.FIRST_PAYMENT_WARNING_THRESHOLD,
     },
     moneyRequests: {
       expiryDays: env.MONEY_REQUEST_EXPIRY_DAYS,

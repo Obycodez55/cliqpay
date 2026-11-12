@@ -17,6 +17,7 @@ import {
   ApiTags,
   getSchemaPath,
 } from '@nestjs/swagger';
+import { ApiRiskAcknowledgementRequired } from '../../common/docs/risk-acknowledgement.docs';
 import { RequireDeviceSignature } from '../../common/guards/device-signature.guard';
 import { signingPart } from '../../common/device/signed-action';
 import {
@@ -132,6 +133,7 @@ export class MoneyRequestsController {
       };
     },
   })
+  @ApiRiskAcknowledgementRequired()
   @ApiOperation({ summary: 'Pay a money request you received' })
   async pay(
     @Req() req: AuthenticatedRequest,

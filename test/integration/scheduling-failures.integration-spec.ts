@@ -220,6 +220,7 @@ describe('Scheduled payment failures and retries', () => {
           await h
             .createSchedule(sender.userId, recipient.userId, {
               amount: code === 'daily_limit_exceeded' ? 3_000_000 : 100_000,
+              riskAcknowledged: true,
             })
             .expect(201),
         );
@@ -234,6 +235,7 @@ describe('Scheduled payment failures and retries', () => {
               reference: `live-${randomUUID()}`,
               visibility: 'private',
               pin: '1234',
+              riskAcknowledged: true,
             })
             .expect(201);
         } else {

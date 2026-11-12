@@ -4,6 +4,7 @@ import {
   AuthenticatedRequest,
   JwtAuthGuard,
 } from '../../common/guards/jwt-auth.guard';
+import { ApiRiskAcknowledgementRequired } from '../../common/docs/risk-acknowledgement.docs';
 import { RequireDeviceSignature } from '../../common/guards/device-signature.guard';
 import { signingPart } from '../../common/device/signed-action';
 import { TransfersService } from './transfers.service';
@@ -32,6 +33,7 @@ export class TransfersController {
       };
     },
   })
+  @ApiRiskAcknowledgementRequired()
   @ApiOperation({ summary: 'Send money to another Cliqpay user' })
   async sendMoney(
     @Req() req: AuthenticatedRequest,

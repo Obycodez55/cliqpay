@@ -97,6 +97,7 @@ export interface FundingRefundTransactionMetadata {
 export interface TransferTransactionMetadata {
   platformFee: { amount: string; currency: string };
   note?: string;
+  riskAcknowledgement?: { codes: string[]; acknowledgedAt: string };
 }
 
 // §4.2's Withdrawal posting example: `metadata: { bank_account, net_amount }`.

@@ -80,6 +80,7 @@ describe('Daily debit limit', () => {
       reference,
       pin: '1234',
       visibility: 'private',
+      riskAcknowledged: true,
     });
   }
 

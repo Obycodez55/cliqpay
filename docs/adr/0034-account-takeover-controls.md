@@ -237,3 +237,46 @@ recover-email` guarded like `disputes`, until the `risk` module owns the
 - New or extended notifications: bank account saved, limit increase pending,
   account locked, device signed out.
 - The CBN's ₦20,000 figure is configuration, reconfirmed before launch.
+
+### Decisions made building warnings
+
+- **The lookup moved to `transfers`.** `kyc` may import only `users` and
+  `users` must not import `kyc`, so the verified name could not be added where
+  the lookup lived. `GET /recipients/lookup` and its DTOs now live in
+  `transfers`, which already imports both; `UsersService.lookupRecipient`
+  still resolves the user and returns the four identity fields, and the
+  controller adds `verifiedName` from `KycService.getVerifiedLegalName`. No
+  lint rule changed. The name is `null` when the recipient has no KYC record or
+  the record has no legal name, and no other surface (profile, feed, follows,
+  money requests, history) carries it.
+- **Lookup rate limit is 5 a minute per user**, down from 10. A sender paying
+  someone needs one or two lookups; harvesting names needs many. A hit now
+  costs one more query than a miss (the KYC read), which the lookup's
+  same-shape-on-hit-and-miss note did not anticipate; the per-user limit is
+  what bounds probing.
+- **Codes:** `FIRST_PAYMENT_LARGE_AMOUNT`, `RECIPIENT_NEW_ACCOUNT`,
+  `RECIPIENT_UNUSUAL_ACTIVITY`, returned in `error.details.warnings` of the
+  422, all that apply at once. "Under 7 days" is `now - createdAt < 7 days`,
+  so an account exactly 7 days old is not warned about.
+- **The threshold is config:** `FIRST_PAYMENT_WARNING_THRESHOLD` (default
+  2,000,000 kobo), `transfers.firstPaymentWarningThreshold`. A first payment is
+  one with no pending or completed P2P transfer from the sender's wallet to the
+  recipient's wallet; the amount is compared with `>=`.
+- **The flag read is `RiskService.hasEnforcedOpenFlag`**: an enforced flag in
+  `open` or `reviewing`, whatever the rule, so scam-report flags count. Shadow
+  and cleared flags do not.
+- **Ordering.** The check runs after the idempotency replay check and after PIN
+  verification, before anything is posted or saved, so the 422 leaves no
+  record and the client resends the same `reference` and device signature with
+  `riskAcknowledged: true` (the signing string does not cover it). A repeat of
+  a completed reference returns the original result with no warnings. PIN comes
+  first so the warnings are not an oracle on a recipient's account age and flag
+  status for someone without the PIN.
+- **Stored acknowledgement.** Only when warnings applied and were acknowledged:
+  `metadata.riskAcknowledgement = { codes, acknowledgedAt }` on the transaction
+  (through `extraMetadata`), and `scheduled_payments.risk_acknowledgement`
+  (jsonb) on a schedule. `riskAcknowledged: true` where nothing needed
+  acknowledging stores nothing.
+- **Schedules.** Only schedules to a user are checked, at creation, on the
+  per-run amount. Bank-account schedules have no recipient user and are
+  unchanged. Runs go through `executeScheduledTransfer`, which never checks.

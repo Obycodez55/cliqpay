@@ -390,6 +390,7 @@ export class MoneyRequestsService {
         dto.pin,
         details,
         manager,
+        dto.riskAcknowledged,
       );
 
       moneyRequest.status = 'paid';

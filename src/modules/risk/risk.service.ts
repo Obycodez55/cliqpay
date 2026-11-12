@@ -161,6 +161,14 @@ export class RiskService {
     return { held, flagIds };
   }
 
+  async hasEnforcedOpenFlag(userId: string): Promise<boolean> {
+    return this.dataSource.getRepository(FraudFlag).existsBy({
+      userId,
+      enforced: true,
+      status: In([...OPEN_FLAG_STATUSES]),
+    });
+  }
+
   async linkWithdrawal(
     manager: EntityManager,
     flagIds: string[],

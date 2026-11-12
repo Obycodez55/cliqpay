@@ -54,7 +54,11 @@ function defaultTestAppConfig(): AppConfig {
       },
       reconciliation: { alertEmail: 'ops@cliqpay.test' },
     },
-    transfers: { platformFee: 0, minAmount: 10_000 },
+    transfers: {
+      platformFee: 0,
+      minAmount: 10_000,
+      firstPaymentWarningThreshold: 2_000_000,
+    },
     moneyRequests: { expiryDays: 7, maxPendingPerPair: 3 },
     billSplits: { maxParticipants: 20 },
     scheduledPayments: {

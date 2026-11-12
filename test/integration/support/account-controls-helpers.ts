@@ -114,6 +114,7 @@ export function createAccountControlsHelpers(
       reference: `cliqpay-ctl-xfer-${randomUUID()}`,
       pin,
       visibility: 'private',
+      riskAcknowledged: true,
     });
 
   const withdraw = (userId: string, bankAccountId: string, amount: number) =>

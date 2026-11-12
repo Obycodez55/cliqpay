@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -179,6 +180,15 @@ export class CreateScheduledPaymentDto {
       'Whether the transfer made on the run date may appear in the activity feed. Required for a `user` target, with no default; forbidden for a `bank_account` target.',
   })
   visibility?: ScheduleVisibility;
+
+  @IsOptional()
+  @IsBoolean()
+  @ApiProperty({
+    required: false,
+    description:
+      'Send true to proceed after a 422 RISK_ACKNOWLEDGEMENT_REQUIRED response (user targets only). The runs are not checked again.',
+  })
+  riskAcknowledged?: boolean;
 
   @Matches(/^\d{4}$/, { message: 'pin must be exactly 4 digits' })
   @ApiProperty({

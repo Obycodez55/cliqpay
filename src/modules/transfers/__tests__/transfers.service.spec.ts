@@ -13,6 +13,7 @@ import {
 import { UsersService } from '../../users/users.service';
 import { KycService } from '../../kyc/kyc.service';
 import { AuthService } from '../../auth/auth.service';
+import { RiskService } from '../../risk/risk.service';
 import { SocialService } from '../../social/social.service';
 import { EventBusService } from '../../../shared/events/event-bus.service';
 import { Money } from '../../../shared/primitives/money';
@@ -29,7 +30,11 @@ import {
 } from '../../../shared/events/domain-events';
 
 const testConfig = {
-  transfers: { minAmount: 10_000, platformFee: 0 },
+  transfers: {
+    minAmount: 10_000,
+    platformFee: 0,
+    firstPaymentWarningThreshold: 2_000_000,
+  },
 } as AppConfig;
 
 type User = Awaited<ReturnType<UsersService['findById']>>;
@@ -41,6 +46,7 @@ function user(overrides: Partial<User> = {}): User {
     email: 'sender@example.com',
     username: 'sender_username',
     emailVerifiedAt: new Date('2026-01-01T00:00:00Z'),
+    createdAt: new Date('2026-01-01T00:00:00Z'),
     ...overrides,
   } as User;
 }
@@ -71,6 +77,7 @@ describe('TransfersService.sendMoney', () => {
       | 'postTransferWithinTransaction'
       | 'getDebitedSince'
       | 'getBalanceAndPendingFunding'
+      | 'hasP2pTransferBetween'
     >
   >;
   let usersService: jest.Mocked<
@@ -84,6 +91,7 @@ describe('TransfersService.sendMoney', () => {
       'recordTransferPost' | 'getRequestedVisibility' | 'lockPairAndCheckBlock'
     >
   >;
+  let riskService: jest.Mocked<Pick<RiskService, 'hasEnforcedOpenFlag'>>;
   let eventBus: jest.Mocked<Pick<EventBusService, 'publish'>>;
   let service: TransfersService;
 
@@ -112,6 +120,7 @@ describe('TransfersService.sendMoney', () => {
       postTransferWithinTransaction: jest.fn(),
       getDebitedSince: jest.fn(),
       getBalanceAndPendingFunding: jest.fn(),
+      hasP2pTransferBetween: jest.fn().mockResolvedValue(true),
     };
     usersService = {
       findById: jest.fn(),
@@ -126,6 +135,7 @@ describe('TransfersService.sendMoney', () => {
       getRequestedVisibility: jest.fn(),
       lockPairAndCheckBlock: jest.fn().mockResolvedValue(false),
     };
+    riskService = { hasEnforcedOpenFlag: jest.fn().mockResolvedValue(false) };
     eventBus = { publish: jest.fn() };
     service = new TransfersService(
       dataSource,
@@ -134,6 +144,7 @@ describe('TransfersService.sendMoney', () => {
       kycService as unknown as KycService,
       socialService as unknown as SocialService,
       authService as unknown as AuthService,
+      riskService as unknown as RiskService,
       eventBus as unknown as EventBusService,
       testConfig,
     );
@@ -296,6 +307,7 @@ describe('TransfersService.sendMoney', () => {
       transfers: {
         minAmount: 10_000,
         platformFee: 5_000,
+        firstPaymentWarningThreshold: 2_000_000,
       },
     } as AppConfig;
     service = new TransfersService(
@@ -305,6 +317,7 @@ describe('TransfersService.sendMoney', () => {
       kycService as unknown as KycService,
       socialService as unknown as SocialService,
       authService as unknown as AuthService,
+      riskService as unknown as RiskService,
       eventBus as unknown as EventBusService,
       feeConfig,
     );

@@ -45,6 +45,7 @@ export function createScamHelpers(getCtx: () => RiskTestContext) {
       reference: `p2p-${randomUUID()}`,
       pin: '1234',
       visibility: 'private',
+      riskAcknowledged: true,
     });
     return response.transactionId;
   }

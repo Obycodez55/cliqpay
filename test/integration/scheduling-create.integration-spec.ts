@@ -232,12 +232,16 @@ describe('POST /scheduled-payments', () => {
       const over = await h
         .createSchedule(sender.userId, recipient.userId, {
           amount: 5_000_001,
+          riskAcknowledged: true,
         })
         .expect(422);
       expect(errorOf(over).code).toBe('SCHEDULE_AMOUNT_EXCEEDS_DAILY_LIMIT');
 
       await h
-        .createSchedule(sender.userId, recipient.userId, { amount: 5_000_000 })
+        .createSchedule(sender.userId, recipient.userId, {
+          amount: 5_000_000,
+          riskAcknowledged: true,
+        })
         .expect(201);
     });
   });

@@ -23,6 +23,7 @@ import {
   AuthenticatedRequest,
   JwtAuthGuard,
 } from '../../common/guards/jwt-auth.guard';
+import { ApiRiskAcknowledgementRequired } from '../../common/docs/risk-acknowledgement.docs';
 import { RequireDeviceSignature } from '../../common/guards/device-signature.guard';
 import { signingPart } from '../../common/device/signed-action';
 import {
@@ -61,6 +62,7 @@ export class SchedulingController {
       };
     },
   })
+  @ApiRiskAcknowledgementRequired()
   @ApiOperation({
     summary: 'Schedule a one-time or recurring payment to another Cliqpay user',
     description:

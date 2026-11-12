@@ -949,6 +949,25 @@ export class LedgerService {
     };
   }
 
+  async hasP2pTransferBetween(
+    senderUserId: string,
+    recipientUserId: string,
+  ): Promise<boolean> {
+    const rows = await this.dataSource.query<unknown[]>(
+      `SELECT 1
+         FROM transactions t
+         JOIN accounts s ON s.id = t.sender_wallet_id
+         JOIN accounts r ON r.id = t.recipient_wallet_id
+        WHERE s.user_id = $1 AND s.role = 'user_wallet'
+          AND r.user_id = $2 AND r.role = 'user_wallet'
+          AND t.type = 'p2p_transfer'
+          AND t.status IN ('pending', 'completed')
+        LIMIT 1`,
+      [senderUserId, recipientUserId],
+    );
+    return rows.length > 0;
+  }
+
   async getP2pTransfer(
     manager: EntityManager,
     transactionId: string,
@@ -1455,11 +1474,16 @@ export class LedgerService {
       }),
     ]);
 
+    // From the database clock, like ledger_entries.created_at, so history can
+    // order the two together; the app server's clock can drift from it.
+    const [{ heldAt }] = await manager.query<{ heldAt: string }[]>(
+      `SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "heldAt"`,
+    );
     await this.mergeTransactionMetadata(
       transaction.reference,
       {
         grossAmount: facts.netAmount.add(facts.providerFee).toJSON(),
-        heldAt: new Date().toISOString(),
+        heldAt,
       },
       manager,
     );

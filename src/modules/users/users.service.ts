@@ -22,9 +22,9 @@ import {
   toProfileResponse,
 } from './dto/profile-response.dto';
 import {
-  RecipientLookupResponseDto,
-  toRecipientLookupResponse,
-} from './dto/recipient-lookup-response.dto';
+  IdentitySummaryDto,
+  toIdentitySummary,
+} from '../../common/dto/identity-summary.dto';
 
 export type { KycTier };
 export { KYC_TIERS } from './entities/user.entity';
@@ -118,11 +118,11 @@ export class UsersService {
   // could show up as a timing difference (see issue #21).
   async lookupRecipient(
     identifier: string,
-  ): Promise<RecipientLookupResponseDto | null> {
+  ): Promise<IdentitySummaryDto | null> {
     const user = identifier.includes('@')
       ? await this.findByEmail(identifier)
       : await this.findByUsername(identifier);
-    return user ? toRecipientLookupResponse(user) : null;
+    return user ? toIdentitySummary(user) : null;
   }
 
   async findById(userId: string): Promise<User> {
