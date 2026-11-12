@@ -18,6 +18,16 @@ export class FraudFlagAlreadyResolvedException extends DomainException {
   }
 }
 
+export class FraudFlagHasOpenScamCasesException extends DomainException {
+  readonly code = 'FRAUD_FLAG_HAS_OPEN_SCAM_CASES';
+  constructor() {
+    super(
+      'This flag stands for scam cases that are still open; decide those first',
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
 export class RestrictionNotLiftableException extends DomainException {
   readonly code = 'RESTRICTION_NOT_LIFTABLE';
   constructor(reason: string) {

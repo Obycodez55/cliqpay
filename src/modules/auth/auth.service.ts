@@ -301,13 +301,14 @@ export class AuthService {
     newPassword: string,
     revokeOtherSessions: boolean,
   ): Promise<void> {
-    const { userId } = await this.verificationCodeService.consume(
-      'password_reset',
-      token,
-    );
-
     const passwordHash = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
     await runInTransaction(this.dataSource, async (manager) => {
+      const { userId } = await this.verificationCodeService.consumeWithin(
+        manager,
+        'password_reset',
+        token,
+        (ownerId) => this.usersService.lockUser(manager, ownerId),
+      );
       await manager
         .getRepository(Credential)
         .update({ userId }, { passwordHash, passwordResetAt: new Date() });

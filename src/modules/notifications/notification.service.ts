@@ -111,6 +111,10 @@ export class NotificationService {
     );
   }
 
+  async removeAllPushTokens(userId: string): Promise<void> {
+    await this.pushTokens.delete({ userId });
+  }
+
   async removePushToken(userId: string, token: string): Promise<void> {
     await this.pushTokens.delete({ userId, token });
   }

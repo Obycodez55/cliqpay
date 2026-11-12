@@ -652,4 +652,29 @@ describe('scam case resolution', () => {
       publish.mockRestore();
     });
   });
+
+  describe('reviewing the scam_report flag', () => {
+    const review = (flagId: string, status: string) =>
+      h
+        .reviewer(h.http().post(`/internal/risk/flags/${flagId}/review`))
+        .send({ status });
+
+    it('refuses to clear the flag while the user still has an open case, and allows it once none is open', async () => {
+      const { recipient, reference } = await openCase({});
+      const [flag] = await h.openScamFlags(recipient);
+
+      const refused = await review(flag.id, 'cleared');
+
+      expect(refused.status).toBe(409);
+      expect(errorOf(refused).code).toBe('FRAUD_FLAG_HAS_OPEN_SCAM_CASES');
+      const after = await ctx.flagRepo.findOneByOrFail({ id: flag.id });
+      expect(after.status).toBe('open');
+
+      await ctx.dataSource.query(
+        `UPDATE scam_cases SET status = 'withdrawn' WHERE reference = $1`,
+        [reference],
+      );
+      await review(flag.id, 'cleared').expect(201);
+    });
+  });
 });

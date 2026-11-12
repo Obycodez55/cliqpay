@@ -249,6 +249,7 @@ export class UsersService {
       scope: params.scope,
       sourceId: params.sourceId,
       note: params.note ?? null,
+      createdAt: new Date(),
     });
     await this.auditService.record(manager, {
       actor: params.actor,

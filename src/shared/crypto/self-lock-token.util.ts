@@ -29,7 +29,7 @@ export function verifySelfLockToken(
   key: Buffer,
   token: string,
   now: Date = new Date(),
-): { userId: string } | null {
+): { userId: string; issuedAtLatest: Date } | null {
   const parts = token.split('.');
   if (parts.length !== 3) {
     return null;
@@ -50,5 +50,10 @@ export function verifySelfLockToken(
   if (Number(expiresAt) * 1000 <= now.getTime()) {
     return null;
   }
-  return { userId };
+  return {
+    userId,
+    issuedAtLatest: new Date(
+      Number(expiresAt) * 1000 - SELF_LOCK_TOKEN_TTL_MS + 999,
+    ),
+  };
 }

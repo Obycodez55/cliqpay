@@ -33,6 +33,39 @@ describe('POST /scheduled-payments', () => {
     await destroyTransfersTestContext(ctx);
   });
 
+  it('rejects the target field that does not match the target type', async () => {
+    const sender = await h.seedUser('sender');
+    const recipient = await h.seedUser('recipient');
+    const bank = await h.seedBank(sender.userId);
+    const userWithBank = h.createSchedule(sender.userId, recipient.userId, {
+      target: {
+        type: 'user',
+        userId: recipient.userId,
+        bankAccountId: bank.id,
+      },
+    });
+    const bankWithUser = h.createBankSchedule(sender.userId, bank.id, {
+      target: {
+        type: 'bank_account',
+        bankAccountId: bank.id,
+        userId: recipient.userId,
+      },
+    });
+
+    const first = await userWithBank;
+    const second = await bankWithUser;
+
+    expect(first.status).toBe(400);
+    expect(JSON.stringify(first.body)).toContain(
+      'bankAccountId cannot be set on a user target',
+    );
+    expect(second.status).toBe(400);
+    expect(JSON.stringify(second.body)).toContain(
+      'userId cannot be set on a bank_account target',
+    );
+    expect(await h.scheduleRepo().countBy({ userId: sender.userId })).toBe(0);
+  });
+
   it('schedules a payment without checking the balance, at the window start plus a fixed offset', async () => {
     const sender = await h.seedUser('sender');
     const recipient = await h.seedUser('recipient');

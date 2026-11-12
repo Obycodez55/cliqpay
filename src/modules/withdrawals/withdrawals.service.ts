@@ -58,6 +58,7 @@ import {
   InitiatorAccountFrozenException,
   UnsupportedWithdrawalCurrencyException,
   WithdrawalAmountTooSmallException,
+  HeldWithdrawalOwnerRestrictedException,
   WithdrawalNotUnderReviewException,
   WithdrawalPayoutFailedException,
 } from './internal/errors';
@@ -697,7 +698,7 @@ export class WithdrawalsService {
         }
         if (replay.transaction.status === 'reversed') {
           throw new WithdrawalPayoutFailedException(
-            'this withdrawal was already rejected by the provider',
+            'this withdrawal was already reversed',
           );
         }
         const underReview = replay.transaction.status === 'under_review';
@@ -764,6 +765,13 @@ export class WithdrawalsService {
     const user = await this.usersService.findById(held.userId);
 
     await runInTransaction(this.dataSource, async (manager) => {
+      await this.usersService.lockUser(manager, held.userId);
+      if (
+        (await this.usersService.getRestrictionState(manager, held.userId))
+          .blocksOutbound
+      ) {
+        throw new HeldWithdrawalOwnerRestrictedException();
+      }
       if (
         !(await this.ledgerService.releaseWithdrawalHold(manager, reference))
       ) {

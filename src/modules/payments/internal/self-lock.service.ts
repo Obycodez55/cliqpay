@@ -4,6 +4,7 @@ import { DataSource, EntityNotFoundError } from 'typeorm';
 import { runInTransaction } from '../../../database/transaction.util';
 import { APP_CONFIG, AppConfig } from '../../../config';
 import { AuditActor, AuditService } from '../../../shared/audit/audit.service';
+import { AuditEvent } from '../../../shared/audit/entities/audit-event.entity';
 import { encryptionKeyFromHex } from '../../../shared/crypto/secrets.util';
 import { verifySelfLockToken } from '../../../shared/crypto/self-lock-token.util';
 import {
@@ -45,6 +46,10 @@ export class SelfLockService {
     }
     try {
       await this.usersService.findById(verified.userId);
+      const lastReset = await this.lastUnlockOrRecoveryAt(verified.userId);
+      if (lastReset && verified.issuedAtLatest < lastReset) {
+        throw new SelfLockTokenInvalidException();
+      }
     } catch (error) {
       if (error instanceof EntityNotFoundError) {
         throw new SelfLockTokenInvalidException();
@@ -52,6 +57,22 @@ export class SelfLockService {
       throw error;
     }
     await this.lock(verified.userId, 'link');
+  }
+
+  private async lastUnlockOrRecoveryAt(userId: string): Promise<Date | null> {
+    const row = await this.dataSource
+      .getRepository(AuditEvent)
+      .createQueryBuilder('event')
+      .select('MAX(event.occurredAt)', 'at')
+      .where('event.subjectType = :type AND event.subjectId = :userId', {
+        type: 'user',
+        userId,
+      })
+      .andWhere(
+        `(event.action = 'email_recovered' OR (event.action = 'restriction_lifted' AND event.metadata->>'reason' = 'self_lock'))`,
+      )
+      .getRawOne<{ at: Date | null }>();
+    return row?.at ? new Date(row.at) : null;
   }
 
   // Everything runs under the user's advisory lock, taken before any wallet

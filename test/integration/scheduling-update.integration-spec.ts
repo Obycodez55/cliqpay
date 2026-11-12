@@ -279,6 +279,7 @@ describe('PATCH /scheduled-payments/:id', () => {
       await patch(sender, schedule.id, {
         amount: 5_000_000,
         pin: '1234',
+        riskAcknowledged: true,
       }).expect(200);
       expect((await view(sender, schedule.id)).amount.amount).toBe('5000000');
     });

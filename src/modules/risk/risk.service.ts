@@ -24,8 +24,10 @@ import {
   OPEN_FLAG_STATUSES,
 } from './entities/fraud-flag.entity';
 import { FraudRule, FraudRuleCode } from './entities/fraud-rule.entity';
+import { ScamCase } from './entities/scam-case.entity';
 import {
   FraudFlagAlreadyResolvedException,
+  FraudFlagHasOpenScamCasesException,
   FraudFlagNotFoundException,
   RestrictionNotFoundException,
   RestrictionNotLiftableException,
@@ -49,7 +51,11 @@ export const REVIEW_TARGET_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 const MINUTE_MS = 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
-const NOT_LIFTABLE: readonly RestrictionReason[] = ['dispute', 'sanctions'];
+const NOT_LIFTABLE: readonly RestrictionReason[] = [
+  'dispute',
+  'sanctions',
+  'self_lock',
+];
 const OVERDUE_LIST_LIMIT = 20;
 const MAX_FLAG_EVIDENCE = 50;
 
@@ -276,6 +282,16 @@ export class RiskService {
       if (!canMove(flag.status, dto.status)) {
         throw new FraudFlagAlreadyResolvedException();
       }
+      if (
+        dto.status === 'cleared' &&
+        flag.ruleCode === 'scam_report' &&
+        (await manager.getRepository(ScamCase).existsBy({
+          recipientUserId: flag.userId,
+          status: 'open',
+        }))
+      ) {
+        throw new FraudFlagHasOpenScamCasesException();
+      }
       const from = flag.status;
       flag.status = dto.status;
       flag.reviewedBy = reviewerId;
@@ -429,9 +445,10 @@ export class RiskService {
     );
   }
 
-  // `enforced` is only ever set by the insert; a repeat hit on an open flag
-  // appends evidence and counts, whatever the rule's mode is by now. Evidence
-  // keeps the latest hits only: `send_burst` can hit on every send.
+  // A repeat hit on an open flag appends evidence and counts, and upgrades
+  // `enforced` if the rule has moved from shadow to enforce since the flag was
+  // raised; it never downgrades. Evidence keeps the latest hits only:
+  // `send_burst` can hit on every send.
   async recordHit(
     manager: EntityManager,
     userId: string,
@@ -452,6 +469,7 @@ export class RiskService {
                             LIMIT ${MAX_FLAG_EVIDENCE}
                          ) latest
                      ),
+                     enforced = fraud_flags.enforced OR EXCLUDED.enforced,
                      updated_at = now()
        RETURNING id`,
       [userId, hit.ruleCode, JSON.stringify(hit.evidence), hit.enforced],

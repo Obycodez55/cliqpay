@@ -45,6 +45,7 @@ function buildUser(overrides: Partial<UserFixture> = {}): UserFixture {
 describe('AuthService — password reset', () => {
   let usersService: {
     startSecurityCooldown: jest.Mock;
+    lockUser: jest.Mock;
     findByEmail: jest.Mock<Promise<UserFixture | null>, [string]>;
   };
   let credentialRepo: {
@@ -71,9 +72,9 @@ describe('AuthService — password reset', () => {
       Promise<{ token: string; expiresAt: Date }>,
       [string, VerificationPurpose, number]
     >;
-    consume: jest.Mock<
+    consumeWithin: jest.Mock<
       Promise<{ userId: string }>,
-      [VerificationPurpose, string]
+      [unknown, VerificationPurpose, string, (userId: string) => Promise<void>]
     >;
     assertResendAllowed: jest.Mock<
       Promise<void>,
@@ -85,6 +86,7 @@ describe('AuthService — password reset', () => {
   beforeEach(() => {
     usersService = {
       startSecurityCooldown: jest.fn(() => Promise.resolve()),
+      lockUser: jest.fn(() => Promise.resolve()),
       findByEmail: jest.fn((_email: string) => Promise.resolve(buildUser())),
     };
     credentialRepo = {
@@ -120,8 +122,13 @@ describe('AuthService — password reset', () => {
             expiresAt: new Date(Date.now() + 60_000),
           }),
       ),
-      consume: jest.fn((_purpose: VerificationPurpose, _token: string) =>
-        Promise.resolve({ userId: 'user-1' }),
+      consumeWithin: jest.fn(
+        (
+          _manager: unknown,
+          _purpose: VerificationPurpose,
+          _token: string,
+          lockOwner: (userId: string) => Promise<void>,
+        ) => lockOwner('user-1').then(() => ({ userId: 'user-1' })),
       ),
       assertResendAllowed: jest.fn(
         (_userId: string, _purpose: VerificationPurpose) => Promise.resolve(),
@@ -210,9 +217,15 @@ describe('AuthService — password reset', () => {
         false,
       );
 
-      expect(verificationCodeService.consume).toHaveBeenCalledWith(
+      expect(verificationCodeService.consumeWithin).toHaveBeenCalledWith(
+        expect.anything(),
         'password_reset',
         'some-token',
+        expect.any(Function),
+      );
+      expect(usersService.lockUser).toHaveBeenCalledWith(
+        expect.anything(),
+        'user-1',
       );
       const [criteria, updatedFields] = credentialRepo.update.mock.calls[0];
       expect(criteria).toEqual({ userId: 'user-1' });
@@ -250,9 +263,9 @@ describe('AuthService — password reset', () => {
       expect(sessionRepo.update).not.toHaveBeenCalled();
     });
 
-    it('propagates VerificationCodeService.consume rejecting an invalid/reused token without touching Credential or Session', async () => {
+    it('propagates VerificationCodeService.consumeWithin rejecting an invalid/reused token without touching Credential or Session', async () => {
       const error = new Error('invalid');
-      verificationCodeService.consume.mockRejectedValueOnce(error);
+      verificationCodeService.consumeWithin.mockRejectedValueOnce(error);
 
       await expect(
         service.completePasswordReset(

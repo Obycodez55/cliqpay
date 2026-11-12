@@ -9,6 +9,11 @@ import {
   lagosAt,
 } from './support/scheduling-test-context';
 import { dataOf, errorOf } from './support/api-response';
+import {
+  ACCOUNT_SELF_LOCKED_EVENT,
+  AccountSelfLockedEventPayload,
+} from '../../src/shared/events/domain-events';
+import { EventBusService } from '../../src/shared/events/event-bus.service';
 import { waitFor } from './support/social-blocks-test-helpers';
 import {
   addDays,
@@ -547,6 +552,64 @@ describe('Scheduled payment pausing and resuming', () => {
       } finally {
         ctx.config.scheduledPayments.maxActive = original;
       }
+    });
+  });
+  describe('when the owner locks the account', () => {
+    const publishLock = (userId: string) =>
+      ctx.app
+        .get(EventBusService)
+        .publish<string, AccountSelfLockedEventPayload>({
+          name: ACCOUNT_SELF_LOCKED_EVENT,
+          payload: {
+            userId,
+            email: 'owner@example.com',
+            occurredAt: new Date().toISOString(),
+          },
+          occurredAt: new Date(),
+        });
+
+    it('pauses their active schedules as the system, cancels waiting runs and leaves other users alone, and resuming needs the normal resume', async () => {
+      const { sender, schedule } = await seedSchedule({ body: daily });
+      const run = await insertRun(
+        schedule.id,
+        new Date(Date.now() + 3_600_000),
+      );
+      const other = await seedSchedule({ body: daily });
+
+      await publishLock(sender.userId);
+      await waitFor(
+        async () =>
+          (await h.scheduleRepo().findOneByOrFail({ id: schedule.id }))
+            .status === 'paused',
+      );
+
+      expect(
+        await h.scheduleRepo().findOneByOrFail({ id: schedule.id }),
+      ).toMatchObject({
+        status: 'paused',
+        pausedReason: 'account_locked',
+        nextRunAt: null,
+      });
+      expect((await reload(run.id)).status).toBe('cancelled');
+      expect(
+        (await changesOf(schedule.id)).map((c) => [c.kind, c.actor, c.reason]),
+      ).toEqual([
+        ['created', 'user', null],
+        ['paused', 'system', 'account_locked'],
+      ]);
+      expect(
+        (await h.scheduleRepo().findOneByOrFail({ id: other.schedule.id }))
+          .status,
+      ).toBe('active');
+
+      await h.resumeSchedule(sender.userId, schedule.id, { pin: '0000' });
+      expect(
+        (await h.scheduleRepo().findOneByOrFail({ id: schedule.id })).status,
+      ).toBe('paused');
+      await h.resumeSchedule(sender.userId, schedule.id).expect(201);
+      expect(
+        (await h.scheduleRepo().findOneByOrFail({ id: schedule.id })).status,
+      ).toBe('active');
     });
   });
 });

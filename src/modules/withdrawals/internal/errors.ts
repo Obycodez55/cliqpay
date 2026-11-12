@@ -73,6 +73,16 @@ export class WithdrawalPayoutFailedException extends DomainException {
   }
 }
 
+export class HeldWithdrawalOwnerRestrictedException extends DomainException {
+  readonly code = 'WITHDRAWAL_OWNER_RESTRICTED';
+  constructor() {
+    super(
+      'The owner’s outbound money is blocked by a restriction, so this withdrawal cannot be released; reject it or lift the restriction first',
+      HttpStatus.CONFLICT,
+    );
+  }
+}
+
 export class WithdrawalNotUnderReviewException extends DomainException {
   readonly code = 'WITHDRAWAL_NOT_UNDER_REVIEW';
   constructor() {

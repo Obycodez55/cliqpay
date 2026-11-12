@@ -7,7 +7,7 @@ export class RecipientLookupResponseDto extends IdentitySummaryDto {
     nullable: true,
     example: 'Jane Adaeze Doe',
     description:
-      "The recipient's legal name from identity verification, to show the sender before they pay. Null when the recipient has no verified name. Returned by this lookup only.",
+      "The recipient's legal name from identity verification, to show the sender before they pay. Null when the recipient has no verified name, and always null when the lookup was by email address, so knowing an email does not reveal the owner's legal name. Returned by this lookup only.",
   })
   verifiedName: string | null;
 }

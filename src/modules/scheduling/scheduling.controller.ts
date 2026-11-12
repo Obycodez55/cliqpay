@@ -123,6 +123,7 @@ export class SchedulingController {
       };
     },
   })
+  @ApiRiskAcknowledgementRequired()
   @ApiOperation({
     summary: 'Modify a scheduled payment',
     description:

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { DataSource } from 'typeorm';
+import { DataSource, EntityManager, Repository } from 'typeorm';
 import {
   VerificationCode,
   VerificationPurpose,
@@ -61,12 +61,40 @@ export class VerificationCodeService {
       purpose,
       codeHash: hashOpaqueToken(token),
     });
+    return this.markUsed(repo, record);
+  }
 
+  // Runs in the caller's transaction. The owner's lock is taken before the
+  // code row's, the order a self-lock uses when it voids codes, so the two
+  // cannot deadlock; the row is then re-read under FOR UPDATE.
+  async consumeWithin(
+    manager: EntityManager,
+    purpose: VerificationPurpose,
+    token: string,
+    lockOwner: (userId: string) => Promise<void>,
+  ): Promise<{ userId: string }> {
+    const repo = manager.getRepository(VerificationCode);
+    const codeHash = hashOpaqueToken(token);
+    const found = await repo.findOneBy({ purpose, codeHash });
+    if (!found) {
+      throw new VerificationCodeInvalidException();
+    }
+    await lockOwner(found.userId);
+    const record = await repo.findOne({
+      where: { id: found.id },
+      lock: { mode: 'pessimistic_write' },
+    });
+    return this.markUsed(repo, record);
+  }
+
+  private async markUsed(
+    repo: Repository<VerificationCode>,
+    record: VerificationCode | null,
+  ): Promise<{ userId: string }> {
     const now = new Date();
     if (!record || record.usedAt || record.expiresAt <= now) {
       throw new VerificationCodeInvalidException();
     }
-
     record.usedAt = now;
     await repo.save(record);
     return { userId: record.userId };

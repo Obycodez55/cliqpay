@@ -13,7 +13,14 @@ const NOW = new Date('2026-11-10T10:00:00.000Z');
 describe('self-lock token', () => {
   it('round-trips the user id', () => {
     const token = signSelfLockToken(KEY, USER_ID, NOW);
-    expect(verifySelfLockToken(KEY, token, NOW)).toEqual({ userId: USER_ID });
+    expect(verifySelfLockToken(KEY, token, NOW)?.userId).toBe(USER_ID);
+  });
+
+  it('reports the latest moment the token can have been issued', () => {
+    const token = signSelfLockToken(KEY, USER_ID, NOW);
+    expect(verifySelfLockToken(KEY, token, NOW)?.issuedAtLatest).toEqual(
+      new Date(NOW.getTime() + 999),
+    );
   });
 
   it('is valid for 7 days and not beyond', () => {

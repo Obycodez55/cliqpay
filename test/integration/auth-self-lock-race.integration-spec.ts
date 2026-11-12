@@ -5,9 +5,17 @@ import {
   destroyWithdrawalsTestContext,
   seedBankAccount,
 } from './support/withdrawals-test-context';
-import { createAuthTestHelpers } from './support/auth-test-helpers';
+import { IsNull } from 'typeorm';
+import { errorOf } from './support/api-response';
+import {
+  createAuthTestHelpers,
+  extractSixDigitCode,
+} from './support/auth-test-helpers';
 import { createAccountControlsHelpers } from './support/account-controls-helpers';
-import { createSelfLockHelpers } from './support/self-lock-helpers';
+import {
+  NEW_PASSWORD,
+  createSelfLockHelpers,
+} from './support/self-lock-helpers';
 import { holdUserLock, trackSettled, waitBriefly } from './support/user-lock';
 
 jest.setTimeout(180_000);
@@ -106,5 +114,42 @@ describe('Self-lock racing a withdrawal', () => {
 
     expect(results.map((r) => r.status)).toEqual([200, 200, 200]);
     expect(await s.openSelfLocks(owner.userId)).toHaveLength(1);
+  });
+  it('refuses a password reset that was waiting on the user lock when a lock voided its code', async () => {
+    const owner = await s.seedSignedInOwner();
+    await s
+      .http()
+      .post('/auth/password-reset/request')
+      .send({ email: owner.email })
+      .expect(200);
+    const code = extractSixDigitCode(
+      (await auth.waitForPasswordResetEmail(owner.email)).text,
+    );
+    const held = await holdUserLock(ctx.dataSource, owner.userId);
+
+    const reset = trackSettled(
+      s
+        .http()
+        .post('/auth/password-reset/complete')
+        .send({
+          code,
+          newPassword: NEW_PASSWORD,
+          revokeOtherSessions: false,
+        })
+        .then((r) => r),
+    );
+    await waitBriefly();
+    expect(reset.isSettled()).toBe(false);
+    await ctx.verificationCodeRepo.update(
+      { userId: owner.userId, usedAt: IsNull() },
+      { usedAt: new Date() },
+    );
+    await held.release();
+
+    expect(errorOf(await reset.promise).code).toBe('VERIFICATION_CODE_INVALID');
+    const credential = await ctx.credentialRepo.findOneByOrFail({
+      userId: owner.userId,
+    });
+    expect(credential.passwordResetAt).toBeNull();
   });
 });

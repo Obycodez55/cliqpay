@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsOptional,
@@ -112,6 +113,15 @@ export class UpdateScheduledPaymentDto {
     description: 'Needs no pin.',
   })
   visibility?: ScheduleVisibility;
+
+  @IsOptional()
+  @IsBoolean()
+  @ApiProperty({
+    required: false,
+    description:
+      'Send true to proceed after a 422 RISK_ACKNOWLEDGEMENT_REQUIRED response, which a higher amount on a payment to another user can return.',
+  })
+  riskAcknowledged?: boolean;
 
   @ValidateIf(defined)
   @Matches(/^\d{4}$/, { message: 'pin must be exactly 4 digits' })

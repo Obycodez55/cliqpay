@@ -353,7 +353,7 @@ describe('withdrawals held under review', () => {
         await expectHeld(user, 10_000_000);
 
         const [flag] = await ctx.flagRepo.findBy({ userId: user.userId });
-        expect(flag).toMatchObject({ enforced: false, hitCount: 2 });
+        expect(flag).toMatchObject({ enforced: true, hitCount: 2 });
       });
     });
 

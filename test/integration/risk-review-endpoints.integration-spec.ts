@@ -330,7 +330,7 @@ describe('risk review endpoints', () => {
       expect(event).toMatchObject({ actorType: 'reviewer', actorId: REVIEWER });
     });
 
-    it.each(['dispute', 'sanctions'] as const)(
+    it.each(['dispute', 'sanctions', 'self_lock'] as const)(
       'refuses to lift a %s restriction',
       async (reason) => {
         const user = await seedRiskUser(ctx);
@@ -459,6 +459,28 @@ describe('risk review endpoints', () => {
         await assertInvariantHolds(ctx.accountRepo);
       });
 
+      it.each(['self_lock', 'fraud', 'dispute'] as const)(
+        'refuses to release while the owner has a %s restriction, and the reviewer can still reject',
+        async (reason) => {
+          const { user, reference } = await heldWithdrawal();
+          await addTestRestriction(ctx.dataSource, user.userId, { reason });
+
+          const res = await post(
+            `/internal/risk/withdrawals/${reference}/release`,
+          );
+
+          expect(res.status).toBe(409);
+          expect(errorOf(res).code).toBe('WITHDRAWAL_OWNER_RESTRICTED');
+          expect(await statusOf(ctx, reference)).toBe('under_review');
+          expect(payoutsFor(ctx, reference)).toHaveLength(0);
+
+          await post(`/internal/risk/withdrawals/${reference}/reject`).expect(
+            201,
+          );
+          expect(await balanceOf(user)).toBe(12_000_000n);
+        },
+      );
+
       it('answers 409 for a reference that is not under review', async () => {
         const res = await post(
           '/internal/risk/withdrawals/does-not-exist/release',
@@ -522,6 +544,18 @@ describe('risk review endpoints', () => {
         )!;
         expect(mail.text).toContain('could not be completed');
         expect(mail.text).not.toMatch(/fraud|mule|review|internal detail/i);
+      });
+
+      it('says a replay of the rejected reference was reversed, not rejected by the provider', async () => {
+        const { user, reference } = await heldWithdrawal();
+        await post(`/internal/risk/withdrawals/${reference}/reject`).expect(
+          201,
+        );
+
+        const replay = withdraw(ctx, user, 10_000_000, reference);
+
+        await expect(replay).rejects.toThrow(/already reversed/);
+        await expect(replay).rejects.not.toThrow(/provider/);
       });
 
       it('refuses a second reject and a release afterwards', async () => {

@@ -146,4 +146,69 @@ describe('recipient risk warnings on schedule creation', () => {
       true,
     );
   });
+  describe('raising the amount of an existing schedule', () => {
+    const patch = (userId: string, id: string, body: Record<string, unknown>) =>
+      h
+        .http()
+        .patch(`/scheduled-payments/${id}`)
+        .set('Authorization', `Bearer ${h.tokenFor(userId)}`)
+        .send({ pin: '1234', ...body });
+
+    const stored = (id: string) =>
+      ctx.dataSource.getRepository(ScheduledPayment).findOneByOrFail({ id });
+
+    async function seedSchedule(amount: number) {
+      const { sender, recipient } = await seedPair();
+      const created = dataOf<ScheduleBody>(
+        await h
+          .createSchedule(sender.userId, recipient.userId, { amount })
+          .expect(201),
+      );
+      return { sender, created };
+    }
+
+    it('asks for acknowledgement when the raise crosses a warning, changes nothing until it is given, then stores it', async () => {
+      const { sender, created } = await seedSchedule(100_000);
+
+      const blocked = await patch(sender.userId, created.id, {
+        amount: 2_000_000,
+      }).expect(422);
+
+      expect(errorOf(blocked).code).toBe('RISK_ACKNOWLEDGEMENT_REQUIRED');
+      expect(errorOf(blocked).details).toEqual({
+        warnings: ['FIRST_PAYMENT_LARGE_AMOUNT'],
+      });
+      expect((await stored(created.id)).amount).toBe(100_000n);
+
+      await patch(sender.userId, created.id, {
+        amount: 2_000_000,
+        riskAcknowledged: true,
+      }).expect(200);
+
+      const after = await stored(created.id);
+      expect(after.amount).toBe(2_000_000n);
+      expect(after.riskAcknowledgement?.codes).toEqual([
+        'FIRST_PAYMENT_LARGE_AMOUNT',
+      ]);
+    });
+
+    it('does not check when the amount drops', async () => {
+      const { sender, created } = await seedSchedule(1_500_000);
+
+      await patch(sender.userId, created.id, { amount: 1_000_000 }).expect(200);
+
+      expect((await stored(created.id)).amount).toBe(1_000_000n);
+    });
+
+    it('does not check when the amount stays the same', async () => {
+      const { sender, created } = await seedSchedule(100_000);
+
+      await patch(sender.userId, created.id, {
+        amount: 100_000,
+        note: 'rent',
+      }).expect(200);
+
+      expect((await stored(created.id)).note).toBe('rent');
+    });
+  });
 });

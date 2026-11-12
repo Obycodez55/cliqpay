@@ -363,6 +363,40 @@ export class SchedulingService {
     return this.respond(schedule);
   }
 
+  // Resuming goes through the normal resume flow, with its PIN and device
+  // signature, so whoever reached the account can't restart them silently.
+  async pauseAllForAccountLock(userId: string): Promise<number> {
+    return runInTransaction(this.dataSource, async (manager) => {
+      const active = await manager
+        .getRepository(ScheduledPayment)
+        .createQueryBuilder('schedule')
+        .where('schedule.userId = :userId', { userId })
+        .andWhere(`schedule.status = 'active'`)
+        .orderBy('schedule.id')
+        .setLock('pessimistic_write')
+        .getMany();
+      for (const schedule of active) {
+        schedule.status = 'paused';
+        schedule.pausedReason = 'account_locked';
+        schedule.nextRunAt = null;
+        await manager.getRepository(ScheduledPayment).save(schedule);
+        await manager
+          .getRepository(ScheduledPaymentRun)
+          .update(
+            { scheduledPaymentId: schedule.id, status: 'pending' },
+            { status: 'cancelled', nextAttemptAt: null },
+          );
+        await manager.getRepository(ScheduledPaymentChange).save({
+          scheduledPaymentId: schedule.id,
+          kind: 'paused',
+          actor: 'system',
+          reason: 'account_locked',
+        });
+      }
+      return active.length;
+    });
+  }
+
   async resume(
     userId: string,
     scheduleId: string,
@@ -448,6 +482,22 @@ export class SchedulingService {
     if (pinNeeded) {
       await this.authService.verifyTransactionPin(userId, dto.pin!);
     }
+    const raisedAmount =
+      current.targetType === 'user' &&
+      preview.changes.amount !== undefined &&
+      BigInt(dto.amount!) > current.amount;
+    let riskAcknowledgement:
+      | ScheduledPayment['riskAcknowledgement']
+      | undefined;
+    if (raisedAmount) {
+      riskAcknowledgement =
+        await this.transfersService.requireRiskAcknowledgement(
+          userId,
+          current.recipientUserId!,
+          Money.of(BigInt(dto.amount!), NGN),
+          dto.riskAcknowledged,
+        );
+    }
 
     const result = await runInTransaction(this.dataSource, async (manager) => {
       const locked = await this.lockOwned(manager, userId, scheduleId);
@@ -459,6 +509,9 @@ export class SchedulingService {
         return { schedule: locked, plan, changeId: null };
       }
       Object.assign(locked, plan.values);
+      if (riskAcknowledgement !== undefined && plan.changes.amount) {
+        locked.riskAcknowledgement = riskAcknowledgement;
+      }
       const change = await manager.getRepository(ScheduledPaymentChange).save({
         scheduledPaymentId: locked.id,
         kind: 'updated',

@@ -88,6 +88,25 @@ describe('Recipient lookup endpoint', () => {
     );
   });
 
+  it('withholds the verified name when the lookup is by email', async () => {
+    const recipient = await seedUser(
+      'lookup_email_name',
+      'lookup-email-name@example.com',
+    );
+    await verifyName(recipient.userId, 'Ada Obi Lovelace');
+    const sender = await seedUser('lookup_sender_email_name');
+
+    const res = await lookup(
+      sender.token,
+      'lookup-email-name@example.com',
+    ).expect(200);
+
+    const body = dataOf<RecipientLookupResponseDto>(res);
+    expect(body.userId).toBe(recipient.userId);
+    expect(body.verifiedName).toBeNull();
+    expect(JSON.stringify(res.body)).not.toContain('Ada Obi Lovelace');
+  });
+
   it('returns a null verifiedName when the recipient has no KYC record', async () => {
     await seedUser('lookup_unverified');
     const sender = await seedUser('lookup_sender_null');

@@ -280,3 +280,69 @@ recover-email` guarded like `disputes`, until the `risk` module owns the
 - **Schedules.** Only schedules to a user are checked, at creation, on the
   per-run amount. Bank-account schedules have no recipient user and are
   unchanged. Runs go through `executeScheduledTransfer`, which never checks.
+
+### Decisions made fixing the audit
+
+- **Which lock links still work.** A lock token carries its expiry, so its
+  issue time is the expiry minus the 7-day TTL and the token format is
+  unchanged. A link is refused if it was issued before the user's latest
+  unlock or email recovery. The source is the audit log: the latest
+  `restriction_lifted` event with reason `self_lock` (the only way a self-lock
+  is lifted is the owner's unlock) or `email_recovered` event for that user. No
+  new column or event was added. The token only has second precision, so the
+  check compares the end of the second it was issued in; a link issued in the
+  same second as an unlock is accepted, and the unlock alert's own link, built
+  moments after the unlock, works.
+- **Push tokens are deleted in `notifications`.** When it handles
+  `account_self_locked` it deletes all of the user's push tokens before
+  dispatching the confirmation. That event is published after the lock commits,
+  so a publish failure (already logged and not retried) would leave the tokens
+  in place. The owner's own device gets the confirmation by email, not push.
+- **Schedules are paused by `scheduling`.** `scheduling` is peripheral, so it
+  subscribes to `account_self_locked` on its existing event queue and pauses the
+  user's active schedules as a system pause (`paused_reason` and change reason
+  `account_locked`, actor `system`), cancelling runs waiting to start. Between
+  the lock and the event, a run that comes due is refused by the restriction
+  check in the normal way. Resuming uses the ordinary resume flow, with its PIN
+  and device signature.
+- **A self-lock cannot be lifted by a reviewer.** `self_lock` is in
+  `NOT_LIFTABLE` beside `dispute` and `sanctions`, so
+  `POST /internal/risk/restrictions/lift` refuses it. Only the owner's unlock,
+  which needs a password reset after the lock, lifts it.
+- **A reviewer cannot release a held withdrawal for a restricted user.**
+  `releaseHeldWithdrawal` checks the restriction state inside the release
+  transaction, under the user's lock, and answers 409 while any restriction
+  blocks outbound money. The withdrawal stays `under_review` and can still be
+  rejected.
+- **Raising a schedule's amount re-runs the recipient warnings.** For a
+  schedule to a user, an update that raises the amount runs the same check as
+  creation, on the new amount, after the PIN. It takes `riskAcknowledged` and
+  replaces the stored acknowledgement. A lower or unchanged amount is not
+  checked.
+- **A repeat fraud-flag hit can upgrade `enforced`.** `enforced` becomes
+  `fraud_flags.enforced OR EXCLUDED.enforced`, so a flag raised while a rule was
+  in shadow becomes enforced when a later hit arrives after the rule is switched
+  to enforce. It is never downgraded.
+- **The `scam_report` flag stays while a case is open.** A reviewer cannot clear
+  it while the user has any open scam case, the same condition under which a
+  resolved case leaves it open.
+- **Password reset consumes its code in the reset transaction.** The reset
+  takes the user's lock, re-reads the code row `FOR UPDATE`, marks it used and
+  sets the password in one transaction, so a lock's code voiding and a reset
+  cannot interleave. A restriction's `created_at` is now taken after the user's
+  lock is acquired, so a reset that committed first is never counted as after
+  the lock.
+- **Schedule targets.** A user target with a `bankAccountId`, or a bank
+  account target with a `userId`, is rejected by the request validation.
+- **Replaying a reversed withdrawal** says the withdrawal was already reversed,
+  because the reversal can have come from the provider or from a reviewer.
+- **Accepted: the warnings reveal something about the recipient.**
+  `RECIPIENT_UNUSUAL_ACTIVITY` and `RECIPIENT_NEW_ACCOUNT` tell any sender who
+  has the PIN that an account has an enforced fraud flag or is under 7 days old,
+  so a fraud ring could probe its own accounts. We accept this because any
+  warning about the recipient reveals something; the PIN gate and the send rate
+  limits bound it.
+- **`verifiedName` is withheld on email lookups.** `GET /recipients/lookup`
+  returns it as null when the identifier is an email address, so knowing an
+  email does not reveal the owner's BVN legal name. Username lookups still
+  return it. The rest of the response is unchanged.

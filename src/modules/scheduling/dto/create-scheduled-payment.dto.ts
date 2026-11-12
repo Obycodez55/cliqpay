@@ -55,6 +55,21 @@ function IsWithinUnitLimit() {
     });
 }
 
+function IsAbsentForType(type: ScheduleTargetType) {
+  return (target: object, propertyName: string) =>
+    registerDecorator({
+      target: target.constructor,
+      propertyName,
+      validator: {
+        validate: (value: unknown, args: ValidationArguments) =>
+          value === undefined ||
+          (args.object as ScheduleTargetDto).type !== type,
+        defaultMessage: (args: ValidationArguments) =>
+          `${args.property} cannot be set on a ${type} target`,
+      },
+    });
+}
+
 export class ScheduleIntervalDto {
   @IsIn(INTERVAL_UNITS)
   @ApiProperty({ enum: INTERVAL_UNITS })
@@ -75,16 +90,24 @@ export class ScheduleTargetDto {
   @ApiProperty({ enum: SCHEDULE_TARGET_TYPES })
   type: ScheduleTargetType;
 
-  @ValidateIf((target: ScheduleTargetDto) => target.type !== 'bank_account')
+  @ValidateIf(
+    (target: ScheduleTargetDto, value: unknown) =>
+      target.type !== 'bank_account' || value !== undefined,
+  )
   @IsUUID()
+  @IsAbsentForType('bank_account')
   @ApiProperty({
     required: false,
     description: "The recipient's user id. Required for a `user` target.",
   })
   userId?: string;
 
-  @ValidateIf((target: ScheduleTargetDto) => target.type !== 'user')
+  @ValidateIf(
+    (target: ScheduleTargetDto, value: unknown) =>
+      target.type !== 'user' || value !== undefined,
+  )
   @IsUUID()
+  @IsAbsentForType('user')
   @ApiProperty({
     required: false,
     description:

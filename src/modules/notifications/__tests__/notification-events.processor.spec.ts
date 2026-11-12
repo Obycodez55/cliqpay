@@ -1,5 +1,6 @@
 import { Job, Queue } from 'bullmq';
 import { NotificationEventsProcessor } from '../internal/notification-events.processor';
+import { NotificationService } from '../notification.service';
 import { ChannelDispatchJobData } from '../internal/channel-dispatch.queue';
 import { AppConfig } from '../../../config';
 import { verifySelfLockToken } from '../../../shared/crypto/self-lock-token.util';
@@ -10,15 +11,20 @@ const SELF_LOCK_LINK_URL = 'https://app.cliqpay.test/lock';
 
 describe('NotificationEventsProcessor', () => {
   let queue: jest.Mocked<Pick<Queue<ChannelDispatchJobData>, 'add'>>;
+  let notificationService: { removeAllPushTokens: jest.Mock };
   let processor: NotificationEventsProcessor;
 
   beforeEach(() => {
     queue = { add: jest.fn().mockResolvedValue(undefined) };
+    notificationService = {
+      removeAllPushTokens: jest.fn().mockResolvedValue(undefined),
+    };
     processor = new NotificationEventsProcessor(
       queue as unknown as Queue<ChannelDispatchJobData>,
       {
         selfLock: { tokenKey: SELF_LOCK_KEY_HEX, linkUrl: SELF_LOCK_LINK_URL },
       } as AppConfig,
+      notificationService as unknown as NotificationService,
     );
   });
 
@@ -68,7 +74,7 @@ describe('NotificationEventsProcessor', () => {
         Buffer.from(SELF_LOCK_KEY_HEX, 'hex'),
         url.searchParams.get('token')!,
       ),
-    ).toEqual({ userId: '6f1c2f1e-9a3b-4c55-8d0e-2b7c9e1a4d10' });
+    ).toMatchObject({ userId: '6f1c2f1e-9a3b-4c55-8d0e-2b7c9e1a4d10' });
   });
 
   it('adds no lock link to other notification types', async () => {
@@ -84,6 +90,31 @@ describe('NotificationEventsProcessor', () => {
       expect(data.payload).not.toHaveProperty('lockUrl');
     }
     expect(queue.add).toHaveBeenCalledTimes(2);
+  });
+
+  it("deletes the user's push tokens when handling a self-lock", async () => {
+    await processor.process(
+      jobFor('account_self_locked', {
+        userId: 'u1',
+        email: 'a@example.com',
+        occurredAt: '2026-08-15T10:32:00.000Z',
+      }),
+    );
+
+    expect(notificationService.removeAllPushTokens).toHaveBeenCalledWith('u1');
+  });
+
+  it('leaves push tokens alone for other types', async () => {
+    await processor.process(
+      jobFor('security_alert', {
+        userId: 'u1',
+        email: 'a@example.com',
+        message: 'x',
+        occurredAt: '2026-08-15T10:32:00.000Z',
+      }),
+    );
+
+    expect(notificationService.removeAllPushTokens).not.toHaveBeenCalled();
   });
 
   it('enqueues a single channel-dispatch job for a single-channel type', async () => {

@@ -289,4 +289,34 @@ describe('shadow rules raised after commit', () => {
       expect(payoutsFor(ctx, reference)).toHaveLength(1);
     });
   });
+  describe('a repeat hit on an open flag', () => {
+    const hit = (enforced: boolean) => ({
+      ruleCode: 'mule_fan_in' as const,
+      enforced,
+      evidence: { n: 1 },
+    });
+    const record = (userId: string, enforced: boolean) =>
+      ctx.dataSource.transaction((manager) =>
+        ctx.riskService.recordHit(manager, userId, hit(enforced)),
+      );
+
+    it('upgrades a shadow flag to enforced once the rule enforces', async () => {
+      const user = await seedRiskUser(ctx, { ageDays: 30 });
+      await record(user.userId, false);
+      await record(user.userId, true);
+
+      const [flag] = await flagsOf(user.userId, 'mule_fan_in');
+      expect(flag.enforced).toBe(true);
+      expect(flag.hitCount).toBe(2);
+    });
+
+    it('never downgrades an enforced flag', async () => {
+      const user = await seedRiskUser(ctx, { ageDays: 30 });
+      await record(user.userId, true);
+      await record(user.userId, false);
+
+      const [flag] = await flagsOf(user.userId, 'mule_fan_in');
+      expect(flag.enforced).toBe(true);
+    });
+  });
 });

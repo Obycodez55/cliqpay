@@ -6,6 +6,7 @@ import { signSelfLockToken } from '../../../shared/crypto/self-lock-token.util';
 import { encryptionKeyFromHex } from '../../../shared/crypto/secrets.util';
 import { DOMAIN_EVENTS_QUEUE } from '../../../shared/events/event-bus.service';
 import { DomainEventEnvelope } from '../../../shared/events/domain-events';
+import { NotificationService } from '../notification.service';
 import {
   NOTIFICATION_CATALOG,
   NotificationPayloadMap,
@@ -40,6 +41,7 @@ export class NotificationEventsProcessor extends WorkerHost {
     @InjectQueue(CHANNEL_DISPATCH_QUEUE)
     private readonly channelDispatchQueue: Queue<ChannelDispatchJobData>,
     @Inject(APP_CONFIG) config: AppConfig,
+    private readonly notificationService: NotificationService,
   ) {
     super();
     this.selfLockKey = encryptionKeyFromHex(config.selfLock.tokenKey);
@@ -65,6 +67,12 @@ export class NotificationEventsProcessor extends WorkerHost {
       return;
     }
     const type: NotificationType = job.name;
+    if (type === 'account_self_locked') {
+      await this.notificationService.removeAllPushTokens(
+        (job.data.payload as NotificationPayloadMap['account_self_locked'])
+          .userId,
+      );
+    }
     const payload =
       type === 'security_alert'
         ? this.withLockLink(

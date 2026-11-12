@@ -44,9 +44,9 @@ export class RecipientController {
     }
     return {
       ...recipient,
-      verifiedName: await this.kycService.getVerifiedLegalName(
-        recipient.userId,
-      ),
+      verifiedName: query.identifier.includes('@')
+        ? null
+        : await this.kycService.getVerifiedLegalName(recipient.userId),
     };
   }
 }
