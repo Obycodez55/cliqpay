@@ -17,7 +17,7 @@ import { RecoverEmailDto } from './dto/recover-email.dto';
 
 // Reviewer-only, gated like the disputes controller. It sits in `auth`
 // because restoring an email also has to cut every session and code tied to
-// the old address; the risk module will own the /internal/risk prefix.
+// the old address.
 @ApiTags('Account recovery (internal)')
 @ApiSecurity('internal-secret')
 @Controller('internal/risk/users')

@@ -71,7 +71,7 @@ export interface Hit {
 }
 
 /**
- * The one exported surface of the risk module (ADR-0032). Rules that guard
+ * The one exported surface of the risk module. Rules that guard
  * a withdrawal run inside its transaction under the user lock; the rest run
  * after commit from domain events. Detection never blocks anything except
  * a withdrawal.

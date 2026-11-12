@@ -2583,9 +2583,10 @@ export class LedgerService {
     const newFeeIncomeBalance = Money.of(feeIncome.balance, currency).subtract(
       platformFee,
     );
-    const newFeeExpenseBalance = Money.of(feeExpense.balance, currency).add(
-      providerFee,
-    );
+    const newFeeExpenseBalance = Money.of(
+      feeExpense.balance,
+      currency,
+    ).subtract(providerFee);
     const newFeeRecoveryBalance = Money.of(
       feeRecovery.balance,
       currency,

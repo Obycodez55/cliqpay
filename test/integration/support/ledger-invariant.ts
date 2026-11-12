@@ -26,6 +26,16 @@ export async function assertInvariantHolds(
     provider: IsNull(),
     currency: 'NGN',
   });
+  const feeExpense = await accountRepo.findOneByOrFail({
+    role: 'fee_expense',
+    provider: 'kora',
+    currency: 'NGN',
+  });
+  const feeRecovery = await accountRepo.findOneByOrFail({
+    role: 'fee_recovery',
+    provider: 'kora',
+    currency: 'NGN',
+  });
   const wallets = await accountRepo.findBy({
     role: 'user_wallet',
     currency: 'NGN',
@@ -35,4 +45,7 @@ export async function assertInvariantHolds(
   expect(float.balance).toBe(
     walletSum + feeIncome.balance + suspense.balance + fraudHold.balance,
   );
+  // Every provider fee is recovered from the user in the same posting, so the
+  // two move together and a sign error on either shows up here.
+  expect(feeExpense.balance).toBe(feeRecovery.balance);
 }
